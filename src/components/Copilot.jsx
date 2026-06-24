@@ -4,19 +4,33 @@
 // sistema — com causas, ação recomendada e evidências rastreáveis.
 
 import { useMemo, useState } from "react";
-import { getAsset, assetStatus, assetRisk, latestReading } from "../data/mock.js";
+import {
+  getAsset,
+  assetStatus,
+  assetRisk,
+  latestReading,
+  componentForSensor,
+  auditMeta,
+} from "../data/mock.js";
 
-// Monta o banco de respostas para um ativo (depende do estado atual).
+// Monta o banco de respostas para um ativo. Todo o conteúdo vem de dados
+// estruturados do mock (componentes, sensores, evidências, OS, validação) —
+// o copiloto NÃO inventa sensores, documentos nem causas.
 function buildAnswers(tag) {
   const asset = getAsset(tag);
   const status = assetStatus(tag);
   const risk = assetRisk(tag);
   const r = latestReading(tag);
+  const meta = auditMeta(tag);
+  // Componente sob suspeita: derivado do sensor de origem do risco.
+  const comp = risk.origin ? componentForSensor(risk.origin) : null;
   const degrading = status !== "normal";
 
   const causasVibracao = degrading
     ? {
         title: `O que pode estar causando o aumento de vibração no ${tag}?`,
+        component: comp ? `${comp.tag} · ${comp.name}` : null,
+        sensors: comp ? comp.sensors : risk.origin ? [risk.origin] : [],
         causes: [
           "Desgaste em rolamento",
           "Desalinhamento do eixo",
@@ -25,27 +39,33 @@ function buildAnswers(tag) {
         ],
         action:
           "Verificar lubrificação e alinhamento na próxima janela de manutenção.",
-        evidence: [
-          "Vibração aumentou 23% nos últimos 5 dias",
-          `Temperatura média subiu de 68 °C para ${r ? r.temperature : 82} °C`,
-          "Falha semelhante registrada na OS-2025-118",
-          "Manual técnico recomenda inspeção acima de 80 °C em operação contínua",
-        ],
+        evidence: comp
+          ? comp.evidence
+          : [
+              "Vibração aumentou 23% nos últimos 5 dias",
+              `Temperatura média subiu de 68 °C para ${r ? r.temperature : 82} °C`,
+            ],
+        validation: meta.humanValidation,
       }
     : {
         title: `Como está o comportamento de vibração do ${tag}?`,
+        component: null,
+        sensors: risk.origin ? [risk.origin] : [],
         causes: ["Vibração dentro da faixa de baseline para a carga atual."],
         action: "Nenhuma ação corretiva necessária. Manter monitoramento contínuo.",
         evidence: [
           `Vibração atual ${r ? r.vibration : "—"} m/s² (abaixo do limiar de alerta)`,
           "Sem desvio relevante frente ao histórico do ativo",
         ],
+        validation: meta.humanValidation,
       };
 
   return {
     vibracao: causasVibracao,
     acao: {
       title: "Qual ação você recomenda agora?",
+      component: degrading && comp ? `${comp.tag} · ${comp.name}` : null,
+      sensors: degrading ? (comp ? comp.sensors : risk.origin ? [risk.origin] : []) : [],
       causes: null,
       action: degrading
         ? `Abrir/priorizar inspeção do ${risk.component.toLowerCase()} em até ${risk.windowHours}h. Conferir lubrificação e alinhamento; reavaliar após intervenção.`
@@ -54,11 +74,15 @@ function buildAnswers(tag) {
         ? [
             `Nível de risco estimado: ${risk.level} (confiança ${risk.confidence}%)`,
             `Origem do sinal: ${risk.origin}`,
+            `Pontuado por ${meta.scoringModel} · trace ${meta.traceId}`,
           ]
         : ["Indicadores dentro da faixa esperada"],
+      validation: degrading ? meta.humanValidation : null,
     },
     historico: {
       title: "Há histórico de falha parecida nesta planta?",
+      component: null,
+      sensors: [],
       causes: null,
       action: degrading
         ? "Sim. OS-2025-118 registrou falha de rolamento em motor de bomba semelhante — mesmo padrão de vibração+temperatura precedendo a parada."
@@ -69,6 +93,7 @@ function buildAnswers(tag) {
             "Padrão de degradação compatível com o caso atual",
           ]
         : ["Sem OS corretivas recentes vinculadas"],
+      validation: null,
     },
   };
 }
@@ -78,6 +103,18 @@ const QUESTION_KEYS = ["vibracao", "acao", "historico"];
 function Answer({ a }) {
   return (
     <div>
+      {a.component && (
+        <>
+          <h5>Componente</h5>
+          <p style={{ margin: "0 0 4px" }} className="mono">{a.component}</p>
+        </>
+      )}
+      {a.sensors && a.sensors.length > 0 && (
+        <>
+          <h5>Sensores de origem</h5>
+          <p style={{ margin: "0 0 4px" }} className="mono">{a.sensors.join(" · ")}</p>
+        </>
+      )}
       {a.causes && (
         <>
           <h5>Possíveis causas</h5>
@@ -99,6 +136,12 @@ function Answer({ a }) {
           </div>
         ))}
       </div>
+      {a.validation && (
+        <>
+          <h5>Validação humana</h5>
+          <p style={{ margin: "0 0 4px", color: "var(--alerta)" }}>{a.validation}</p>
+        </>
+      )}
     </div>
   );
 }
@@ -161,8 +204,9 @@ export default function Copilot({ tag }) {
       </div>
 
       <p className="muted small" style={{ marginTop: 4 }}>
-        Respostas geradas a partir de leituras de sensores, histórico de OS e documentos técnicos
-        vinculados ao ativo. (Demo — base de conhecimento simulada.)
+        Respostas geradas apenas a partir de dados estruturados do ativo — componentes, sensores,
+        evidências, OS e documentos vinculados. Não inventa sensores nem causas; aponta a validação
+        humana pendente. (Demo — base de conhecimento simulada.)
       </p>
     </section>
   );

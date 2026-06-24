@@ -3,7 +3,12 @@
 Protótipo navegável de **Digital Twin** para manutenção preditiva de motores elétricos industriais.
 Challenge FIAP × Forzy.
 
-> Status: **protótipo navegável** (v0.2). App com sidebar e 4 cenas de demonstração — dados sintéticos, sem backend.
+> Status: **protótipo navegável** (v0.3). App com sidebar e 4 cenas de demonstração — dados sintéticos, sem backend.
+>
+> **Novidades v0.3:** telemetria **ao vivo** determinística no motor-estrela (heartbeat 1/seg com
+> Start/Pause/Reset/Trigger Incident), nível de **Componente** na hierarquia de TAGs
+> (Motor → Componente → Sensor) e trilha de **procedência/auditoria** reforçada
+> (traceId, inputHash, pipelineVersion, scoringModel, validação humana).
 
 ---
 
@@ -79,12 +84,12 @@ npm run dev
 ## As 4 cenas da demo
 
 1. **Visão da Planta** — KPIs + mapa macro das áreas (A Produção · B Utilidades · C Manutenção · D Expedição). Partimos do macro para o micro.
-2. **Drill-down por TAG** — `PLT-FORZY-001 → AREA-PROD-01 → MTR-BMB-042`. Perfil do ativo ("LinkedIn da máquina"): leituras, risco, sensores, documentos e OS vinculadas.
+2. **Drill-down por TAG** — `PLT-FORZY-001 → AREA-PROD-01 → MTR-BMB-042 → CMP-BRG-042A → SNS-VIB-042B`. Perfil do ativo ("LinkedIn da máquina"): leituras, risco, **componentes**, sensores, documentos e OS vinculadas. O sensor de vibração está fisicamente ligado ao **rolamento** sob suspeita.
 3. **Alertas + timeline** — alerta preditivo com **confiança 87%**, origem (`SNS-VIB-042B`) e base consultada; gráfico temporal com a degradação visível.
 4. **Assistente técnico (copiloto)** — Q&A asset-aware: possíveis causas, ação recomendada e evidências rastreáveis.
 
 ### Caminho ensaiado
-`Visão da Planta → Área de Produção → MTR-BMB-042 → Alerta → Evidências → Recomendação → Auditoria`
+`Visão da Planta → Área de Produção → MTR-BMB-042 → Componentes → Telemetria ao vivo → Alerta → Evidências → Recomendação → Copiloto → Auditoria`
 
 ## Estrutura
 

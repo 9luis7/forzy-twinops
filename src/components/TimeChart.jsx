@@ -1,7 +1,10 @@
-// TimeChart.jsx — série temporal das leituras (recharts). A métrica é selecionável;
-// no MOT-003 a rampa de degradação (temperatura/vibração subindo) fica visível.
+// TimeChart.jsx — série temporal das leituras (recharts). A métrica é selecionável.
+// Dois modos:
+//   • histórico (padrão): 24h pré-geradas do mock; a rampa de degradação aparece.
+//   • ao vivo (`live`): heartbeat determinístico, 1 ponto/seg, janela deslizante,
+//     com Start/Pause/Reset/Trigger Incident e badge "● Ao vivo".
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   ResponsiveContainer,
   LineChart,
@@ -12,7 +15,7 @@ import {
   Tooltip,
   ReferenceLine,
 } from "recharts";
-import { readings } from "../data/mock.js";
+import { readings, HEARTBEAT, heartbeatPoint } from "../data/mock.js";
 
 // Métricas disponíveis + faixas de alerta/crítico (espelham o mock).
 const METRICS = {
@@ -26,17 +29,115 @@ const ORDER = ["temperature", "vibration", "current", "rotation"];
 
 const hhmm = (iso) =>
   new Date(iso).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" });
+const hhmmss = (ms) =>
+  new Date(ms).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
 
-export default function TimeChart({ tag }) {
+// ---------------------------------------------------------------- heartbeat hook
+// Mantém a janela deslizante de pontos ao vivo. Os valores vêm de heartbeatPoint
+// (determinístico por índice de tick); só o timestamp exibido é de relógio.
+function useHeartbeat() {
+  const { windowPoints: WIN, seedPoints: SEED } = HEARTBEAT;
+  const baseRef = useRef(null);
+  if (baseRef.current == null) baseRef.current = Date.now() - SEED * 1000;
+
+  const tickRef = useRef(SEED);
+  const incidentRef = useRef(null);
+
+  const mk = (i) => {
+    const p = heartbeatPoint(i, { incidentTick: incidentRef.current });
+    const ts = baseRef.current + i * 1000;
+    return { ...p, ts, label: hhmmss(ts) };
+  };
+
+  const seed = () => Array.from({ length: SEED }, (_, i) => mk(i));
+
+  const [points, setPoints] = useState(seed);
+  const [running, setRunning] = useState(false);
+  const [incident, setIncident] = useState(false);
+
+  useEffect(() => {
+    if (!running) return;
+    const id = setInterval(() => {
+      const i = tickRef.current;
+      tickRef.current = i + 1;
+      setPoints((prev) => {
+        const next = [...prev, mk(i)];
+        return next.length > WIN ? next.slice(next.length - WIN) : next;
+      });
+    }, 1000);
+    return () => clearInterval(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [running]);
+
+  const reset = () => {
+    setRunning(false);
+    tickRef.current = SEED;
+    incidentRef.current = null;
+    baseRef.current = Date.now() - SEED * 1000;
+    setIncident(false);
+    setPoints(seed());
+  };
+
+  const trigger = () => {
+    incidentRef.current = tickRef.current; // degrada a partir de agora
+    setIncident(true);
+    setRunning(true);
+  };
+
+  return {
+    points,
+    running,
+    incident,
+    last: points[points.length - 1] || null,
+    start: () => setRunning(true),
+    pause: () => setRunning(false),
+    reset,
+    trigger,
+  };
+}
+
+function LiveControls({ hb }) {
+  const btn = {
+    background: "var(--surface-2)",
+    border: "1px solid var(--borda)",
+    borderRadius: 8,
+    color: "var(--texto)",
+    cursor: "pointer",
+    padding: "5px 11px",
+    fontSize: 12.5,
+  };
+  return (
+    <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+      {hb.running ? (
+        <button style={btn} onClick={hb.pause}>⏸ Pausar</button>
+      ) : (
+        <button style={{ ...btn, borderColor: "var(--roxo)" }} onClick={hb.start}>▶ Iniciar</button>
+      )}
+      <button style={btn} onClick={hb.reset}>↺ Reset</button>
+      <button
+        style={{ ...btn, borderColor: hb.incident ? "var(--critico)" : "var(--borda)", color: hb.incident ? "var(--critico)" : "var(--texto)" }}
+        onClick={hb.trigger}
+        title="Injeta um degrau de degradação na telemetria"
+      >
+        ⚡ Trigger Incident
+      </button>
+    </div>
+  );
+}
+
+export default function TimeChart({ tag, live = false }) {
   const [metric, setMetric] = useState("temperature");
+  const hb = useHeartbeat();
 
   const series = tag ? readings[tag] : null;
 
-  // Pré-formata o eixo X uma vez por TAG.
-  const data = useMemo(
+  // Histórico: pré-formata o eixo X uma vez por TAG.
+  const histData = useMemo(
     () => (series ? series.map((r) => ({ ...r, label: hhmm(r.ts) })) : []),
     [series]
   );
+
+  const data = live ? hb.points : histData;
 
   const wrap = {
     background: "var(--surface)",
@@ -46,7 +147,7 @@ export default function TimeChart({ tag }) {
     marginTop: 16,
   };
 
-  if (!series || series.length === 0) {
+  if (!live && (!series || series.length === 0)) {
     return (
       <section style={wrap}>
         <h3 style={{ marginTop: 0 }}>Gráfico temporal</h3>
@@ -68,11 +169,16 @@ export default function TimeChart({ tag }) {
           gap: 8,
         }}
       >
-        <h3 style={{ margin: 0 }}>
+        <h3 style={{ margin: 0, display: "flex", alignItems: "center", gap: 10 }}>
           Gráfico temporal{" "}
           <span style={{ color: "var(--texto-fraco)", fontWeight: 400, fontSize: 13 }}>
-            · últimas 24h
+            · {live ? "telemetria ao vivo" : "últimas 24h"}
           </span>
+          {live && (
+            <span className={`live-badge ${hb.running ? "on" : "off"}`}>
+              <span className="live-dot" /> {hb.running ? "Ao vivo" : "Pausado"}
+            </span>
+          )}
         </h3>
 
         {/* Seletor de métrica */}
@@ -100,6 +206,26 @@ export default function TimeChart({ tag }) {
         </div>
       </div>
 
+      {/* Barra de controle do heartbeat (só ao vivo) */}
+      {live && (
+        <div
+          style={{
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "center",
+            flexWrap: "wrap",
+            gap: 10,
+            marginTop: 12,
+          }}
+        >
+          <LiveControls hb={hb} />
+          <span className="muted small" style={{ fontFamily: "ui-monospace, monospace" }}>
+            último heartbeat: {hb.last ? hb.last.label : "—"}
+            {hb.last ? ` · ${hb.last[metric]} ${m.unit}` : ""}
+          </span>
+        </div>
+      )}
+
       <div style={{ width: "100%", height: 280, marginTop: 12 }}>
         <ResponsiveContainer>
           <LineChart data={data} margin={{ top: 8, right: 16, bottom: 4, left: -8 }}>
@@ -107,7 +233,7 @@ export default function TimeChart({ tag }) {
             <XAxis
               dataKey="label"
               tick={{ fill: "var(--texto-fraco)", fontSize: 11 }}
-              minTickGap={48}
+              minTickGap={live ? 28 : 48}
               stroke="var(--borda)"
             />
             <YAxis
