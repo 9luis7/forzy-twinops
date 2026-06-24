@@ -20,6 +20,7 @@ import TimeChart from "./TimeChart.jsx";
 import Copilot from "./Copilot.jsx";
 import MotorMimic from "./MotorMimic.jsx";
 import Gauge from "./Gauge.jsx";
+import { useLiveTelemetry } from "../useLiveTelemetry.js";
 
 const fmtDate = (d) =>
   d ? new Date(d + "T00:00:00").toLocaleDateString("pt-BR") : "—";
@@ -175,14 +176,74 @@ export default function AssetProfile({ asset, nav, selectedComponent }) {
   const orders = ordersForTag(tag);
   const docs = docsForTag(tag);
   const comps = componentsForAsset(tag);
-  const when = reading ? new Date(reading.ts).toLocaleString("pt-BR") : "—";
   const isLive = tag === HEARTBEAT.tag;
+
+  // Telemetria ao vivo (loop de cenários) — só a estrela. O hook fica inerte nos
+  // demais ativos. Quando ativo, ele vira a FONTE DE VERDADE do painel: gauges,
+  // gêmeo digital, banner e diagnóstico reagem à mesma leitura, em sincronia.
+  const hb = useLiveTelemetry(isLive);
+
+  // Valores efetivos: ao vivo na estrela, estáticos no resto.
+  const effReading = isLive && hb.last ? hb.last : reading;
+  const effStatus = isLive ? hb.status : status;
+  const liveScenario = isLive && effStatus !== "normal" ? hb.scenario : null;
+
+  // Risco efetivo derivado do estado ao vivo.
+  const effRisk = !isLive
+    ? risk
+    : effStatus === "critico"
+    ? { level: "Alto", score: 84, confidence: liveScenario?.confidence ?? 88, windowHours: 24 }
+    : effStatus === "alerta"
+    ? { level: "Médio", score: 58, confidence: liveScenario?.confidence ?? 80, windowHours: 72 }
+    : { level: "Baixo", score: 12, confidence: 95, windowHours: null };
+
+  // Alerta efetivo: ao vivo é montado a partir do cenário ativo.
+  const effAlert = !isLive
+    ? alert
+    : liveScenario
+    ? {
+        title: liveScenario.name,
+        message: liveScenario.diagnosis,
+        origin: liveScenario.sensor,
+        bases: liveScenario.bases,
+        confidence: liveScenario.confidence,
+      }
+    : null;
+
+  // Componentes efetivos: ao vivo, só o componente culpado do cenário fica fora
+  // do normal (e recebe as evidências do cenário); o resto fica normal.
+  const effComps = !isLive
+    ? comps
+    : comps.map((c) =>
+        liveScenario && c.tag === liveScenario.component
+          ? {
+              ...c,
+              status: effStatus,
+              evidence: liveScenario.evidence,
+              risk: { level: effRisk.level, score: effRisk.score },
+            }
+          : { ...c, status: "normal", risk: { level: "Baixo", score: 12 } }
+      );
+
+  const when = isLive
+    ? hb.last
+      ? hb.last.label
+      : "—"
+    : reading
+    ? new Date(reading.ts).toLocaleString("pt-BR")
+    : "—";
 
   // Componente selecionado: prop (vinda da árvore TAG) tem prioridade.
   const [activeComp, setActiveComp] = useState(selectedComponent || (comps[0] && comps[0].tag));
   useEffect(() => {
     if (selectedComponent) setActiveComp(selectedComponent);
   }, [selectedComponent]);
+
+  // Ao vivo: foca automaticamente o componente sob suspeita do cenário corrente,
+  // para o painel narrar sozinho qual parte está sendo diagnosticada.
+  useEffect(() => {
+    if (isLive && liveScenario) setActiveComp(liveScenario.component);
+  }, [isLive, liveScenario]);
 
   return (
     <div>
@@ -243,32 +304,32 @@ export default function AssetProfile({ asset, nav, selectedComponent }) {
       <section className="card">
         <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
           <h2 style={{ margin: 0, fontSize: 20 }}>{asset.name}</h2>
-          <StatusBadge status={status} />
+          <StatusBadge status={effStatus} />
           <span className="pill">Área {area?.letter} · {area?.name}</span>
           <span className="tag-mono muted" style={{ fontSize: 12 }}>{tag}</span>
         </div>
 
         {/* Banner de alerta preditivo */}
-        {alert && status !== "normal" && (
-          <div className={`alert-banner ${status}`} style={{ marginTop: 14 }}>
-            <div className="alert-icon">{status === "critico" ? "🚨" : "⚠️"}</div>
+        {effAlert && effStatus !== "normal" && (
+          <div className={`alert-banner ${effStatus}`} style={{ marginTop: 14 }}>
+            <div className="alert-icon">{effStatus === "critico" ? "🚨" : "⚠️"}</div>
             <div style={{ flex: 1 }}>
-              <div className="alert-title">{alert.title}</div>
-              <div className="alert-msg">{alert.message}</div>
+              <div className="alert-title">{effAlert.title}</div>
+              <div className="alert-msg">{effAlert.message}</div>
               <div className="alert-meta">
-                <span>Origem: <b className="mono">{alert.origin}</b></span>
-                <span>Risco: <b><RiskTag level={risk.level} /></b></span>
-                {risk.windowHours && <span>Janela: <b>{risk.windowHours}h</b></span>}
-                <span>Base: <b>{alert.bases.join(" + ")}</b></span>
+                <span>Origem: <b className="mono">{effAlert.origin}</b></span>
+                <span>Risco: <b><RiskTag level={effRisk.level} /></b></span>
+                {effRisk.windowHours && <span>Janela: <b>{effRisk.windowHours}h</b></span>}
+                <span>Base: <b>{effAlert.bases.join(" + ")}</b></span>
               </div>
               <div style={{ display: "flex", gap: 24, flexWrap: "wrap", alignItems: "center", marginTop: 4 }}>
                 <div className="conf-wrap" style={{ marginTop: 8 }}>
                   <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12 }}>
                     <span className="muted">Confiança</span>
-                    <b>{alert.confidence}%</b>
+                    <b>{effAlert.confidence}%</b>
                   </div>
                   <div className="conf-track" style={{ marginTop: 5 }}>
-                    <div className="conf-fill" style={{ width: `${alert.confidence}%` }} />
+                    <div className="conf-fill" style={{ width: `${effAlert.confidence}%` }} />
                   </div>
                 </div>
                 <button className="btn primary" onClick={() => nav.goView("alertas")}>
@@ -287,14 +348,14 @@ export default function AssetProfile({ asset, nav, selectedComponent }) {
         {comps.length > 0 ? (
           <MotorMimic
             asset={asset}
-            reading={reading}
-            components={comps}
-            status={status}
+            reading={effReading}
+            components={effComps}
+            status={effStatus}
             activeComponent={activeComp}
             onSelectComponent={setActiveComp}
           />
         ) : (
-          <MotorMimic asset={asset} reading={reading} components={[]} status={status} />
+          <MotorMimic asset={asset} reading={effReading} components={[]} status={effStatus} />
         )}
 
         {/* Ficha técnica — rótulos amigáveis, detalhe técnico em segundo plano */}
@@ -310,8 +371,8 @@ export default function AssetProfile({ asset, nav, selectedComponent }) {
             <Fact label="Próxima inspeção">{fmtDate(asset.nextInspection)}</Fact>
             <Fact label="Instalado em">{fmtDate(asset.installDate)}</Fact>
             <Fact label="Risco de falha">
-              <RiskTag level={risk.level} />{" "}
-              <span className="muted small">· score {risk.score}/100</span>
+              <RiskTag level={effRisk.level} />{" "}
+              <span className="muted small">· score {effRisk.score}/100</span>
             </Fact>
           </div>
           <details className="ap-tech">
@@ -345,15 +406,15 @@ export default function AssetProfile({ asset, nav, selectedComponent }) {
             {when}
           </span>
         </div>
-        {reading ? (
+        {effReading ? (
           <div className="gauge-row" style={{ marginTop: 12 }}>
-            <Gauge label="Temperatura" value={reading.temperature} unit="°C"
+            <Gauge label="Temperatura" value={effReading.temperature} unit="°C"
               min={20} max={100} warn={THRESHOLDS.temp.warn} crit={THRESHOLDS.temp.crit} size={168} />
-            <Gauge label="Vibração" value={reading.vibration} unit="m/s²"
+            <Gauge label="Vibração" value={effReading.vibration} unit="m/s²"
               min={0} max={10} warn={THRESHOLDS.vib.warn} crit={THRESHOLDS.vib.crit} size={168} />
-            <Gauge label="Corrente" value={reading.current} unit="A"
-              min={0} max={120} warn={null} crit={null} size={168} />
-            <Gauge label="Rotação" value={reading.rotation} unit="RPM"
+            <Gauge label="Corrente" value={effReading.current} unit="A"
+              min={0} max={60} warn={THRESHOLDS.current.warn} crit={THRESHOLDS.current.crit} size={168} />
+            <Gauge label="Rotação" value={effReading.rotation} unit="RPM"
               min={0} max={3600} warn={null} crit={null} size={168} />
           </div>
         ) : (
@@ -382,8 +443,9 @@ export default function AssetProfile({ asset, nav, selectedComponent }) {
             </button>
           </div>
           <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-            <LimitRow metric="Temperatura" unit="°C" warn={THRESHOLDS.temp.warn} crit={THRESHOLDS.temp.crit} value={reading?.temperature} />
-            <LimitRow metric="Vibração" unit="m/s²" warn={THRESHOLDS.vib.warn} crit={THRESHOLDS.vib.crit} value={reading?.vibration} />
+            <LimitRow metric="Temperatura" unit="°C" warn={THRESHOLDS.temp.warn} crit={THRESHOLDS.temp.crit} value={effReading?.temperature} />
+            <LimitRow metric="Vibração" unit="m/s²" warn={THRESHOLDS.vib.warn} crit={THRESHOLDS.vib.crit} value={effReading?.vibration} />
+            <LimitRow metric="Corrente" unit="A" warn={THRESHOLDS.current.warn} crit={THRESHOLDS.current.crit} value={effReading?.current} />
           </div>
         </div>
 
@@ -404,15 +466,15 @@ export default function AssetProfile({ asset, nav, selectedComponent }) {
       {comps.length > 0 && (
         <Components
           asset={asset}
-          reading={reading}
-          comps={comps}
+          reading={effReading}
+          comps={effComps}
           selected={activeComp}
           onSelect={setActiveComp}
         />
       )}
 
-      {/* Gráfico temporal (ao vivo na estrela) */}
-      <TimeChart tag={tag} live={isLive} />
+      {/* Gráfico temporal (ao vivo na estrela) — compartilha o mesmo motor do painel */}
+      <TimeChart tag={tag} live={isLive ? hb : null} />
 
       {/* Assistente técnico (copiloto) — remonta ao trocar de ativo */}
       <Copilot key={tag} tag={tag} />

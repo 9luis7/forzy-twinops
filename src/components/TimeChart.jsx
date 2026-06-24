@@ -8,7 +8,7 @@
 // com os tokens, LED pulsante "Ao vivo", botões de métrica estilo instrumento e
 // barra de controle do heartbeat enxuta. O comportamento e a matemática NÃO mudam.
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useMemo, useState } from "react";
 import {
   ResponsiveContainer,
   AreaChart,
@@ -19,7 +19,7 @@ import {
   Tooltip,
   ReferenceLine,
 } from "recharts";
-import { readings, HEARTBEAT, heartbeatPoint } from "../data/mock.js";
+import { readings, livePhaseLabel } from "../data/mock.js";
 
 // Métricas disponíveis + faixas de alerta/crítico (espelham o mock).
 // `grad` é o id do gradiente SVG (definido em <defs>) usado na área sob a linha.
@@ -48,8 +48,6 @@ const ORDER = ["temperature", "vibration", "current", "rotation"];
 
 const hhmm = (iso) =>
   new Date(iso).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" });
-const hhmmss = (ms) =>
-  new Date(ms).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
 
 // Classe de cor do readout em função do valor x limiares da métrica.
 function readoutClass(metric, value) {
@@ -60,71 +58,7 @@ function readoutClass(metric, value) {
   return "ok";
 }
 
-// ---------------------------------------------------------------- heartbeat hook
-// Mantém a janela deslizante de pontos ao vivo. Os valores vêm de heartbeatPoint
-// (determinístico por índice de tick); só o timestamp exibido é de relógio.
-function useHeartbeat() {
-  const { windowPoints: WIN, seedPoints: SEED } = HEARTBEAT;
-  const baseRef = useRef(null);
-  if (baseRef.current == null) baseRef.current = Date.now() - SEED * 1000;
-
-  const tickRef = useRef(SEED);
-  const incidentRef = useRef(null);
-
-  const mk = (i) => {
-    const p = heartbeatPoint(i, { incidentTick: incidentRef.current });
-    const ts = baseRef.current + i * 1000;
-    return { ...p, ts, label: hhmmss(ts) };
-  };
-
-  const seed = () => Array.from({ length: SEED }, (_, i) => mk(i));
-
-  const [points, setPoints] = useState(seed);
-  const [running, setRunning] = useState(false);
-  const [incident, setIncident] = useState(false);
-
-  useEffect(() => {
-    if (!running) return;
-    const id = setInterval(() => {
-      const i = tickRef.current;
-      tickRef.current = i + 1;
-      setPoints((prev) => {
-        const next = [...prev, mk(i)];
-        return next.length > WIN ? next.slice(next.length - WIN) : next;
-      });
-    }, 1000);
-    return () => clearInterval(id);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [running]);
-
-  const reset = () => {
-    setRunning(false);
-    tickRef.current = SEED;
-    incidentRef.current = null;
-    baseRef.current = Date.now() - SEED * 1000;
-    setIncident(false);
-    setPoints(seed());
-  };
-
-  const trigger = () => {
-    incidentRef.current = tickRef.current; // degrada a partir de agora
-    setIncident(true);
-    setRunning(true);
-  };
-
-  return {
-    points,
-    running,
-    incident,
-    last: points[points.length - 1] || null,
-    start: () => setRunning(true),
-    pause: () => setRunning(false),
-    reset,
-    trigger,
-  };
-}
-
-// Barra de controle do heartbeat (botões estilo instrumento via classe .btn).
+// Barra de controle do loop de cenários (botões estilo instrumento via classe .btn).
 function LiveControls({ hb }) {
   return (
     <div className="tc-controls">
@@ -141,13 +75,27 @@ function LiveControls({ hb }) {
         <span className="tc-ico" aria-hidden>↺</span> Reset
       </button>
       <button
-        className={`btn tc-trigger${hb.incident ? " on" : ""}`}
-        onClick={hb.trigger}
-        title="Injeta um degrau de degradação na telemetria"
+        className="btn"
+        onClick={hb.nextScenario}
+        title="Pula para o início do próximo cenário do loop"
       >
-        <span className="tc-ico" aria-hidden>⚡</span> Disparar incidente
+        <span className="tc-ico" aria-hidden>⏭</span> Próximo cenário
       </button>
     </div>
+  );
+}
+
+// Chip que narra o cenário/fase atual do loop (cor por status).
+function ScenarioChip({ hb }) {
+  const cls =
+    hb.status === "critico" ? "critico" : hb.status === "alerta" ? "alerta" : "ok";
+  const icon =
+    hb.status === "critico" ? "🚨" : hb.status === "alerta" ? "⚠" : "●";
+  return (
+    <span className={`tc-scenario ${cls}`} title={hb.scenario?.diagnosis || ""}>
+      <span className="tc-scenario-ico" aria-hidden>{icon}</span>
+      {livePhaseLabel(hb.phase, hb.scenario)}
+    </span>
   );
 }
 
@@ -170,9 +118,11 @@ function ChartTooltip({ active, payload, label, metric }) {
   );
 }
 
-export default function TimeChart({ tag, live = false }) {
+// `live` é o objeto do hook useLiveTelemetry (ou null/false para histórico).
+export default function TimeChart({ tag, live = null }) {
   const [metric, setMetric] = useState("temperature");
-  const hb = useHeartbeat();
+  const hb = live || null;
+  const isLive = !!hb;
 
   const series = tag ? readings[tag] : null;
 
@@ -182,10 +132,10 @@ export default function TimeChart({ tag, live = false }) {
     [series]
   );
 
-  const data = live ? hb.points : histData;
+  const data = isLive ? hb.points : histData;
   const m = METRICS[metric];
 
-  if (!live && (!series || series.length === 0)) {
+  if (!isLive && (!series || series.length === 0)) {
     return (
       <section className="card tc-card" data-tour="telemetry">
         <Styles />
@@ -205,8 +155,8 @@ export default function TimeChart({ tag, live = false }) {
       <div className="tc-head">
         <h3 className="tc-title">
           Gráfico temporal
-          <span className="tc-sub">· {live ? "telemetria ao vivo" : "últimas 24h"}</span>
-          {live && (
+          <span className="tc-sub">· {isLive ? "telemetria ao vivo" : "últimas 24h"}</span>
+          {isLive && (
             <span className={`live-badge ${hb.running ? "on" : "off"}`}>
               <span className="live-dot" /> {hb.running ? "Ao vivo" : "Pausado"}
             </span>
@@ -235,10 +185,13 @@ export default function TimeChart({ tag, live = false }) {
         </div>
       </div>
 
-      {/* Barra de controle do heartbeat (só ao vivo) */}
-      {live && (
+      {/* Barra de controle do loop de cenários (só ao vivo) */}
+      {isLive && (
         <div className="tc-livebar">
-          <LiveControls hb={hb} />
+          <div className="tc-livebar-left">
+            <LiveControls hb={hb} />
+            <ScenarioChip hb={hb} />
+          </div>
           <div className="tc-heartbeat">
             <span className="muted small">último heartbeat</span>
             <span className="tc-hb-time">{hb.last ? hb.last.label : "—"}</span>
@@ -253,7 +206,7 @@ export default function TimeChart({ tag, live = false }) {
 
       {/* Gráfico */}
       <div className="tc-plot scada-grid">
-        <ResponsiveContainer width="100%" height={live ? 300 : 290}>
+        <ResponsiveContainer width="100%" height={isLive ? 300 : 290}>
           <AreaChart data={data} margin={{ top: 10, right: 18, bottom: 4, left: -6 }}>
             <defs>
               <linearGradient id={gradId} x1="0" y1="0" x2="0" y2="1">
@@ -267,7 +220,7 @@ export default function TimeChart({ tag, live = false }) {
             <XAxis
               dataKey="label"
               tick={{ fill: "var(--texto-fraco)", fontSize: 11 }}
-              minTickGap={live ? 28 : 48}
+              minTickGap={isLive ? 28 : 48}
               stroke="var(--stroke)"
               tickLine={false}
               axisLine={{ stroke: "var(--stroke)" }}
@@ -391,11 +344,32 @@ function Styles() {
         background: var(--panel); border: 1px solid var(--stroke);
         border-radius: 11px;
       }
+      .tc-livebar-left { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
       .tc-controls { display: flex; gap: 6px; flex-wrap: wrap; }
       .tc-ico { font-size: 11px; line-height: 1; }
-      .tc-trigger.on {
-        border-color: var(--critico); color: var(--critico);
-        box-shadow: 0 0 0 1px rgba(251,106,106,.25), 0 0 12px rgba(251,106,106,.25);
+
+      /* Chip que narra o cenário/fase atual do loop */
+      .tc-scenario {
+        display: inline-flex; align-items: center; gap: 6px;
+        font-size: 12px; font-weight: 600; white-space: nowrap;
+        padding: 5px 11px; border-radius: 999px;
+        border: 1px solid var(--stroke); color: var(--texto-fraco);
+        transition: color .25s, border-color .25s, box-shadow .25s, background .25s;
+      }
+      .tc-scenario-ico { font-size: 11px; line-height: 1; }
+      .tc-scenario.ok {
+        color: var(--ok); border-color: rgba(52,211,153,.45);
+        background: rgba(52,211,153,.07);
+      }
+      .tc-scenario.alerta {
+        color: var(--alerta); border-color: rgba(251,191,36,.5);
+        background: rgba(251,191,36,.08);
+        box-shadow: 0 0 0 1px rgba(251,191,36,.16), 0 0 12px rgba(251,191,36,.18);
+      }
+      .tc-scenario.critico {
+        color: var(--critico); border-color: rgba(251,106,106,.5);
+        background: rgba(251,106,106,.08);
+        box-shadow: 0 0 0 1px rgba(251,106,106,.2), 0 0 14px rgba(251,106,106,.22);
       }
       .tc-heartbeat {
         display: inline-flex; align-items: baseline; gap: 8px;

@@ -3,12 +3,18 @@
 Protótipo navegável de **Digital Twin** para manutenção preditiva de motores elétricos industriais.
 Challenge FIAP × Forzy.
 
-> Status: **protótipo navegável** (v0.3). App com sidebar e 4 cenas de demonstração — dados sintéticos, sem backend.
+> Status: **protótipo navegável** (v0.4). App com sidebar e 4 cenas de demonstração — dados sintéticos, sem backend.
 >
-> **Novidades v0.3:** telemetria **ao vivo** determinística no motor-estrela (heartbeat 1/seg com
-> Start/Pause/Reset/Trigger Incident), nível de **Componente** na hierarquia de TAGs
-> (Motor → Componente → Sensor) e trilha de **procedência/auditoria** reforçada
-> (traceId, inputHash, pipelineVersion, scoringModel, validação humana).
+> **Novidades v0.4:** **loop de cenários ao vivo** no motor-estrela — a telemetria
+> determinística (1/seg) cicla sozinha por `estável → falha → detecção → normalização`
+> e percorre vários tipos de falha (superaquecimento, sobrecarga elétrica, desbalanceamento).
+> A leitura ao vivo é a **fonte de verdade do painel inteiro**: gauges, gêmeo digital
+> (a parte culpada acende), badge de status, banner e diagnóstico aparecem e somem em
+> sincronia. Controles: Iniciar/Pausar · Reset · Próximo cenário.
+>
+> **v0.3:** nível de **Componente** na hierarquia de TAGs (Motor → Componente → Sensor) e
+> trilha de **procedência/auditoria** reforçada (traceId, inputHash, pipelineVersion,
+> scoringModel, validação humana).
 
 ---
 
@@ -96,14 +102,17 @@ npm run dev
 ```
 forzy-twinops/
 ├── src/
-│   ├── data/mock.js              # planta, áreas, ativos, sensores, leituras, alertas, OS, docs, risco, KPIs
+│   ├── data/mock.js              # planta, áreas, ativos, sensores, leituras, alertas, OS, docs, risco, KPIs, cenários ao vivo
+│   ├── useLiveTelemetry.js       # motor do loop de cenários ao vivo (estado compartilhado do painel)
 │   ├── components/
 │   │   ├── Sidebar.jsx           # navegação principal
 │   │   ├── Breadcrumb.jsx        # trilha PLT → AREA → MTR
 │   │   ├── TagTree.jsx           # árvore Planta → Área → Motor → Sensores
 │   │   ├── AssetProfile.jsx      # perfil do ativo (cena 2)
 │   │   ├── Copilot.jsx           # assistente técnico (cena 4)
-│   │   ├── TimeChart.jsx         # série temporal (Recharts)
+│   │   ├── TimeChart.jsx         # série temporal (Recharts) + barra do loop ao vivo
+│   │   ├── Gauge.jsx             # medidor radial SCADA (SVG)
+│   │   ├── MotorMimic.jsx        # gêmeo digital 2.5D do motor (SVG)
 │   │   ├── DataPipeline.jsx      # as 6 etapas do ciclo de vida do dado
 │   │   ├── Provenance.jsx        # procedência por leitura
 │   │   └── ui.jsx                # badges / barra de confiança
