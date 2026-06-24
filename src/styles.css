@@ -626,10 +626,16 @@ code, .mono { font-family: ui-monospace, "SFMono-Regular", Menlo, monospace; }
   position: fixed;
   inset: 0;
   z-index: 900;
-  background: rgba(5, 4, 10, .62);
-  backdrop-filter: blur(1.5px);
   pointer-events: none;
   animation: tour-fade .2s ease;
+  /* Sem fundo/blur de tela inteira: quem escurece é o box-shadow do
+     .tour-spotlight, que abre um "buraco" nítido sobre o alvo destacado.
+     Assim o elemento em foco fica totalmente legível (não borrado). */
+}
+/* Passo sem alvo destacado: aí sim aplica um leve escurecimento geral
+   (sem blur) para dar contraste à barra do apresentador. */
+.tour-overlay.is-dim {
+  background: rgba(5, 4, 10, .5);
 }
 @keyframes tour-fade { from { opacity: 0; } to { opacity: 1; } }
 
@@ -641,7 +647,7 @@ code, .mono { font-family: ui-monospace, "SFMono-Regular", Menlo, monospace; }
   border: 2px solid var(--cyan);
   box-shadow:
     0 0 0 4px rgba(34, 211, 238, .2),
-    0 0 0 9999px rgba(5, 4, 10, .62),
+    0 0 0 9999px rgba(5, 4, 10, .5),
     0 0 30px 4px rgba(34, 211, 238, .35);
   transition: top .35s ease, left .35s ease, width .35s ease, height .35s ease;
 }

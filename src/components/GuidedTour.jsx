@@ -216,7 +216,12 @@ export function TourOverlay() {
   const PAD = 8; // folga do anel ao redor do alvo
 
   return (
-    <div className="tour-overlay" role="dialog" aria-modal="true" aria-label="Apresentação guiada">
+    <div
+      className={"tour-overlay" + (rect ? "" : " is-dim")}
+      role="dialog"
+      aria-modal="true"
+      aria-label="Apresentação guiada"
+    >
       {/* Anel de destaque ao redor do alvo (omitido se o alvo não foi encontrado). */}
       {rect && (
         <div
