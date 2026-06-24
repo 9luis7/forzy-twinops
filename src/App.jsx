@@ -1,34 +1,67 @@
-import { useState } from "react";
-import DataPipeline from "./components/DataPipeline.jsx";
-import TagTree from "./components/TagTree.jsx";
-import AssetPanel from "./components/AssetPanel.jsx";
-import TimeChart from "./components/TimeChart.jsx";
-import Provenance from "./components/Provenance.jsx";
-import { assets } from "./data/mock.js";
+import { useEffect, useState } from "react";
+import Sidebar from "./components/Sidebar.jsx";
+import PlantOverview from "./views/PlantOverview.jsx";
+import AssetsView from "./views/AssetsView.jsx";
+import AlertsView from "./views/AlertsView.jsx";
+import OrdersView from "./views/OrdersView.jsx";
+import DocumentsView from "./views/DocumentsView.jsx";
+import AuditView from "./views/AuditView.jsx";
+import { getAsset, assets } from "./data/mock.js";
+
+// Resolve uma TAG para o ativo dono — aceita TAG de sensor (ex.: SNS-VIB-042B).
+function resolveAsset(tag) {
+  return getAsset(tag) || assets.find((a) => a.sensors.some((s) => s.tag === tag)) || null;
+}
 
 export default function App() {
-  // Estado de seleção compartilhado: a TAG escolhida na árvore alimenta
-  // painel, gráfico e procedência. Default = primeiro ativo (MOT-001).
-  const [selectedTag, setSelectedTag] = useState(assets[0]?.tag ?? null);
+  const [view, setView] = useState("planta");
+  const [selectedArea, setSelectedArea] = useState(null);
+  const [selectedTag, setSelectedTag] = useState(null);
+
+  // Rola para o topo a cada troca de view/ativo (caminho de demo mais limpo).
+  useEffect(() => {
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  }, [view, selectedTag]);
+
+  // Helper de navegação compartilhado por todas as views.
+  const nav = {
+    view,
+    goView: (v) => setView(v),
+    goPlant: () => {
+      setSelectedArea(null);
+      setSelectedTag(null);
+      setView("planta");
+    },
+    goArea: (areaTag) => {
+      setSelectedArea(areaTag);
+      setSelectedTag(null);
+      setView("ativos");
+    },
+    goAsset: (tag, targetView = "ativos") => {
+      const asset = resolveAsset(tag);
+      if (!asset) return;
+      setSelectedArea(asset.area);
+      setSelectedTag(asset.tag);
+      setView(targetView);
+    },
+  };
+
+  // Sidebar troca de view preservando a seleção atual (volta com contexto).
+  const onNavigate = (key) => setView(key);
 
   return (
-    <div style={{ minHeight: "100vh", padding: "24px" }}>
-      <header style={{ marginBottom: 24 }}>
-        <h1 style={{ margin: 0, color: "var(--laranja)" }}>Forzy TwinOps</h1>
-        <p style={{ color: "var(--texto-fraco)", margin: "4px 0 0" }}>
-          Camada de inteligência operacional para plantas industriais — protótipo navegável
-        </p>
-      </header>
-
-      <DataPipeline tag={selectedTag} />
-      <div style={{ display: "grid", gridTemplateColumns: "260px 1fr", gap: 16, marginTop: 16 }}>
-        <TagTree selectedTag={selectedTag} onSelect={setSelectedTag} />
-        <div>
-          <AssetPanel tag={selectedTag} />
-          <TimeChart tag={selectedTag} />
-          <Provenance tag={selectedTag} />
-        </div>
-      </div>
+    <div className="app">
+      <Sidebar view={view} onNavigate={onNavigate} />
+      <main className="main">
+        {view === "planta" && <PlantOverview nav={nav} />}
+        {view === "ativos" && (
+          <AssetsView selectedTag={selectedTag} selectedArea={selectedArea} nav={nav} />
+        )}
+        {view === "alertas" && <AlertsView nav={nav} />}
+        {view === "ordens" && <OrdersView nav={nav} />}
+        {view === "documentos" && <DocumentsView nav={nav} />}
+        {view === "auditoria" && <AuditView selectedTag={selectedTag} nav={nav} />}
+      </main>
     </div>
   );
 }

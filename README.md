@@ -3,7 +3,7 @@
 Protótipo navegável de **Digital Twin** para manutenção preditiva de motores elétricos industriais.
 Challenge FIAP × Forzy.
 
-> Status: **planejamento / scaffold** (v0.1). Protótipo visual — sem backend funcional.
+> Status: **protótipo navegável** (v0.2). App com sidebar e 4 cenas de demonstração — dados sintéticos, sem backend.
 
 ---
 
@@ -76,19 +76,40 @@ npm install
 npm run dev
 ```
 
+## As 4 cenas da demo
+
+1. **Visão da Planta** — KPIs + mapa macro das áreas (A Produção · B Utilidades · C Manutenção · D Expedição). Partimos do macro para o micro.
+2. **Drill-down por TAG** — `PLT-FORZY-001 → AREA-PROD-01 → MTR-BMB-042`. Perfil do ativo ("LinkedIn da máquina"): leituras, risco, sensores, documentos e OS vinculadas.
+3. **Alertas + timeline** — alerta preditivo com **confiança 87%**, origem (`SNS-VIB-042B`) e base consultada; gráfico temporal com a degradação visível.
+4. **Assistente técnico (copiloto)** — Q&A asset-aware: possíveis causas, ação recomendada e evidências rastreáveis.
+
+### Caminho ensaiado
+`Visão da Planta → Área de Produção → MTR-BMB-042 → Alerta → Evidências → Recomendação → Auditoria`
+
 ## Estrutura
 
 ```
 forzy-twinops/
 ├── src/
-│   ├── data/mock.js          # assets + readings sintéticos
+│   ├── data/mock.js              # planta, áreas, ativos, sensores, leituras, alertas, OS, docs, risco, KPIs
 │   ├── components/
-│   │   ├── DataPipeline.jsx  # as 6 etapas clicáveis
-│   │   ├── TagTree.jsx       # navegação por TAG
-│   │   ├── AssetPanel.jsx    # ficha + leitura atual
-│   │   ├── TimeChart.jsx     # série temporal
-│   │   └── Provenance.jsx    # trilha de auditoria
-│   └── App.jsx
+│   │   ├── Sidebar.jsx           # navegação principal
+│   │   ├── Breadcrumb.jsx        # trilha PLT → AREA → MTR
+│   │   ├── TagTree.jsx           # árvore Planta → Área → Motor → Sensores
+│   │   ├── AssetProfile.jsx      # perfil do ativo (cena 2)
+│   │   ├── Copilot.jsx           # assistente técnico (cena 4)
+│   │   ├── TimeChart.jsx         # série temporal (Recharts)
+│   │   ├── DataPipeline.jsx      # as 6 etapas do ciclo de vida do dado
+│   │   ├── Provenance.jsx        # procedência por leitura
+│   │   └── ui.jsx                # badges / barra de confiança
+│   ├── views/
+│   │   ├── PlantOverview.jsx     # cena 1 — KPIs + mapa de áreas
+│   │   ├── AssetsView.jsx        # cena 2 — drill-down por TAG
+│   │   ├── AlertsView.jsx        # cena 3 — central de alertas
+│   │   ├── OrdersView.jsx        # ordens de manutenção
+│   │   ├── DocumentsView.jsx     # documentos técnicos
+│   │   └── AuditView.jsx         # auditoria (pipeline + procedência)
+│   └── App.jsx                   # shell + roteamento por estado
 ├── public/
 ├── README.md
 └── package.json
@@ -96,11 +117,15 @@ forzy-twinops/
 
 ## Escopo
 
-**Dentro (MVP):** pipeline do dado clicável · árvore TAG navegável · painel do ativo + gráfico
-temporal com mock · camada de procedência · previews de conhecimento escondido.
+**Dentro (demo):** sidebar + roteamento · visão macro da planta com KPIs · drill-down por TAG ·
+perfil do ativo + gráfico temporal · alerta preditivo com confiança · assistente técnico (copiloto) ·
+ordens de manutenção · documentos técnicos · auditoria/procedência do dado.
 
-**Fora (evolução):** coleta real de sensor / API de produção · tabelas de hierarquia no banco ·
-coluna voltage · ML funcional · RAG sobre documentos · visão computacional (leitura de placa).
+**Fora (evolução):** coleta real de sensor / API de produção · autenticação e permissões ·
+ML funcional · RAG sobre documentos · visão computacional (leitura de placa).
+
+> Teatro honesto: o caminho da demo é navegável e coerente; números de planta (128 ativos etc.)
+> são sintéticos e alguns cards são ilustrativos. O objetivo é mostrar a **visão** e a lógica.
 
 ## Segurança
 
