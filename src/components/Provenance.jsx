@@ -1,6 +1,6 @@
-// Provenance.jsx — trilha de auditoria por leitura: de onde veio cada número
-// (procedência), se foi adulterado (integridade), por onde passou (rastreabilidade)
-// e quem assinou (trilha de auditoria). Fecha a etapa [6] DECISÃO.
+// Provenance.jsx — "Confiança do dado". Cada seção lidera com um veredito em
+// linguagem simples (de onde veio, se está íntegro, por onde passou, quem assinou).
+// Os campos técnicos (hash, trace, tópico, versões) ficam num bloco secundário, discreto.
 
 import {
   getAsset,
@@ -23,50 +23,66 @@ const RANGES = {
 const ORDER = ["temperature", "vibration", "current", "rotation"];
 
 const VALIDATION = {
-  critico: { label: "Pendente — aguarda parecer do técnico", color: "var(--critico)" },
-  alerta: { label: "Em análise pela equipe de manutenção", color: "var(--alerta)" },
-  normal: { label: "Confirmado automaticamente (dentro da faixa)", color: "var(--ok)" },
-  desconhecido: { label: "Sem validação", color: "var(--texto-fraco)" },
+  critico: { label: "Pendente — aguarda parecer do técnico", color: "var(--critico)", cls: "critico" },
+  alerta: { label: "Em análise pela equipe de manutenção", color: "var(--alerta)", cls: "alerta" },
+  normal: { label: "Confirmado automaticamente (dentro da faixa)", color: "var(--ok)", cls: "ok" },
+  desconhecido: { label: "Sem validação", color: "var(--texto-fraco)", cls: "neutro" },
 };
 
 const inRange = (v, [lo, hi]) => v >= lo && v <= hi;
 
-function Row({ children }) {
+// ---------------------------------------------------------------- subcomponentes
+
+// Faixa-veredito no topo de cada grupo: ícone + frase humana + selos.
+function Verdict({ cls, icon, headline, sub, chips }) {
   return (
-    <div
-      style={{
-        display: "grid",
-        gridTemplateColumns: "1.1fr 1.1fr 0.9fr 0.9fr 0.4fr",
-        gap: 8,
-        padding: "7px 0",
-        borderBottom: "1px solid var(--borda)",
-        fontSize: 13,
-        alignItems: "center",
-      }}
-    >
-      {children}
+    <div className={`pv-verdict pv-${cls}`}>
+      <span className="pv-icon" aria-hidden="true">{icon}</span>
+      <div className="pv-vtext">
+        <div className="pv-headline">{headline}</div>
+        {sub ? <div className="pv-sub">{sub}</div> : null}
+      </div>
+      {chips && chips.length > 0 && (
+        <div className="pv-chips">
+          {chips.map((c, i) => (
+            <span key={i} className={`pv-chip pv-chip-${c.tone || "neutro"}`}>{c.text}</span>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
 
-function Group({ ico, title, children }) {
+function Group({ ico, title, hint, children }) {
   return (
     <div className="audit-group">
       <div className="ag-title">
         <span className="ag-ico">{ico}</span>
         {title}
+        {hint ? <span className="ag-hint">{hint}</span> : null}
       </div>
       {children}
     </div>
   );
 }
 
-function KV({ label, children, mono }) {
+// Bloco recolhível de campos técnicos (mono, baixo contraste).
+function TechDetails({ items }) {
   return (
-    <div className="kv">
-      <span className="kv-label">{label}</span>
-      <span className={`kv-value${mono ? " mono" : ""}`}>{children}</span>
-    </div>
+    <details className="pv-tech">
+      <summary>
+        <span className="pv-tech-ico" aria-hidden="true">⚙</span>
+        detalhes técnicos
+      </summary>
+      <div className="pv-tech-grid">
+        {items.map((it, i) => (
+          <div className="pv-tech-row" key={i}>
+            <span className="pv-tech-k">{it.k}</span>
+            <span className="pv-tech-v">{it.v}</span>
+          </div>
+        ))}
+      </div>
+    </details>
   );
 }
 
@@ -77,7 +93,7 @@ export default function Provenance({ tag }) {
   if (!asset || !reading) {
     return (
       <section className="card">
-        <h3>Procedência / auditoria</h3>
+        <h3>Confiança do dado</h3>
         <p className="muted small">Selecione um motor para ver a trilha de auditoria.</p>
       </section>
     );
@@ -94,103 +110,263 @@ export default function Provenance({ tag }) {
   const allInRange = ORDER.every((k) => inRange(reading[k], RANGES[k].range));
   const usedInRec = status !== "normal";
 
+  // Selo global de confiança (cabeçalho da seção).
+  const reliable = kpis.dataReliability;
+
   return (
-    <section className="card">
-      <h3>
-        Procedência &amp; trilha de auditoria{" "}
-        <span className="muted small" style={{ fontWeight: 400 }}>· leitura de {when}</span>
-      </h3>
+    <section className="card" data-tour="audit-provenance">
+      <style>{`
+        .pv-head { display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin:0 0 4px; }
+        .pv-head h3 { margin:0; font-size:16px; }
+        .pv-head .pv-when { color:var(--texto-fraco); font-size:12px; font-weight:400; }
+
+        /* Faixa-veredito global */
+        .pv-banner {
+          display:flex; align-items:center; gap:12px; flex-wrap:wrap;
+          margin:10px 0 4px; padding:12px 14px; border-radius:12px;
+          background: linear-gradient(180deg, rgba(52,211,153,.10), rgba(52,211,153,.03));
+          border:1px solid rgba(52,211,153,.35);
+        }
+        .pv-banner .pv-big {
+          font-family: ui-monospace, Menlo, monospace; font-variant-numeric: tabular-nums;
+          font-weight:700; font-size:26px; color:var(--ok); text-shadow:0 0 12px rgba(52,211,153,.35);
+          line-height:1;
+        }
+        .pv-banner .pv-bmain { font-weight:700; color:var(--texto); font-size:14.5px; }
+        .pv-banner .pv-bsub { color:var(--texto-fraco); font-size:12px; }
+
+        /* Verdict strips por grupo */
+        .pv-verdict {
+          display:flex; align-items:center; gap:11px; flex-wrap:wrap;
+          padding:9px 12px; border-radius:11px; margin:4px 0 8px;
+          border:1px solid var(--stroke);
+          background: linear-gradient(180deg, var(--panel-2), var(--panel));
+        }
+        .pv-verdict .pv-icon { font-size:18px; line-height:1; }
+        .pv-vtext { flex:1 1 200px; }
+        .pv-headline { font-weight:700; color:var(--texto); font-size:13.5px; line-height:1.3; }
+        .pv-sub { color:var(--texto-fraco); font-size:12px; margin-top:1px; }
+        .pv-ok   { border-color: rgba(52,211,153,.35); }
+        .pv-ok   .pv-icon { color:var(--ok); }
+        .pv-alerta { border-color: rgba(251,191,36,.35); }
+        .pv-alerta .pv-icon { color:var(--alerta); }
+        .pv-critico { border-color: rgba(251,106,106,.4); }
+        .pv-critico .pv-icon { color:var(--critico); }
+        .pv-neutro .pv-icon { color:var(--texto-fraco); }
+
+        .pv-chips { display:flex; gap:6px; flex-wrap:wrap; }
+        .pv-chip {
+          font-size:11px; font-weight:600; padding:3px 9px; border-radius:999px;
+          border:1px solid var(--stroke); color:var(--texto-fraco);
+          white-space:nowrap;
+        }
+        .pv-chip-ok { color:var(--ok); border-color:rgba(52,211,153,.45); background:rgba(52,211,153,.08); }
+        .pv-chip-alerta { color:var(--alerta); border-color:rgba(251,191,36,.45); background:rgba(251,191,36,.08); }
+        .pv-chip-critico { color:var(--critico); border-color:rgba(251,106,106,.45); background:rgba(251,106,106,.08); }
+
+        .ag-hint { font-weight:400; font-size:11.5px; color:var(--texto-fraco); margin-left:8px; }
+
+        /* Tabela de faixas — SCADA */
+        .pv-range { margin-top:6px; border:1px solid var(--stroke); border-radius:11px; overflow:hidden; }
+        .pv-range table { width:100%; border-collapse:collapse; font-size:13px; }
+        .pv-range thead th {
+          text-align:left; font-weight:600; font-size:11px; letter-spacing:.04em; text-transform:uppercase;
+          color:var(--texto-fraco); padding:8px 12px; background:rgba(124,58,237,.07);
+          border-bottom:1px solid var(--stroke);
+        }
+        .pv-range tbody td {
+          padding:9px 12px; border-bottom:1px solid var(--stroke);
+          font-variant-numeric: tabular-nums;
+        }
+        .pv-range tbody tr:last-child td { border-bottom:none; }
+        .pv-range .pv-metric { font-weight:600; color:var(--texto); }
+        .pv-range .pv-tag { font-family:ui-monospace,Menlo,monospace; font-size:11.5px; color:var(--texto-fraco); }
+        .pv-range .pv-val { font-family:ui-monospace,Menlo,monospace; font-weight:700; color:var(--texto); }
+        .pv-range .pv-faixa { color:var(--texto-fraco); }
+        .pv-range .pv-ok  { color:var(--ok); font-weight:700; }
+        .pv-range .pv-bad { color:var(--critico); font-weight:700; }
+
+        /* Detalhes técnicos — secundário, mono, baixo contraste */
+        .pv-tech { margin-top:10px; }
+        .pv-tech > summary {
+          list-style:none; cursor:pointer; display:inline-flex; align-items:center; gap:6px;
+          font-size:11.5px; color:var(--texto-fraco); font-family:ui-monospace,Menlo,monospace;
+          padding:4px 10px; border:1px solid var(--stroke); border-radius:8px;
+          background:rgba(10,8,19,.4); user-select:none;
+        }
+        .pv-tech > summary:hover { color:var(--texto); border-color:var(--roxo-claro); }
+        .pv-tech > summary::-webkit-details-marker { display:none; }
+        .pv-tech .pv-tech-ico { color:var(--roxo-claro); }
+        .pv-tech-grid {
+          margin-top:8px; padding:10px 12px; border:1px dashed var(--stroke); border-radius:9px;
+          background:rgba(10,8,19,.45);
+          display:grid; grid-template-columns:1fr 1fr; gap:4px 22px;
+        }
+        .pv-tech-row { display:flex; gap:8px; font-size:11.5px; align-items:baseline; }
+        .pv-tech-k { color:var(--texto-fraco); min-width:118px; flex-shrink:0; }
+        .pv-tech-v {
+          font-family:ui-monospace,Menlo,monospace; color:var(--roxo-claro);
+          opacity:.92; word-break:break-all; font-variant-numeric:tabular-nums;
+        }
+        @media (max-width:680px){ .pv-tech-grid{ grid-template-columns:1fr; } }
+      `}</style>
+
+      <div className="pv-head">
+        <h3>Confiança do dado</h3>
+        <span className="pv-when">· leitura de {when}</span>
+      </div>
+
+      {/* ----------------------------------------- VEREDITO GLOBAL (lidera o eixo) */}
+      <div className="pv-banner">
+        <span className="pv-big">{reliable}%</span>
+        <div>
+          <div className="pv-bmain">✓ Dado confiável</div>
+          <div className="pv-bsub">validado na fonte · {allInRange ? "dentro da faixa" : "com desvio sinalizado"} · trilha completa</div>
+        </div>
+      </div>
+      <p className="muted small" style={{ margin: "4px 0 6px" }}>
+        Toda leitura tem origem rastreável e prova de que não foi alterada. Abaixo, o que isso
+        significa em cada etapa — os campos técnicos ficam guardados em “detalhes técnicos”.
+      </p>
 
       {/* -------------------------------------------------------- PROCEDÊNCIA */}
-      <Group ico="📍" title="Procedência — de onde veio o dado">
-        <div className="kv-grid">
-          <KV label="Planta / área">{area?.name} ({area?.tag})</KV>
-          <KV label="Ativo monitorado" mono>{asset.tag}</KV>
-          <KV label="Equipamento pai" mono>{meta.parentAssetTag}</KV>
-          <KV label="Componente">
-            {component ? (
-              <span><span className="mono">{component.tag}</span> · {component.name}</span>
-            ) : "—"}
-          </KV>
-          <KV label="Sensores de origem" mono>{meta.sourceSensorTags.join(" + ") || "—"}</KV>
-          <KV label="Tópico MQTT" mono>{topic}</KV>
-        </div>
+      <Group ico="📍" title="De onde veio" hint="origem da leitura">
+        <Verdict
+          cls="ok"
+          icon="📍"
+          headline={`Medido no motor ${asset.tag} — ${asset.name}`}
+          sub={
+            <>
+              Setor {area?.name}
+              {component ? <> · componente sob suspeita: {component.name}</> : null}
+              {" · "}sensores: {meta.sourceSensorTags.join(" + ") || "—"}
+            </>
+          }
+          chips={[{ text: `Setor ${area?.tag || "—"}`, tone: "neutro" }]}
+        />
+        <TechDetails
+          items={[
+            { k: "Planta / área", v: `${area?.name} (${area?.tag})` },
+            { k: "Ativo monitorado", v: asset.tag },
+            { k: "Equipamento pai", v: meta.parentAssetTag },
+            { k: "Componente", v: component ? `${component.tag} · ${component.name}` : "—" },
+            { k: "Sensores de origem", v: meta.sourceSensorTags.join(" + ") || "—" },
+            { k: "Tópico MQTT", v: topic },
+          ]}
+        />
       </Group>
 
       {/* -------------------------------------------------------- INTEGRIDADE */}
-      <Group ico="🔒" title="Integridade — o dado não foi adulterado">
-        <div className="kv-grid" style={{ marginBottom: 8 }}>
-          <KV label="Input hash" mono>{meta.inputHash}</KV>
-          <KV label="Confiabilidade do dado">
-            <span style={{ color: "var(--ok)" }}>{kpis.dataReliability}%</span>
-          </KV>
-          <KV label="Fonte validada"><span style={{ color: "var(--ok)" }}>Sim</span></KV>
-          <KV label="Leituras na faixa válida">
-            <span style={{ color: allInRange ? "var(--ok)" : "var(--critico)" }}>
-              {allInRange ? "Todas ✓" : "Há desvio ✗"}
-            </span>
-          </KV>
+      <Group ico="🔒" title="Está íntegro?" hint="o dado não foi adulterado">
+        <Verdict
+          cls={allInRange ? "ok" : "critico"}
+          icon={allInRange ? "🔒" : "⚠️"}
+          headline={
+            allInRange
+              ? "Nenhum sinal de adulteração — todas as leituras dentro da faixa física"
+              : "Atenção — há leitura fora da faixa física esperada"
+          }
+          sub="Cada número tem uma assinatura digital. Conferimos também se o valor é fisicamente possível."
+          chips={[
+            { text: `Confiabilidade ${kpis.dataReliability}%`, tone: "ok" },
+            { text: "Fonte validada", tone: "ok" },
+            { text: allInRange ? "Todas na faixa ✓" : "Há desvio ✗", tone: allInRange ? "ok" : "critico" },
+          ]}
+        />
+
+        <div className="pv-range">
+          <table>
+            <thead>
+              <tr>
+                <th>Métrica</th>
+                <th>Sensor</th>
+                <th>Valor</th>
+                <th>Faixa válida</th>
+                <th style={{ textAlign: "center" }}>OK</th>
+              </tr>
+            </thead>
+            <tbody>
+              {ORDER.map((key) => {
+                const m = RANGES[key];
+                const v = reading[key];
+                const ok = inRange(v, m.range);
+                return (
+                  <tr key={key}>
+                    <td className="pv-metric">{m.label}</td>
+                    <td className="pv-tag">{sensorFor(m.type)}</td>
+                    <td className="pv-val">{v} {m.unit}</td>
+                    <td className="pv-faixa">{m.range[0]}–{m.range[1]} {m.unit}</td>
+                    <td style={{ textAlign: "center" }} className={ok ? "pv-ok" : "pv-bad"}>
+                      {ok ? "✓" : "✗"}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
         </div>
-        <div style={{ marginTop: 4 }}>
-          <Row>
-            <span className="muted">Métrica</span>
-            <span className="muted">Sensor (TAG)</span>
-            <span className="muted">Valor</span>
-            <span className="muted">Faixa válida</span>
-            <span className="muted">OK</span>
-          </Row>
-          {ORDER.map((key) => {
-            const m = RANGES[key];
-            const v = reading[key];
-            const ok = inRange(v, m.range);
-            return (
-              <Row key={key}>
-                <span>{m.label}</span>
-                <span className="mono" style={{ fontSize: 12 }}>{sensorFor(m.type)}</span>
-                <span>{v} {m.unit}</span>
-                <span className="muted">{m.range[0]}–{m.range[1]}</span>
-                <span style={{ color: ok ? "var(--ok)" : "var(--critico)" }}>{ok ? "✓" : "✗"}</span>
-              </Row>
-            );
-          })}
-        </div>
+
+        <TechDetails
+          items={[
+            { k: "Input hash", v: meta.inputHash },
+            { k: "Confiabilidade", v: `${kpis.dataReliability}%` },
+            { k: "Fonte validada", v: "Sim" },
+            { k: "Faixa física", v: allInRange ? "todas ok" : "há desvio" },
+          ]}
+        />
       </Group>
 
       {/* ----------------------------------------------------- RASTREABILIDADE */}
-      <Group ico="🧭" title="Rastreabilidade — por onde o dado passou">
-        <div className="kv-grid">
-          <KV label="Trace ID" mono>{meta.traceId}</KV>
-          <KV label="Pipeline" mono>{meta.pipelineVersion}</KV>
-          <KV label="Modelo de scoring" mono>{meta.scoringModel}</KV>
-          <KV label="Usado na recomendação">
-            <span style={{ color: usedInRec ? "var(--ok)" : "var(--texto-fraco)" }}>
-              {usedInRec ? "Sim" : "Não"}
-            </span>
-          </KV>
-        </div>
-        <ol style={{ margin: "10px 0 0", paddingLeft: 18, fontSize: 13, color: "var(--texto-fraco)", lineHeight: 1.7 }}>
-          <li>Capturado no <strong style={{ color: "var(--texto)" }}>{asset.tag}</strong> ({area?.name}) via ESP32</li>
-          <li>Publicado em <code style={{ color: "var(--roxo-claro)" }}>{topic}</code> (HiveMQ / MQTT)</li>
-          <li>Validado e inserido pelo n8n em <code>readings</code> (Supabase)</li>
-          <li>Pontuado por <code>{meta.scoringModel}</code> → estado <strong style={{ color: val.color }}>{statusLabel(status)}</strong></li>
+      <Group ico="🧭" title="Por onde passou" hint="caminho do dado até a decisão">
+        <Verdict
+          cls={usedInRec ? "alerta" : "ok"}
+          icon="🧭"
+          headline={
+            usedInRec
+              ? "Esta leitura entrou na recomendação atual do motor"
+              : "Leitura registrada — dentro do normal, não gerou ação"
+          }
+          sub={`Avaliada e classificada como “${statusLabel(status)}”.`}
+          chips={[{ text: usedInRec ? "Usada na decisão" : "Apenas histórico", tone: usedInRec ? "alerta" : "ok" }]}
+        />
+        <ol style={{ margin: "8px 0 0", paddingLeft: 18, fontSize: 13, color: "var(--texto-fraco)", lineHeight: 1.7 }}>
+          <li>Lida no <strong style={{ color: "var(--texto)" }}>{asset.tag}</strong> ({area?.name}) pelo sensor</li>
+          <li>Enviada com segurança para a nuvem</li>
+          <li>Conferida e guardada no histórico</li>
+          <li>Avaliada → estado <strong style={{ color: val.color }}>{statusLabel(status)}</strong></li>
         </ol>
+        <TechDetails
+          items={[
+            { k: "Trace ID", v: meta.traceId },
+            { k: "Pipeline", v: meta.pipelineVersion },
+            { k: "Modelo de scoring", v: meta.scoringModel },
+            { k: "Captura → broker", v: "ESP32 → HiveMQ (MQTT)" },
+            { k: "Ingestão → banco", v: "n8n → Supabase (readings)" },
+            { k: "Usado na recomendação", v: usedInRec ? "Sim" : "Não" },
+          ]}
+        />
       </Group>
 
       {/* ----------------------------------------------------- TRILHA DE AUDITORIA */}
-      <Group ico="✍️" title="Trilha de auditoria — assinatura e validação">
-        <div className="kv-grid">
-          <KV label="Coletado em">{when}</KV>
-          <KV label="Assinado por">{meta.signedBy}</KV>
-          <KV label="Estado avaliado">
-            <span style={{ color: val.color, fontWeight: 700 }}>{statusLabel(status)}</span>
-          </KV>
-          <KV label="Validação humana">
-            <span style={{ color: val.color }}>{meta.humanValidation}</span>
-          </KV>
-        </div>
-        <p className="muted small" style={{ marginTop: 8 }}>
-          {val.label}.
-        </p>
+      <Group ico="✍️" title="Quem responde por ele" hint="assinatura e validação">
+        <Verdict
+          cls={val.cls}
+          icon="✍️"
+          headline={`Estado avaliado: ${statusLabel(status)}`}
+          sub={val.label}
+          chips={[
+            { text: meta.signedBy, tone: "neutro" },
+            { text: status === "normal" ? "Validação automática" : "Validação humana pendente", tone: val.cls },
+          ]}
+        />
+        <TechDetails
+          items={[
+            { k: "Coletado em", v: when },
+            { k: "Assinado por", v: meta.signedBy },
+            { k: "Estado avaliado", v: statusLabel(status) },
+            { k: "Validação humana", v: meta.humanValidation },
+          ]}
+        />
       </Group>
     </section>
   );

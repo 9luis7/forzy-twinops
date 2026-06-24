@@ -18,33 +18,21 @@ import {
 import { StatusBadge, RiskTag } from "./ui.jsx";
 import TimeChart from "./TimeChart.jsx";
 import Copilot from "./Copilot.jsx";
+import MotorMimic from "./MotorMimic.jsx";
+import Gauge from "./Gauge.jsx";
 
 const fmtDate = (d) =>
   d ? new Date(d + "T00:00:00").toLocaleDateString("pt-BR") : "—";
 
-const tempTone = (t) =>
-  t >= THRESHOLDS.temp.crit ? "var(--critico)" : t >= THRESHOLDS.temp.warn ? "var(--alerta)" : "var(--texto)";
-const vibTone = (v) =>
-  v >= THRESHOLDS.vib.crit ? "var(--critico)" : v >= THRESHOLDS.vib.warn ? "var(--alerta)" : "var(--texto)";
-
-function Reading({ label, value, unit, sensor, tone }) {
+// Ficha técnica em rótulos amigáveis (linguagem simples primeiro, TAG/jargão depois).
+function Fact({ label, children, hint }) {
   return (
-    <div className="reading">
-      <div className="r-label">{label}</div>
-      <div className="r-value" style={{ color: tone || "var(--texto)" }}>
-        {value}
-        <span className="r-unit">{unit}</span>
-      </div>
-      {sensor && <div className="r-sensor">{sensor}</div>}
-    </div>
-  );
-}
-
-function Fact({ label, children }) {
-  return (
-    <div className="field">
-      <span className="f-label">{label}</span>
-      <span>{children}</span>
+    <div className="kv">
+      <span className="kv-label">{label}</span>
+      <span className="kv-value">
+        {children}
+        {hint && <span className="muted small" style={{ marginLeft: 6 }}>{hint}</span>}
+      </span>
     </div>
   );
 }
@@ -160,19 +148,68 @@ export default function AssetProfile({ asset, nav, selectedComponent }) {
     if (selectedComponent) setActiveComp(selectedComponent);
   }, [selectedComponent]);
 
-  const sensorByType = (type) =>
-    asset.sensors.find((s) => s.type === type)?.tag;
-
   return (
     <div>
+      {/* Estilos locais (layout do perfil) — sem tocar styles.css. */}
+      <style>{`
+        .ap-twin-grid {
+          display: grid;
+          grid-template-columns: minmax(0, 1.45fr) minmax(0, 1fr);
+          gap: 16px;
+          align-items: stretch;
+        }
+        .ap-twin-grid > .card { margin: 0; }
+        @media (max-width: 1080px) {
+          .ap-twin-grid { grid-template-columns: 1fr; }
+        }
+        .gauge-row {
+          display: flex;
+          flex-wrap: wrap;
+          gap: 18px 26px;
+          justify-content: space-around;
+          align-items: flex-end;
+        }
+        .kv-list { display: flex; flex-direction: column; gap: 2px; }
+        .ap-twin-grid .kv {
+          display: flex;
+          justify-content: space-between;
+          align-items: baseline;
+          gap: 12px;
+          padding: 7px 0;
+          border-bottom: 1px dashed var(--stroke, rgba(154,108,255,.18));
+        }
+        .ap-twin-grid .kv:last-child { border-bottom: none; }
+        .kv-label {
+          color: var(--texto-fraco);
+          font-size: 12.5px;
+          text-transform: uppercase;
+          letter-spacing: .04em;
+          white-space: nowrap;
+        }
+        .kv-value { text-align: right; font-weight: 600; }
+        .ap-tech { margin-top: 12px; }
+        .ap-tech > summary {
+          cursor: pointer;
+          color: var(--texto-fraco);
+          font-size: 12.5px;
+          text-transform: uppercase;
+          letter-spacing: .04em;
+          list-style: none;
+          user-select: none;
+          padding: 6px 0;
+        }
+        .ap-tech > summary::-webkit-details-marker { display: none; }
+        .ap-tech > summary::before { content: "▸ "; color: var(--roxo-claro); }
+        .ap-tech[open] > summary::before { content: "▾ "; }
+      `}</style>
+
       {/* Cabeçalho do ativo */}
       <section className="card">
         <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
-          <h2 style={{ margin: 0, fontSize: 19 }}>
-            <span className="tag-mono">{tag}</span> &nbsp;{asset.name}
-          </h2>
+          <h2 style={{ margin: 0, fontSize: 20 }}>{asset.name}</h2>
           <StatusBadge status={status} />
           <span className="pill">Área {area?.letter} · {area?.name}</span>
+          <span className="tag-mono muted" style={{ fontSize: 12 }}>{tag}</span>
         </div>
 
         {/* Banner de alerta preditivo */}
@@ -206,38 +243,82 @@ export default function AssetProfile({ asset, nav, selectedComponent }) {
           </div>
         )}
 
-        {/* Ficha técnica */}
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0 24px", marginTop: 16 }}>
-          <div>
-            <Fact label="Fabricante / modelo">{asset.manufacturer}</Fact>
-            <Fact label="Tipo">{asset.motor_type}</Fact>
-            <Fact label="Equipamento pai"><span className="mono">{asset.parent}</span></Fact>
-            <Fact label="Horas de operação">{asset.operatingHours.toLocaleString("pt-BR")} h</Fact>
-          </div>
-          <div>
-            <Fact label="Última manutenção">{fmtDate(asset.lastMaintenance)}</Fact>
-            <Fact label="Próxima inspeção">{fmtDate(asset.nextInspection)}</Fact>
-            <Fact label="Risco de falha"><RiskTag level={risk.level} /> · score {risk.score}/100</Fact>
-            <Fact label="Instalado em">{fmtDate(asset.installDate)}</Fact>
-          </div>
-        </div>
       </section>
 
-      {/* Leitura atual */}
+      {/* Gêmeo digital + ficha técnica lado a lado */}
+      <div className="ap-twin-grid">
+        {/* Desenho 2.5D do motor (sincronizado com a seleção de componente) */}
+        {comps.length > 0 ? (
+          <MotorMimic
+            asset={asset}
+            reading={reading}
+            components={comps}
+            status={status}
+            activeComponent={activeComp}
+            onSelectComponent={setActiveComp}
+          />
+        ) : (
+          <MotorMimic asset={asset} reading={reading} components={[]} status={status} />
+        )}
+
+        {/* Ficha técnica — rótulos amigáveis, detalhe técnico em segundo plano */}
+        <section className="card">
+          <h3 style={{ marginTop: 0 }}>Ficha do equipamento</h3>
+          <div className="kv-list">
+            <Fact label="O que é">{asset.motor_type}</Fact>
+            <Fact label="Fabricante">{asset.manufacturer}</Fact>
+            <Fact label="Tempo em operação">
+              {asset.operatingHours.toLocaleString("pt-BR")} h
+            </Fact>
+            <Fact label="Última manutenção">{fmtDate(asset.lastMaintenance)}</Fact>
+            <Fact label="Próxima inspeção">{fmtDate(asset.nextInspection)}</Fact>
+            <Fact label="Instalado em">{fmtDate(asset.installDate)}</Fact>
+            <Fact label="Risco de falha">
+              <RiskTag level={risk.level} />{" "}
+              <span className="muted small">· score {risk.score}/100</span>
+            </Fact>
+          </div>
+          <details className="ap-tech">
+            <summary>Detalhes técnicos</summary>
+            <div className="kv-list" style={{ marginTop: 8 }}>
+              <Fact label="TAG do ativo">
+                <span className="mono">{tag}</span>
+              </Fact>
+              <Fact label="Equipamento pai">
+                <span className="mono">{asset.parent}</span>
+              </Fact>
+              <Fact label="Área">
+                <span className="mono">{asset.area}</span>{" "}
+                <span className="muted small">· {area?.name}</span>
+              </Fact>
+              {asset.note && <Fact label="Observação">{asset.note}</Fact>}
+            </div>
+          </details>
+        </section>
+      </div>
+
+      {/* Leitura atual — instrumentos (gauges) */}
       <section className="card">
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
-          <h3 style={{ margin: 0 }}>Leitura atual</h3>
-          <span className="muted small">{when}</span>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", flexWrap: "wrap", gap: 8 }}>
+          <h3 style={{ margin: 0 }}>
+            Leitura atual{" "}
+            <span className="muted small" style={{ fontWeight: 400 }}>· instrumentos ao vivo</span>
+          </h3>
+          <span className="muted small" style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+            {isLive && <span className="led ok pulse" />}
+            {when}
+          </span>
         </div>
         {reading ? (
-          <div className="reading-row" style={{ marginTop: 12 }}>
-            <Reading label="Temperatura" value={reading.temperature} unit="°C"
-              sensor={sensorByType("Temperatura")} tone={tempTone(reading.temperature)} />
-            <Reading label="Corrente" value={reading.current} unit="A"
-              sensor={sensorByType("Corrente")} />
-            <Reading label="Vibração" value={reading.vibration} unit="m/s²"
-              sensor={sensorByType("Vibração")} tone={vibTone(reading.vibration)} />
-            <Reading label="Rotação" value={reading.rotation} unit="RPM" />
+          <div className="gauge-row" style={{ marginTop: 12 }}>
+            <Gauge label="Temperatura" value={reading.temperature} unit="°C"
+              min={20} max={100} warn={THRESHOLDS.temp.warn} crit={THRESHOLDS.temp.crit} size={168} />
+            <Gauge label="Vibração" value={reading.vibration} unit="m/s²"
+              min={0} max={10} warn={THRESHOLDS.vib.warn} crit={THRESHOLDS.vib.crit} size={168} />
+            <Gauge label="Corrente" value={reading.current} unit="A"
+              min={0} max={120} warn={null} crit={null} size={168} />
+            <Gauge label="Rotação" value={reading.rotation} unit="RPM"
+              min={0} max={3600} warn={null} crit={null} size={168} />
           </div>
         ) : (
           <p className="muted small">Sem leituras.</p>
@@ -249,7 +330,7 @@ export default function AssetProfile({ asset, nav, selectedComponent }) {
           <div className="toolbar">
             {asset.sensors.map((s) => (
               <span className="pill" key={s.tag} title={s.model}>
-                {s.tag} · {s.type}
+                <span className="muted">{s.type}</span> · {s.tag}
               </span>
             ))}
           </div>
