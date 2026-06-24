@@ -1,13 +1,16 @@
-// Provenance.jsx — trilha de auditoria por leitura: de onde veio cada número,
-// por onde passou, qual sensor/doc embasa e o estado da validação humana.
-// Fecha a etapa [6] DECISÃO: o dado vira decisão com origem rastreável.
+// Provenance.jsx — trilha de auditoria por leitura: de onde veio cada número
+// (procedência), se foi adulterado (integridade), por onde passou (rastreabilidade)
+// e quem assinou (trilha de auditoria). Fecha a etapa [6] DECISÃO.
 
 import {
   getAsset,
   getArea,
+  getComponent,
   latestReading,
   assetStatus,
   statusLabel,
+  auditMeta,
+  kpis,
 } from "../data/mock.js";
 
 // Faixa válida por métrica (clamp físico do pipeline).
@@ -46,6 +49,27 @@ function Row({ children }) {
   );
 }
 
+function Group({ ico, title, children }) {
+  return (
+    <div className="audit-group">
+      <div className="ag-title">
+        <span className="ag-ico">{ico}</span>
+        {title}
+      </div>
+      {children}
+    </div>
+  );
+}
+
+function KV({ label, children, mono }) {
+  return (
+    <div className="kv">
+      <span className="kv-label">{label}</span>
+      <span className={`kv-value${mono ? " mono" : ""}`}>{children}</span>
+    </div>
+  );
+}
+
 export default function Provenance({ tag }) {
   const asset = tag ? getAsset(tag) : null;
   const reading = tag ? latestReading(tag) : null;
@@ -65,63 +89,109 @@ export default function Provenance({ tag }) {
   const when = new Date(reading.ts).toLocaleString("pt-BR");
   const topic = `forzy/${(area?.name || "").toLowerCase()}/${asset.tag.toLowerCase()}`;
   const sensorFor = (type) => asset.sensors.find((s) => s.type === type)?.tag || "—";
+  const meta = auditMeta(tag);
+  const component = meta.componentTag ? getComponent(meta.componentTag) : null;
+  const allInRange = ORDER.every((k) => inRange(reading[k], RANGES[k].range));
+  const usedInRec = status !== "normal";
 
   return (
     <section className="card">
       <h3>
-        Procedência / auditoria{" "}
+        Procedência &amp; trilha de auditoria{" "}
         <span className="muted small" style={{ fontWeight: 400 }}>· leitura de {when}</span>
       </h3>
 
-      {/* Origem rastreável de cada número */}
-      <div className="section-title">Origem rastreável da leitura</div>
-      <div style={{ marginTop: 6 }}>
-        <Row>
-          <span className="muted">Métrica</span>
-          <span className="muted">Sensor (TAG)</span>
-          <span className="muted">Valor</span>
-          <span className="muted">Faixa válida</span>
-          <span className="muted">OK</span>
-        </Row>
-        {ORDER.map((key) => {
-          const m = RANGES[key];
-          const v = reading[key];
-          const ok = inRange(v, m.range);
-          return (
-            <Row key={key}>
-              <span>{m.label}</span>
-              <span className="mono" style={{ fontSize: 12 }}>{sensorFor(m.type)}</span>
-              <span>{v} {m.unit}</span>
-              <span className="muted">{m.range[0]}–{m.range[1]}</span>
-              <span style={{ color: ok ? "var(--ok)" : "var(--critico)" }}>{ok ? "✓" : "✗"}</span>
-            </Row>
-          );
-        })}
-      </div>
+      {/* -------------------------------------------------------- PROCEDÊNCIA */}
+      <Group ico="📍" title="Procedência — de onde veio o dado">
+        <div className="kv-grid">
+          <KV label="Planta / área">{area?.name} ({area?.tag})</KV>
+          <KV label="Ativo monitorado" mono>{asset.tag}</KV>
+          <KV label="Equipamento pai" mono>{meta.parentAssetTag}</KV>
+          <KV label="Componente">
+            {component ? (
+              <span><span className="mono">{component.tag}</span> · {component.name}</span>
+            ) : "—"}
+          </KV>
+          <KV label="Sensores de origem" mono>{meta.sourceSensorTags.join(" + ") || "—"}</KV>
+          <KV label="Tópico MQTT" mono>{topic}</KV>
+        </div>
+      </Group>
 
-      {/* Trilha do dado */}
-      <div style={{ marginTop: 16 }}>
-        <div className="section-title">Trilha do dado</div>
-        <ol style={{ margin: "8px 0 0", paddingLeft: 18, fontSize: 13, color: "var(--texto-fraco)", lineHeight: 1.7 }}>
+      {/* -------------------------------------------------------- INTEGRIDADE */}
+      <Group ico="🔒" title="Integridade — o dado não foi adulterado">
+        <div className="kv-grid" style={{ marginBottom: 8 }}>
+          <KV label="Input hash" mono>{meta.inputHash}</KV>
+          <KV label="Confiabilidade do dado">
+            <span style={{ color: "var(--ok)" }}>{kpis.dataReliability}%</span>
+          </KV>
+          <KV label="Fonte validada"><span style={{ color: "var(--ok)" }}>Sim</span></KV>
+          <KV label="Leituras na faixa válida">
+            <span style={{ color: allInRange ? "var(--ok)" : "var(--critico)" }}>
+              {allInRange ? "Todas ✓" : "Há desvio ✗"}
+            </span>
+          </KV>
+        </div>
+        <div style={{ marginTop: 4 }}>
+          <Row>
+            <span className="muted">Métrica</span>
+            <span className="muted">Sensor (TAG)</span>
+            <span className="muted">Valor</span>
+            <span className="muted">Faixa válida</span>
+            <span className="muted">OK</span>
+          </Row>
+          {ORDER.map((key) => {
+            const m = RANGES[key];
+            const v = reading[key];
+            const ok = inRange(v, m.range);
+            return (
+              <Row key={key}>
+                <span>{m.label}</span>
+                <span className="mono" style={{ fontSize: 12 }}>{sensorFor(m.type)}</span>
+                <span>{v} {m.unit}</span>
+                <span className="muted">{m.range[0]}–{m.range[1]}</span>
+                <span style={{ color: ok ? "var(--ok)" : "var(--critico)" }}>{ok ? "✓" : "✗"}</span>
+              </Row>
+            );
+          })}
+        </div>
+      </Group>
+
+      {/* ----------------------------------------------------- RASTREABILIDADE */}
+      <Group ico="🧭" title="Rastreabilidade — por onde o dado passou">
+        <div className="kv-grid">
+          <KV label="Trace ID" mono>{meta.traceId}</KV>
+          <KV label="Pipeline" mono>{meta.pipelineVersion}</KV>
+          <KV label="Modelo de scoring" mono>{meta.scoringModel}</KV>
+          <KV label="Usado na recomendação">
+            <span style={{ color: usedInRec ? "var(--ok)" : "var(--texto-fraco)" }}>
+              {usedInRec ? "Sim" : "Não"}
+            </span>
+          </KV>
+        </div>
+        <ol style={{ margin: "10px 0 0", paddingLeft: 18, fontSize: 13, color: "var(--texto-fraco)", lineHeight: 1.7 }}>
           <li>Capturado no <strong style={{ color: "var(--texto)" }}>{asset.tag}</strong> ({area?.name}) via ESP32</li>
           <li>Publicado em <code style={{ color: "var(--roxo-claro)" }}>{topic}</code> (HiveMQ / MQTT)</li>
           <li>Validado e inserido pelo n8n em <code>readings</code> (Supabase)</li>
-          <li>Estado avaliado por limiar → <strong style={{ color: val.color }}>{statusLabel(status)}</strong></li>
+          <li>Pontuado por <code>{meta.scoringModel}</code> → estado <strong style={{ color: val.color }}>{statusLabel(status)}</strong></li>
         </ol>
-      </div>
+      </Group>
 
-      {/* Metadados de auditoria (estilo painel da especificação) */}
-      <div style={{ marginTop: 16 }}>
-        <div className="section-title">Painel de auditoria</div>
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "2px 24px", marginTop: 8 }}>
-          <div className="field"><span className="f-label">Coletado em</span><span>{when}</span></div>
-          <div className="field"><span className="f-label">Fonte validada</span><span style={{ color: "var(--ok)" }}>Sim</span></div>
-          <div className="field"><span className="f-label">Usado na recomendação</span><span style={{ color: status === "normal" ? "var(--texto-fraco)" : "var(--ok)" }}>{status === "normal" ? "Não" : "Sim"}</span></div>
-          <div className="field"><span className="f-label">Validação humana</span>
-            <span style={{ color: val.color }}>{val.label}</span>
-          </div>
+      {/* ----------------------------------------------------- TRILHA DE AUDITORIA */}
+      <Group ico="✍️" title="Trilha de auditoria — assinatura e validação">
+        <div className="kv-grid">
+          <KV label="Coletado em">{when}</KV>
+          <KV label="Assinado por">{meta.signedBy}</KV>
+          <KV label="Estado avaliado">
+            <span style={{ color: val.color, fontWeight: 700 }}>{statusLabel(status)}</span>
+          </KV>
+          <KV label="Validação humana">
+            <span style={{ color: val.color }}>{meta.humanValidation}</span>
+          </KV>
         </div>
-      </div>
+        <p className="muted small" style={{ marginTop: 8 }}>
+          {val.label}.
+        </p>
+      </Group>
     </section>
   );
 }

@@ -456,3 +456,141 @@ export const kpis = {
   plannedMaintenance: 7,
   dataReliability: 94, // %
 };
+
+// ============================================================================
+//  COMPONENTES (nível entre Motor e Sensor da hierarquia de TAGs)
+// ============================================================================
+// Plant → Area → Motor → Component → Sensor. O componente dá corpo físico à
+// recomendação: o sensor de vibração está montado NO rolamento sob suspeita —
+// não é "o motor", é o componente específico que degrada. Só a estrela tem
+// detalhamento de componentes nesta fase.
+export const components = [
+  {
+    tag: "CMP-BRG-042A",
+    asset: "MTR-BMB-042",
+    name: "Rolamento — lado acoplamento",
+    type: "Rolamento",
+    status: "alerta",
+    sensors: ["SNS-VIB-042B"],
+    risk: { level: "Médio/Alto", score: 72 },
+    evidence: [
+      "Vibração aumentou 23% nos últimos 5 dias",
+      "Assinatura espectral compatível com defeito de pista externa (BPFO)",
+      "Falha semelhante registrada na OS-2025-118",
+    ],
+    note: "Componente sob suspeita primária da recomendação.",
+  },
+  {
+    tag: "CMP-STA-042B",
+    asset: "MTR-BMB-042",
+    name: "Estator / carcaça",
+    type: "Estator",
+    status: "alerta",
+    sensors: ["SNS-TEMP-042A"],
+    risk: { level: "Médio", score: 46 },
+    evidence: [
+      "Temperatura média subiu de 68 °C para 82 °C",
+      "Aquecimento secundário ao atrito do rolamento",
+    ],
+    note: "Monitorar — sintoma térmico associado ao rolamento.",
+  },
+  {
+    tag: "CMP-SHF-042C",
+    asset: "MTR-BMB-042",
+    name: "Eixo / acoplamento",
+    type: "Eixo",
+    status: "normal",
+    sensors: ["SNS-COR-042C"],
+    risk: { level: "Baixo", score: 14 },
+    evidence: [
+      "Corrente dentro da faixa esperada para a carga atual",
+      "Sem assinatura de desalinhamento no consumo do motor/drive",
+    ],
+    note: "Sem desvio relevante.",
+  },
+];
+
+export const componentsForAsset = (tag) => components.filter((c) => c.asset === tag);
+export const getComponent = (tag) => components.find((c) => c.tag === tag) || null;
+export const componentForSensor = (sensorTag) =>
+  components.find((c) => c.sensors.includes(sensorTag)) || null;
+
+// ============================================================================
+//  HEARTBEAT · TELEMETRIA AO VIVO (determinística) — só a estrela
+// ============================================================================
+// Cada "tick" (1/seg) produz 1 ponto derivado de um seed fixo + índice do tick,
+// então a série é reprodutível (Pause/Start/Reset repetem a mesma sequência).
+// A rampa leva o motor de "Normal" para "Atenção" em ~30s; "Trigger Incident"
+// acelera a degradação rumo ao limiar crítico. Não usa Date.now no valor.
+export const HEARTBEAT = {
+  tag: "MTR-BMB-042",
+  windowPoints: 45, // janela do gráfico ao vivo (limita o crescimento)
+  seedPoints: 12, // pontos de baseline pré-carregados antes do Start
+  baseline: { temp: 62, vib: 2.6, current: 17.2, rot: 1760 },
+};
+
+export function heartbeatPoint(i, { incidentTick = null } = {}) {
+  const rnd = mulberry32((0x9e3779b9 ^ ((i + 1) * 0x85ebca6b)) >>> 0);
+  const b = HEARTBEAT.baseline;
+  const ramp = Math.min(i / 35, 1); // 0 → 1 ao longo de ~35 ticks
+  let incident = 0;
+  if (incidentTick != null && i >= incidentTick)
+    incident = Math.min((i - incidentTick) / 8, 1); // degrau rápido (~8 ticks)
+  const wobble = Math.sin(i / 6); // micro-oscilação suave
+
+  const temperature = b.temp + ramp * 12 + incident * 16 + wobble * 0.6 + (rnd() - 0.5) * 0.8;
+  const vibration = b.vib + ramp * 2.3 + incident * 3.2 + wobble * 0.12 + (rnd() - 0.5) * 0.18;
+  const current = b.current + ramp * 1.4 + incident * 2.2 + wobble * 0.3 + (rnd() - 0.5) * 0.4;
+  const rotation = b.rot - ramp * 18 - incident * 30 + (rnd() - 0.5) * 6;
+
+  return {
+    t: i,
+    temperature: round(Math.min(temperature, 95), 1),
+    vibration: round(Math.max(vibration, 0.4), 2),
+    current: round(current, 1),
+    rotation: Math.round(rotation),
+  };
+}
+
+// ============================================================================
+//  PROCEDÊNCIA / TRILHA DE AUDITORIA da recomendação (metadados de integridade)
+// ============================================================================
+// Responde às perguntas de auditoria: de onde veio o dado (procedência), se foi
+// adulterado (integridade), por onde passou (rastreabilidade) e quem assinou
+// (trilha de auditoria). Valores fixos => reprodutíveis na demo.
+const AUDIT_CURATED = {
+  "MTR-BMB-042": {
+    traceId: "trace-8baf9a1",
+    inputHash: "sha256:demo-fixed-seed-42",
+    pipelineVersion: "demo-0.3.0",
+    scoringModel: "rules+zscore-v1",
+    sourceSensorTags: ["SNS-VIB-042B", "SNS-TEMP-042A"],
+    parentAssetTag: "BMB-SUC-004",
+    componentTag: "CMP-BRG-042A",
+    signedBy: "Forzy TwinOps Demo Engine",
+    humanValidation: "Supervisor de turno pendente",
+  },
+};
+
+export function auditMeta(tag) {
+  if (AUDIT_CURATED[tag]) return AUDIT_CURATED[tag];
+  const asset = getAsset(tag);
+  const seed = seedFromTag(tag).toString(16).padStart(8, "0").slice(0, 7);
+  const sourceSensorTags = asset
+    ? asset.sensors.filter((s) => s.type !== "Controlador").map((s) => s.tag)
+    : [];
+  const normal = assetStatus(tag) === "normal";
+  return {
+    traceId: `trace-${seed}`,
+    inputHash: `sha256:demo-${seed}`,
+    pipelineVersion: "demo-0.3.0",
+    scoringModel: "rules+zscore-v1",
+    sourceSensorTags,
+    parentAssetTag: asset ? asset.parent : "—",
+    componentTag: null,
+    signedBy: "Forzy TwinOps Demo Engine",
+    humanValidation: normal
+      ? "Não requer validação (dentro da faixa)"
+      : "Supervisor de turno pendente",
+  };
+}

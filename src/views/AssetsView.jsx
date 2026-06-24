@@ -74,7 +74,7 @@ function PlantPrompt({ nav }) {
   );
 }
 
-export default function AssetsView({ selectedTag, selectedArea, nav }) {
+export default function AssetsView({ selectedTag, selectedArea, selectedComponent, nav }) {
   const asset = selectedTag ? getAsset(selectedTag) : null;
 
   return (
@@ -92,11 +92,13 @@ export default function AssetsView({ selectedTag, selectedArea, nav }) {
         <TagTree
           selectedTag={selectedTag}
           selectedArea={selectedArea}
+          selectedComponent={selectedComponent}
           onSelectAsset={nav.goAsset}
+          onSelectComponent={nav.goComponent}
         />
         <div>
           {asset ? (
-            <AssetProfile asset={asset} nav={nav} />
+            <AssetProfile asset={asset} nav={nav} selectedComponent={selectedComponent} />
           ) : selectedArea ? (
             <AreaSummary areaTag={selectedArea} nav={nav} />
           ) : (

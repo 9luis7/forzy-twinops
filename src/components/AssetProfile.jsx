@@ -2,6 +2,7 @@
 // risco preditivo, sensores, gráfico temporal, copiloto e conhecimento vinculado.
 // É o "LinkedIn da máquina": tudo o que se sabe do ativo em um lugar.
 
+import { useEffect, useState } from "react";
 import {
   getArea,
   latestReading,
@@ -11,6 +12,8 @@ import {
   alertsForTag,
   ordersForTag,
   docsForTag,
+  componentsForAsset,
+  HEARTBEAT,
 } from "../data/mock.js";
 import { StatusBadge, RiskTag } from "./ui.jsx";
 import TimeChart from "./TimeChart.jsx";
@@ -46,7 +49,99 @@ function Fact({ label, children }) {
   );
 }
 
-export default function AssetProfile({ asset, nav }) {
+// Valor atual por TAG de sensor (mapeia o tipo do sensor → métrica da leitura).
+function sensorValue(asset, sensorTag, reading) {
+  const s = asset.sensors.find((x) => x.tag === sensorTag);
+  if (!s || !reading) return null;
+  const map = {
+    Temperatura: { v: reading.temperature, unit: "°C" },
+    Vibração: { v: reading.vibration, unit: "m/s²" },
+    Corrente: { v: reading.current, unit: "A" },
+  };
+  return map[s.type] || null;
+}
+
+// Componentes (nível entre Motor e Sensor). Torna a recomendação física:
+// o sensor de vibração está montado NO rolamento sob suspeita.
+function Components({ asset, reading, comps, selected, onSelect }) {
+  const current = comps.find((c) => c.tag === selected) || comps[0];
+  return (
+    <section className="card">
+      <h3>
+        Componentes{" "}
+        <span className="muted small" style={{ fontWeight: 400 }}>
+          · Motor → Componente → Sensor
+        </span>
+      </h3>
+
+      <div className="cmp-row">
+        {comps.map((c) => (
+          <button
+            key={c.tag}
+            className={`cmp-card ${c.tag === current.tag ? "active" : ""}`}
+            onClick={() => onSelect(c.tag)}
+          >
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
+              <span className="cmp-tag">{c.tag}</span>
+              <span className={`dot ${c.status}`} style={{ width: 9, height: 9 }} />
+            </div>
+            <div className="cmp-name">{c.name}</div>
+            <div className="cmp-type">{c.type} · risco <RiskTag level={c.risk.level} /></div>
+          </button>
+        ))}
+      </div>
+
+      {current && (
+        <div className="cmp-detail">
+          <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+            <span className="tag-mono" style={{ fontSize: 14 }}>{current.tag}</span>
+            <strong>{current.name}</strong>
+            <StatusBadge status={current.status} />
+            <span className="pill">{current.type}</span>
+          </div>
+
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0 24px", marginTop: 12 }}>
+            <div>
+              <div className="section-title" style={{ marginBottom: 6 }}>Sensores conectados</div>
+              {current.sensors.map((st) => {
+                const val = sensorValue(asset, st, reading);
+                const s = asset.sensors.find((x) => x.tag === st);
+                return (
+                  <div key={st} className="field" style={{ alignItems: "baseline" }}>
+                    <span style={{ fontSize: 14 }}>🛰️</span>
+                    <span>
+                      <span className="mono" style={{ fontSize: 12.5 }}>{st}</span>
+                      <span className="muted small"> · {s?.type}</span>
+                      {val && <b style={{ marginLeft: 8 }}>{val.v} {val.unit}</b>}
+                    </span>
+                  </div>
+                );
+              })}
+              <div className="field" style={{ marginTop: 6 }}>
+                <span className="f-label">Risco do componente</span>
+                <span><RiskTag level={current.risk.level} /> · score {current.risk.score}/100</span>
+              </div>
+            </div>
+            <div>
+              <div className="section-title" style={{ marginBottom: 6 }}>Evidências</div>
+              {current.evidence.map((e, i) => (
+                <div className="evidence" key={i}>
+                  <span className="ev-mark">▸</span>
+                  <span>{e}</span>
+                </div>
+              ))}
+              {current.note && (
+                <p className="muted small" style={{ marginTop: 8 }}>{current.note}</p>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+    </section>
+  );
+}
+
+export default function AssetProfile({ asset, nav, selectedComponent }) {
   const tag = asset.tag;
   const reading = latestReading(tag);
   const status = assetStatus(tag);
@@ -55,7 +150,15 @@ export default function AssetProfile({ asset, nav }) {
   const alert = alertsForTag(tag)[0];
   const orders = ordersForTag(tag);
   const docs = docsForTag(tag);
+  const comps = componentsForAsset(tag);
   const when = reading ? new Date(reading.ts).toLocaleString("pt-BR") : "—";
+  const isLive = tag === HEARTBEAT.tag;
+
+  // Componente selecionado: prop (vinda da árvore TAG) tem prioridade.
+  const [activeComp, setActiveComp] = useState(selectedComponent || (comps[0] && comps[0].tag));
+  useEffect(() => {
+    if (selectedComponent) setActiveComp(selectedComponent);
+  }, [selectedComponent]);
 
   const sensorByType = (type) =>
     asset.sensors.find((s) => s.type === type)?.tag;
@@ -153,8 +256,19 @@ export default function AssetProfile({ asset, nav }) {
         </div>
       </section>
 
-      {/* Gráfico temporal */}
-      <TimeChart tag={tag} />
+      {/* Componentes (nível entre Motor e Sensor) */}
+      {comps.length > 0 && (
+        <Components
+          asset={asset}
+          reading={reading}
+          comps={comps}
+          selected={activeComp}
+          onSelect={setActiveComp}
+        />
+      )}
+
+      {/* Gráfico temporal (ao vivo na estrela) */}
+      <TimeChart tag={tag} live={isLive} />
 
       {/* Assistente técnico (copiloto) — remonta ao trocar de ativo */}
       <Copilot key={tag} tag={tag} />

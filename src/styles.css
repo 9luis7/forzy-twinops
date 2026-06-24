@@ -367,8 +367,56 @@ code, .mono { font-family: ui-monospace, "SFMono-Regular", Menlo, monospace; }
 }
 .chip.active { background: var(--surface-2); border-color: var(--roxo); color: var(--texto); }
 
+/* ----------------------------------------------------------------- live badge */
+.live-badge {
+  display: inline-flex; align-items: center; gap: 6px;
+  border-radius: 999px; padding: 2px 9px;
+  font-size: 11.5px; font-weight: 700; letter-spacing: .2px;
+  border: 1px solid var(--borda);
+}
+.live-badge.on  { color: var(--critico); border-color: var(--critico); }
+.live-badge.off { color: var(--texto-fraco); }
+.live-badge .live-dot { width: 8px; height: 8px; border-radius: 50%; background: currentColor; }
+.live-badge.on .live-dot { animation: pulse-live 1s ease-in-out infinite; }
+@keyframes pulse-live {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: .35; transform: scale(.7); }
+}
+
+/* ----------------------------------------------------------------- components */
+.cmp-row { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 4px; }
+.cmp-card {
+  flex: 1 1 150px; text-align: left;
+  background: var(--surface-2); border: 1px solid var(--borda);
+  border-radius: 12px; padding: 11px 13px; cursor: pointer;
+  transition: border-color .12s, background .12s;
+}
+.cmp-card:hover { border-color: var(--roxo); }
+.cmp-card.active { border-color: var(--roxo-claro); background: var(--surface-3); }
+.cmp-card .cmp-tag { font-family: ui-monospace, monospace; font-size: 12px; color: var(--laranja); }
+.cmp-card .cmp-name { font-weight: 600; font-size: 13px; margin-top: 3px; }
+.cmp-card .cmp-type { font-size: 11px; color: var(--texto-fraco); margin-top: 2px; }
+.cmp-detail {
+  margin-top: 12px; background: var(--surface-2);
+  border: 1px solid var(--borda); border-radius: 12px; padding: 14px;
+}
+
+/* ----------------------------------------------------------------- audit groups */
+.audit-group { margin-top: 16px; }
+.audit-group > .ag-title {
+  display: flex; align-items: center; gap: 8px;
+  font-size: 13px; font-weight: 700; color: var(--texto);
+  padding-bottom: 6px; border-bottom: 1px solid var(--borda); margin-bottom: 8px;
+}
+.audit-group > .ag-title .ag-ico { color: var(--roxo-claro); }
+.kv-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 2px 24px; }
+.kv { display: flex; gap: 10px; font-size: 13px; padding: 3px 0; align-items: baseline; }
+.kv .kv-label { color: var(--texto-fraco); min-width: 138px; flex-shrink: 0; }
+.kv .kv-value { word-break: break-all; }
+
 @media (max-width: 920px) {
   .kpi-row { grid-template-columns: repeat(2, 1fr); }
   .area-grid { grid-template-columns: 1fr; }
   .split { grid-template-columns: 1fr; }
+  .kv-grid { grid-template-columns: 1fr; }
 }
