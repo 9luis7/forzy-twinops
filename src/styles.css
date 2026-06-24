@@ -649,6 +649,9 @@ code, .mono { font-family: ui-monospace, "SFMono-Regular", Menlo, monospace; }
 .presenter-bar {
   position: fixed;
   z-index: 903;
+  /* O overlay tem pointer-events:none (para deixar o alvo destacado clicável
+     por baixo); a barra precisa reativar os eventos para receber os cliques. */
+  pointer-events: auto;
   left: 50%;
   bottom: 22px;
   transform: translateX(-50%);

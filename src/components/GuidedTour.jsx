@@ -181,18 +181,33 @@ export function TourOverlay() {
     };
   }, [active, target, stepIndex]);
 
-  // Esc encerra a apresentação.
+  // Atalhos de teclado: Esc encerra; ←/→ (e PageUp/PageDown, Espaço) navegam.
   useEffect(() => {
     if (!active) return;
     const onKey = (e) => {
-      if (e.key === "Escape") {
-        e.preventDefault();
-        stop();
+      switch (e.key) {
+        case "Escape":
+          e.preventDefault();
+          stop();
+          break;
+        case "ArrowRight":
+        case "PageDown":
+        case " ": // barra de espaço avança
+          e.preventDefault();
+          next();
+          break;
+        case "ArrowLeft":
+        case "PageUp":
+          e.preventDefault();
+          prev();
+          break;
+        default:
+          break;
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [active, stop]);
+  }, [active, stop, next, prev]);
 
   if (!active || !step) return null;
 
@@ -225,7 +240,11 @@ export function TourOverlay() {
           {steps.map((s, i) => (
             <span
               key={s.id}
-              className={"dot" + (i === stepIndex ? " is-active" : "")}
+              className={
+                "dot" +
+                (i === stepIndex ? " active" : "") +
+                (i < stepIndex ? " done" : "")
+              }
             />
           ))}
         </div>
