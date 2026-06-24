@@ -5,11 +5,7 @@
 import { useEffect, useState } from "react";
 import {
   getArea,
-  latestReading,
-  assetStatus,
-  assetRisk,
   THRESHOLDS,
-  alertsForTag,
   ordersForTag,
   docsForTag,
   componentsForAsset,
@@ -20,7 +16,7 @@ import TimeChart from "./TimeChart.jsx";
 import Copilot from "./Copilot.jsx";
 import MotorMimic from "./MotorMimic.jsx";
 import Gauge from "./Gauge.jsx";
-import { useLiveTelemetry } from "../useLiveTelemetry.js";
+import { useLiveTwin } from "../LiveTwinContext.jsx";
 
 const fmtDate = (d) =>
   d ? new Date(d + "T00:00:00").toLocaleDateString("pt-BR") : "—";
@@ -168,69 +164,27 @@ function Components({ asset, reading, comps, selected, onSelect }) {
 
 export default function AssetProfile({ asset, nav, selectedComponent }) {
   const tag = asset.tag;
-  const reading = latestReading(tag);
-  const status = assetStatus(tag);
-  const risk = assetRisk(tag);
   const area = getArea(asset.area);
-  const alert = alertsForTag(tag)[0];
   const orders = ordersForTag(tag);
   const docs = docsForTag(tag);
   const comps = componentsForAsset(tag);
   const isLive = tag === HEARTBEAT.tag;
 
-  // Telemetria ao vivo (loop de cenários) — só a estrela. O hook fica inerte nos
-  // demais ativos. Quando ativo, ele vira a FONTE DE VERDADE do painel: gauges,
-  // gêmeo digital, banner e diagnóstico reagem à mesma leitura, em sincronia.
-  const hb = useLiveTelemetry(isLive);
-
-  // Valores efetivos: ao vivo na estrela, estáticos no resto.
-  const effReading = isLive && hb.last ? hb.last : reading;
-  const effStatus = isLive ? hb.status : status;
-  const liveScenario = isLive && effStatus !== "normal" ? hb.scenario : null;
-
-  // Risco efetivo derivado do estado ao vivo.
-  const effRisk = !isLive
-    ? risk
-    : effStatus === "critico"
-    ? { level: "Alto", score: 84, confidence: liveScenario?.confidence ?? 88, windowHours: 24 }
-    : effStatus === "alerta"
-    ? { level: "Médio", score: 58, confidence: liveScenario?.confidence ?? 80, windowHours: 72 }
-    : { level: "Baixo", score: 12, confidence: 95, windowHours: null };
-
-  // Alerta efetivo: ao vivo é montado a partir do cenário ativo.
-  const effAlert = !isLive
-    ? alert
-    : liveScenario
-    ? {
-        title: liveScenario.name,
-        message: liveScenario.diagnosis,
-        origin: liveScenario.sensor,
-        bases: liveScenario.bases,
-        confidence: liveScenario.confidence,
-      }
-    : null;
-
-  // Componentes efetivos: ao vivo, só o componente culpado do cenário fica fora
-  // do normal (e recebe as evidências do cenário); o resto fica normal.
-  const effComps = !isLive
-    ? comps
-    : comps.map((c) =>
-        liveScenario && c.tag === liveScenario.component
-          ? {
-              ...c,
-              status: effStatus,
-              evidence: liveScenario.evidence,
-              risk: { level: effRisk.level, score: effRisk.score },
-            }
-          : { ...c, status: "normal", risk: { level: "Baixo", score: 12 } }
-      );
+  // FONTE ÚNICA: todos os valores do estrela vêm do contexto ao vivo (gauges,
+  // gêmeo digital, banner, risco e diagnóstico refletem a MESMA leitura do gráfico,
+  // no mesmo instante). Nos demais ativos os helpers caem nos dados estáticos.
+  const twin = useLiveTwin();
+  const effReading = twin.readingOf(tag);
+  const effStatus = twin.statusOf(tag);
+  const effRisk = twin.riskOf(tag);
+  const effComps = twin.componentsOf(tag);
+  const effAlert = twin.alertOf(tag);
+  const liveScenario = twin.scenarioOf(tag);
 
   const when = isLive
-    ? hb.last
-      ? hb.last.label
-      : "—"
-    : reading
-    ? new Date(reading.ts).toLocaleString("pt-BR")
+    ? effReading?.label || "—"
+    : effReading
+    ? new Date(effReading.ts).toLocaleString("pt-BR")
     : "—";
 
   // Componente selecionado: prop (vinda da árvore TAG) tem prioridade.
@@ -474,7 +428,7 @@ export default function AssetProfile({ asset, nav, selectedComponent }) {
       )}
 
       {/* Gráfico temporal (ao vivo na estrela) — compartilha o mesmo motor do painel */}
-      <TimeChart tag={tag} live={isLive ? hb : null} />
+      <TimeChart tag={tag} live={isLive ? twin.live : null} />
 
       {/* Assistente técnico (copiloto) — remonta ao trocar de ativo */}
       <Copilot key={tag} tag={tag} />

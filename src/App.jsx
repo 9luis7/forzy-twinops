@@ -7,6 +7,7 @@ import OrdersView from "./views/OrdersView.jsx";
 import DocumentsView from "./views/DocumentsView.jsx";
 import AuditView from "./views/AuditView.jsx";
 import { TourProvider, TourLauncher, TourOverlay } from "./components/GuidedTour.jsx";
+import { LiveTwinProvider } from "./LiveTwinContext.jsx";
 import { getAsset, assets, getComponent } from "./data/mock.js";
 
 // Resolve uma TAG para o ativo dono — aceita TAG de sensor (ex.: SNS-VIB-042B).
@@ -65,27 +66,29 @@ export default function App() {
   const onNavigate = (key) => setView(key);
 
   return (
-    <TourProvider nav={nav}>
-      <div className="app">
-        <Sidebar view={view} onNavigate={onNavigate} />
-        <main className="main">
-          {view === "planta" && <PlantOverview nav={nav} />}
-          {view === "ativos" && (
-            <AssetsView
-              selectedTag={selectedTag}
-              selectedArea={selectedArea}
-              selectedComponent={selectedComponent}
-              nav={nav}
-            />
-          )}
-          {view === "alertas" && <AlertsView nav={nav} />}
-          {view === "ordens" && <OrdersView nav={nav} />}
-          {view === "documentos" && <DocumentsView nav={nav} />}
-          {view === "auditoria" && <AuditView selectedTag={selectedTag} nav={nav} />}
-        </main>
-      </div>
-      <TourLauncher />
-      <TourOverlay />
-    </TourProvider>
+    <LiveTwinProvider>
+      <TourProvider nav={nav}>
+        <div className="app">
+          <Sidebar view={view} onNavigate={onNavigate} />
+          <main className="main">
+            {view === "planta" && <PlantOverview nav={nav} />}
+            {view === "ativos" && (
+              <AssetsView
+                selectedTag={selectedTag}
+                selectedArea={selectedArea}
+                selectedComponent={selectedComponent}
+                nav={nav}
+              />
+            )}
+            {view === "alertas" && <AlertsView nav={nav} />}
+            {view === "ordens" && <OrdersView nav={nav} />}
+            {view === "documentos" && <DocumentsView nav={nav} />}
+            {view === "auditoria" && <AuditView selectedTag={selectedTag} nav={nav} />}
+          </main>
+        </div>
+        <TourLauncher />
+        <TourOverlay />
+      </TourProvider>
+    </LiveTwinProvider>
   );
 }

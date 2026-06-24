@@ -604,6 +604,12 @@ export const SCENARIOS = [
       "Temperatura do estator subindo acima do limite crítico (90 °C). Padrão compatível com refrigeração insuficiente ou sobrecarga térmica contínua.",
     recommendation:
       "Verificar ventilação/defletor e a carga do motor. Inspeção térmica recomendada antes de retomar regime contínuo.",
+    causes: [
+      "Refrigeração insuficiente (defletor/ventilador)",
+      "Sobrecarga térmica em operação contínua",
+      "Ventilação do ambiente obstruída",
+      "Falha incipiente de isolamento do estator",
+    ],
     evidence: [
       "Temperatura cruzou 90 °C com corrente ainda dentro da faixa",
       "Subida térmica sem pico de corrente aponta refrigeração, não sobrecarga elétrica",
@@ -625,6 +631,12 @@ export const SCENARIOS = [
       "Corrente acima da faixa operacional com queda de rotação. Assinatura de sobrecarga mecânica no acoplamento/eixo.",
     recommendation:
       "Reduzir carga e inspecionar acoplamento e alinhamento do eixo. Avaliar travamento parcial na carga acionada.",
+    causes: [
+      "Sobrecarga mecânica na carga acionada",
+      "Desalinhamento ou empenamento do eixo",
+      "Travamento parcial do acoplamento",
+      "Queda de tensão de alimentação",
+    ],
     evidence: [
       "Corrente cruzou 32 A acompanhada de queda de rotação",
       "Temperatura sobe de forma secundária ao esforço elétrico",
@@ -646,6 +658,12 @@ export const SCENARIOS = [
       "Vibração acima do limite crítico com oscilação de rotação. Assinatura típica de desbalanceamento/folga mecânica no conjunto girante.",
     recommendation:
       "Programar balanceamento e verificar fixação e folgas. Reinspecionar rolamento do lado acoplamento.",
+    causes: [
+      "Desbalanceamento de massa no conjunto girante",
+      "Folga mecânica / fixação inadequada",
+      "Desgaste de rolamento",
+      "Acúmulo de material no rotor/pás",
+    ],
     evidence: [
       "Vibração cruzou 7,5 m/s² com rotação instável",
       "Padrão difere de defeito localizado de pista (rolamento puro)",
@@ -679,25 +697,25 @@ export function liveCycleState(globalTick) {
   return { scenario, phase, intensity: Math.max(0, Math.min(1, intensity)), cycleIndex: cyc };
 }
 
-// Status derivado do envelope — mantém a detecção visual coerente em todo o painel.
-export function liveStatusFor(intensity, severity = "critico") {
-  if (intensity <= 0.04) return "normal";
-  if (intensity >= 0.6) return severity; // pico → severidade do cenário
-  return "alerta"; // subida/descida → atenção
-}
-
-// Rótulo amigável da fase (narra a demo sozinho).
-export function livePhaseLabel(phase, scenario) {
-  switch (phase) {
-    case "onset":
-      return `Detectando: ${scenario.short}`;
-    case "peak":
-      return scenario.short;
-    case "recovery":
-      return "Normalizando";
-    default:
-      return "Operação estável";
-  }
+// Status derivado dos VALORES vs limiares — espelha EXATAMENTE a cor dos gauges.
+// Assim o badge, o gêmeo digital e o banner viram no mesmo ponto em que o gauge
+// cruza o limiar (sem "acender antes"). Inclui corrente (cenário de sobrecarga).
+export function readingStatus(reading) {
+  if (!reading) return "desconhecido";
+  const t = THRESHOLDS;
+  if (
+    reading.temperature >= t.temp.crit ||
+    reading.vibration >= t.vib.crit ||
+    reading.current >= t.current.crit
+  )
+    return "critico";
+  if (
+    reading.temperature >= t.temp.warn ||
+    reading.vibration >= t.vib.warn ||
+    reading.current >= t.current.warn
+  )
+    return "alerta";
+  return "normal";
 }
 
 // Ponto ao vivo determinístico para o loop de cenários (1/seg).

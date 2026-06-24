@@ -3,16 +3,28 @@
 // virando decisão auditável. Clicar leva ao ativo (timeline + evidências).
 // Linguagem humana primeiro; TAGs/origens técnicas como camada secundária (mono).
 
-import { alerts, getAsset, assetRisk } from "../data/mock.js";
+import { getAsset } from "../data/mock.js";
+import { useLiveTwin } from "../LiveTwinContext.jsx";
 import { RiskTag } from "../components/ui.jsx";
 
 // Rótulo humano por severidade (jargão "critico/alerta" -> texto claro).
 const SEV_LABEL = { critico: "Crítico", alerta: "Atenção" };
 const SEV_TEXT = { critico: "var(--critico)", alerta: "var(--alerta)" };
 
-function FeaturedAlert({ alert, nav }) {
+// "Detectado por" — deriva o tipo de sensor da origem do alerta (não fixa vibração).
+const SENSOR_PHRASE = {
+  Temperatura: "sensor de temperatura",
+  Vibração: "sensor de vibração",
+  Corrente: "sensor de corrente",
+};
+function detectedBy(alert) {
   const asset = getAsset(alert.tag);
-  const risk = assetRisk(alert.tag);
+  const s = asset?.sensors.find((x) => x.tag === alert.origin);
+  return SENSOR_PHRASE[s?.type] || "sensor";
+}
+
+function FeaturedAlert({ alert, risk, nav }) {
+  const asset = getAsset(alert.tag);
   const crit = alert.severity === "critico";
   return (
     <div className={`alert-banner ${alert.severity}`} data-tour="featured-alert">
@@ -39,7 +51,7 @@ function FeaturedAlert({ alert, nav }) {
             <span className="mono" style={{ fontSize: 11, opacity: .75 }}>· {alert.tag}</span>
           </span>
           <span>
-            Detectado por: <b>sensor de vibração</b>{" "}
+            Detectado por: <b>{detectedBy(alert)}</b>{" "}
             <span className="mono" style={{ fontSize: 11, opacity: .75 }}>· {alert.origin}</span>
           </span>
           <span>Risco: <b><RiskTag level={risk.level} /></b></span>
@@ -78,7 +90,9 @@ function FeaturedAlert({ alert, nav }) {
 }
 
 export default function AlertsView({ nav }) {
-  const [featured, ...rest] = alerts;
+  const twin = useLiveTwin();
+  const list = twin.alertsList();
+  const [featured, ...rest] = list;
   return (
     <div data-tour="alerts-view">
       <div className="topbar">
@@ -94,7 +108,14 @@ export default function AlertsView({ nav }) {
         </div>
       </div>
 
-      <FeaturedAlert alert={featured} nav={nav} />
+      {featured ? (
+        <FeaturedAlert alert={featured} risk={twin.riskOf(featured.tag)} nav={nav} />
+      ) : (
+        <div className="card" style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <span className="led ok pulse" />
+          <span>Nenhum alerta ativo — todos os ativos monitorados dentro da faixa.</span>
+        </div>
+      )}
 
       <div className="card" style={{ marginTop: 16 }}>
         <h3 style={{ display: "flex", alignItems: "center", gap: 8 }}>
@@ -139,7 +160,7 @@ export default function AlertsView({ nav }) {
                     </div>
                   </td>
                   <td>
-                    <div className="small">sensor de vibração</div>
+                    <div className="small">{detectedBy(a)}</div>
                     <div className="muted small mono" style={{ fontSize: 10.5, marginTop: 2, opacity: .75 }}>
                       {a.origin}
                     </div>

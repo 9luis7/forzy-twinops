@@ -9,21 +9,20 @@ import {
   areas,
   kpis,
   assetsByArea,
-  assetStatus,
-  alerts,
   getAsset,
 } from "../data/mock.js";
+import { useLiveTwin } from "../LiveTwinContext.jsx";
 import { StatusBadge } from "../components/ui.jsx";
 import PlantSynoptic from "../components/PlantSynoptic.jsx";
 
 const SEV_RANK = { critico: 3, alerta: 2, normal: 1, desconhecido: 0 };
 
 // Pior estado entre os ativos detalhados da área (resumo visual).
-function areaStatus(areaTag) {
+function areaStatus(areaTag, twin) {
   const motors = assetsByArea(areaTag);
   if (!motors.length) return "desconhecido";
   return motors
-    .map((m) => assetStatus(m.tag))
+    .map((m) => twin.statusOf(m.tag))
     .reduce((worst, s) => (SEV_RANK[s] > SEV_RANK[worst] ? s : worst), "normal");
 }
 
@@ -39,6 +38,9 @@ function Kpi({ label, value, foot, tone, readoutTone }) {
 }
 
 export default function PlantOverview({ nav }) {
+  const twin = useLiveTwin();
+  const liveAlerts = twin.alertsList();
+  const criticalCount = liveAlerts.filter((a) => a.severity === "critico").length;
   return (
     <div>
       <div className="topbar">
@@ -75,10 +77,10 @@ export default function PlantOverview({ nav }) {
         />
         <Kpi
           label="Alertas críticos"
-          value={kpis.criticalAlerts}
-          tone="crit"
-          readoutTone="crit"
-          foot="exigem ação imediata"
+          value={criticalCount}
+          tone={criticalCount ? "crit" : "ok"}
+          readoutTone={criticalCount ? "crit" : "ok"}
+          foot={criticalCount ? "exigem ação imediata" : "nenhum no momento"}
         />
         <Kpi
           label="Manutenções previstas"
@@ -121,7 +123,7 @@ export default function PlantOverview({ nav }) {
         <div className="area-grid" style={{ marginTop: 12 }}>
           {areas.map((area) => {
             const motors = assetsByArea(area.tag);
-            const st = areaStatus(area.tag);
+            const st = areaStatus(area.tag, twin);
             return (
               <button
                 key={area.tag}
@@ -174,7 +176,12 @@ export default function PlantOverview({ nav }) {
         </div>
 
         <div style={{ marginTop: 10, display: "grid", gap: 8 }}>
-          {alerts.map((a) => {
+          {liveAlerts.length === 0 && (
+            <p className="muted small" style={{ margin: 0 }}>
+              Nenhum alerta ativo no momento — todos os ativos monitorados dentro da faixa.
+            </p>
+          )}
+          {liveAlerts.map((a) => {
             const asset = getAsset(a.tag);
             const crit = a.severity === "critico";
             return (

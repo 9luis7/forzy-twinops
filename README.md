@@ -8,9 +8,12 @@ Challenge FIAP × Forzy.
 > **Novidades v0.4:** **loop de cenários ao vivo** no motor-estrela — a telemetria
 > determinística (1/seg) cicla sozinha por `estável → falha → detecção → normalização`
 > e percorre vários tipos de falha (superaquecimento, sobrecarga elétrica, desbalanceamento).
-> A leitura ao vivo é a **fonte de verdade do painel inteiro**: gauges, gêmeo digital
-> (a parte culpada acende), badge de status, banner e diagnóstico aparecem e somem em
-> sincronia. Controles: Iniciar/Pausar · Reset · Próximo cenário.
+>
+> Essa leitura ao vivo é a **fonte única da verdade de TODO o app** (`LiveTwinContext`):
+> gauges, gêmeo digital (a parte culpada acende), árvore de TAGs, cards, sinótico da planta,
+> KPIs, central de alertas, copiloto e auditoria refletem o **mesmo estado, no mesmo instante**.
+> O alerta do motor é dinâmico — aparece quando um cenário é detectado e some quando normaliza.
+> O histórico curado (OS, documentos) permanece. Controles: Iniciar/Pausar · Reset · Próximo cenário.
 >
 > **v0.3:** nível de **Componente** na hierarquia de TAGs (Motor → Componente → Sensor) e
 > trilha de **procedência/auditoria** reforçada (traceId, inputHash, pipelineVersion,
@@ -103,7 +106,8 @@ npm run dev
 forzy-twinops/
 ├── src/
 │   ├── data/mock.js              # planta, áreas, ativos, sensores, leituras, alertas, OS, docs, risco, KPIs, cenários ao vivo
-│   ├── useLiveTelemetry.js       # motor do loop de cenários ao vivo (estado compartilhado do painel)
+│   ├── useLiveTelemetry.js       # motor do loop de cenários ao vivo (1/seg, determinístico)
+│   ├── LiveTwinContext.jsx       # provider global: fonte única do estado do motor-estrela
 │   ├── components/
 │   │   ├── Sidebar.jsx           # navegação principal
 │   │   ├── Breadcrumb.jsx        # trilha PLT → AREA → MTR

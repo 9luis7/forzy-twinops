@@ -13,7 +13,7 @@ import {
   LIVE_CYCLE_LEN,
   liveScenarioPoint,
   liveCycleState,
-  liveStatusFor,
+  readingStatus,
 } from "./data/mock.js";
 
 const hhmmss = (ms) =>
@@ -79,7 +79,8 @@ export function useLiveTelemetry(enabled = true) {
 
   const last = points[points.length - 1] || null;
   const state = liveCycleState(last ? last.t : SEED);
-  const status = liveStatusFor(state.intensity, state.scenario.severity);
+  // Status pelos VALORES (espelha os gauges), não pelo envelope — coerência total.
+  const status = readingStatus(last);
 
   return {
     points,

@@ -19,7 +19,7 @@ import {
   Tooltip,
   ReferenceLine,
 } from "recharts";
-import { readings, livePhaseLabel } from "../data/mock.js";
+import { readings } from "../data/mock.js";
 
 // Métricas disponíveis + faixas de alerta/crítico (espelham o mock).
 // `grad` é o id do gradiente SVG (definido em <defs>) usado na área sob a linha.
@@ -85,16 +85,26 @@ function LiveControls({ hb }) {
   );
 }
 
-// Chip que narra o cenário/fase atual do loop (cor por status).
+// Chip que narra o cenário atual — texto E cor derivados do STATUS (mesma fonte
+// dos gauges/badge), então nunca contradiz o resto do painel.
 function ScenarioChip({ hb }) {
   const cls =
     hb.status === "critico" ? "critico" : hb.status === "alerta" ? "alerta" : "ok";
   const icon =
     hb.status === "critico" ? "🚨" : hb.status === "alerta" ? "⚠" : "●";
+  const text =
+    hb.status === "critico"
+      ? hb.scenario.short
+      : hb.status === "alerta"
+      ? `Detectando: ${hb.scenario.short}`
+      : "Operação estável";
   return (
-    <span className={`tc-scenario ${cls}`} title={hb.scenario?.diagnosis || ""}>
+    <span
+      className={`tc-scenario ${cls}`}
+      title={hb.status !== "normal" ? hb.scenario.diagnosis : "Telemetria dentro da faixa"}
+    >
       <span className="tc-scenario-ico" aria-hidden>{icon}</span>
-      {livePhaseLabel(hb.phase, hb.scenario)}
+      {text}
     </span>
   );
 }

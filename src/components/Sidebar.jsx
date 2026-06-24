@@ -1,17 +1,20 @@
 // Sidebar.jsx — navegação principal por estado (sem react-router).
 // Trilha de "sala de controle": marca Forzy + 6 acessos + indicador de sistema ao vivo.
-import { kpis } from "../data/mock.js";
+import { useLiveTwin } from "../LiveTwinContext.jsx";
 
 const ITEMS = [
   { key: "planta", icon: "🛰️", label: "Visão da Planta" },
   { key: "ativos", icon: "🔩", label: "Ativos" },
-  { key: "alertas", icon: "🚨", label: "Alertas", badge: kpis.criticalAlerts },
+  { key: "alertas", icon: "🚨", label: "Alertas" },
   { key: "ordens", icon: "🧰", label: "Ordens de Manutenção" },
   { key: "documentos", icon: "📄", label: "Documentos Técnicos" },
   { key: "auditoria", icon: "🔍", label: "Auditoria" },
 ];
 
 export default function Sidebar({ view, onNavigate }) {
+  const twin = useLiveTwin();
+  // Badge de alertas críticos reflete o estado ao vivo (some quando tudo normaliza).
+  const criticalCount = twin.alertsList().filter((a) => a.severity === "critico").length;
   return (
     <aside className="sidebar">
       <div className="brand">
@@ -29,17 +32,20 @@ export default function Sidebar({ view, onNavigate }) {
       </div>
 
       <nav className="sidebar-nav">
-        {ITEMS.map((it) => (
-          <button
-            key={it.key}
-            className={`nav-item ${view === it.key ? "active" : ""}`}
-            onClick={() => onNavigate(it.key)}
-          >
-            <span className="ico">{it.icon}</span>
-            <span>{it.label}</span>
-            {it.badge ? <span className="nav-badge">{it.badge}</span> : null}
-          </button>
-        ))}
+        {ITEMS.map((it) => {
+          const badge = it.key === "alertas" ? criticalCount : null;
+          return (
+            <button
+              key={it.key}
+              className={`nav-item ${view === it.key ? "active" : ""}`}
+              onClick={() => onNavigate(it.key)}
+            >
+              <span className="ico">{it.icon}</span>
+              <span>{it.label}</span>
+              {badge ? <span className="nav-badge">{badge}</span> : null}
+            </button>
+          );
+        })}
       </nav>
 
       <div className="sidebar-foot">

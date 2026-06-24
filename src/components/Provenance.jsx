@@ -6,17 +6,18 @@ import {
   getAsset,
   getArea,
   getComponent,
-  latestReading,
-  assetStatus,
   statusLabel,
   auditMeta,
   kpis,
 } from "../data/mock.js";
+import { useLiveTwin } from "../LiveTwinContext.jsx";
 
-// Faixa válida por métrica (clamp físico do pipeline).
+// Faixa válida por métrica (clamp físico do pipeline). Os limites superiores
+// acomodam os picos dos cenários ao vivo (ex.: superaquecimento até ~96 °C) —
+// são limites de PLAUSIBILIDADE FÍSICA (anti-adulteração), não de alerta.
 const RANGES = {
-  temperature: { label: "Temperatura", unit: "°C", type: "Temperatura", range: [35, 92] },
-  vibration: { label: "Vibração", unit: "m/s²", type: "Vibração", range: [0.4, 8] },
+  temperature: { label: "Temperatura", unit: "°C", type: "Temperatura", range: [35, 96] },
+  vibration: { label: "Vibração", unit: "m/s²", type: "Vibração", range: [0.4, 9] },
   current: { label: "Corrente", unit: "A", type: "Corrente", range: [0, 60] },
   rotation: { label: "Rotação", unit: "RPM", type: "Controlador", range: [0, 4000] },
 };
@@ -87,8 +88,9 @@ function TechDetails({ items }) {
 }
 
 export default function Provenance({ tag }) {
+  const twin = useLiveTwin();
   const asset = tag ? getAsset(tag) : null;
-  const reading = tag ? latestReading(tag) : null;
+  const reading = tag ? twin.readingOf(tag) : null;
 
   if (!asset || !reading) {
     return (
@@ -100,12 +102,15 @@ export default function Provenance({ tag }) {
   }
 
   const area = getArea(asset.area);
-  const status = assetStatus(tag);
+  const status = twin.statusOf(tag);
   const val = VALIDATION[status] ?? VALIDATION.desconhecido;
   const when = new Date(reading.ts).toLocaleString("pt-BR");
   const topic = `forzy/${(area?.name || "").toLowerCase()}/${asset.tag.toLowerCase()}`;
   const sensorFor = (type) => asset.sensors.find((s) => s.type === type)?.tag || "—";
   const meta = auditMeta(tag);
+  // Validação humana coerente com o estado ATUAL (normal não exige parecer).
+  const humanValidation =
+    status === "normal" ? "Não requer validação (dentro da faixa)" : meta.humanValidation;
   const component = meta.componentTag ? getComponent(meta.componentTag) : null;
   const allInRange = ORDER.every((k) => inRange(reading[k], RANGES[k].range));
   const usedInRec = status !== "normal";
@@ -364,7 +369,7 @@ export default function Provenance({ tag }) {
             { k: "Coletado em", v: when },
             { k: "Assinado por", v: meta.signedBy },
             { k: "Estado avaliado", v: statusLabel(status) },
-            { k: "Validação humana", v: meta.humanValidation },
+            { k: "Validação humana", v: humanValidation },
           ]}
         />
       </Group>

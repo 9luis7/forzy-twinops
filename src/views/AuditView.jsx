@@ -1,7 +1,8 @@
 // AuditView.jsx — "Confiança do dado". Reúne o caminho da medição (pipeline clicável)
 // e a procedência por leitura, em linguagem simples primeiro e técnica em segundo plano.
 
-import { assets, getAsset, getArea, assetStatus } from "../data/mock.js";
+import { assets, getAsset, getArea } from "../data/mock.js";
+import { useLiveTwin } from "../LiveTwinContext.jsx";
 import DataPipeline from "../components/DataPipeline.jsx";
 import Provenance from "../components/Provenance.jsx";
 
@@ -9,6 +10,7 @@ const STAR = "MTR-BMB-042";
 const STATUS_CLS = { normal: "ok", alerta: "alerta", critico: "critico", desconhecido: "neutro" };
 
 export default function AuditView({ selectedTag, nav }) {
+  const twin = useLiveTwin();
   const tag = selectedTag && getAsset(selectedTag) ? selectedTag : STAR;
   const current = getAsset(tag);
   const area = current ? getArea(current.area) : null;
@@ -57,7 +59,7 @@ export default function AuditView({ selectedTag, nav }) {
           <span className="au-pick-lbl">Escolher motor</span>
           <div className="au-chips">
             {assets.map((a) => {
-              const st = assetStatus(a.tag);
+              const st = twin.statusOf(a.tag);
               const led = STATUS_CLS[st] ?? "neutro";
               const active = a.tag === tag;
               return (

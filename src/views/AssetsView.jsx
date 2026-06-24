@@ -6,19 +6,18 @@ import {
   getAsset,
   assetsByArea,
   assets as allAssets,
-  assetStatus,
-  assetRisk,
-  latestReading,
 } from "../data/mock.js";
+import { useLiveTwin } from "../LiveTwinContext.jsx";
 import Breadcrumb from "../components/Breadcrumb.jsx";
 import TagTree from "../components/TagTree.jsx";
 import AssetProfile from "../components/AssetProfile.jsx";
 import { StatusBadge, RiskTag } from "../components/ui.jsx";
 
 function AssetCard({ asset, nav }) {
-  const r = latestReading(asset.tag);
-  const risk = assetRisk(asset.tag);
-  const status = assetStatus(asset.tag);
+  const twin = useLiveTwin();
+  const r = twin.readingOf(asset.tag);
+  const risk = twin.riskOf(asset.tag);
+  const status = twin.statusOf(asset.tag);
   const ledCls = ["alerta", "critico"].includes(status) ? `${status} pulse` : status;
   const tempWarn = r?.temperature >= 90 ? "var(--critico)" : r?.temperature >= 70 ? "var(--alerta)" : "var(--texto)";
   const vibWarn = r?.vibration >= 7.5 ? "var(--critico)" : r?.vibration >= 4.5 ? "var(--alerta)" : "var(--texto)";
@@ -50,10 +49,11 @@ function AssetCard({ asset, nav }) {
 }
 
 function AreaSummary({ areaTag, nav }) {
+  const twin = useLiveTwin();
   const area = getArea(areaTag);
   const motors = assetsByArea(areaTag);
   const worst = motors.reduce((acc, m) => {
-    const s = assetStatus(m.tag);
+    const s = twin.statusOf(m.tag);
     const rank = { critico: 3, alerta: 2, normal: 1, desconhecido: 0 };
     return (rank[s] ?? 0) > (rank[acc] ?? 0) ? s : acc;
   }, "normal");
