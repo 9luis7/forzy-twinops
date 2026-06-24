@@ -1,14 +1,25 @@
-// mock.js — dados sintéticos gerados a partir do schema Supabase (assets + readings).
-// Geração em RUNTIME com seed fixa por TAG => mesma série a cada carregamento (reprodutível).
+// mock.js — fonte única de verdade do protótipo (dados sintéticos, sem backend).
 //
-// Schema de referência:
-//   assets(tag, name, motor_type, sector)
+// Hierarquia de TAGs (do macro ao micro — o aprendizado do feedback):
+//   PLT-FORZY-001                      planta
+//     └── AREA-PROD-01                 área
+//           └── BMB-SUC-004            equipamento (bomba)
+//                 └── MTR-BMB-042      ativo monitorado (motor) ← estrela da demo
+//                       ├── SNS-TEMP-042A   sensor de temperatura
+//                       ├── SNS-VIB-042B    sensor de vibração
+//                       ├── SNS-COR-042C    sensor de corrente
+//                       └── PLC-042         controlador
+//
+// O motor é o PRIMEIRO ativo escolhido para demonstrar a lógica — a janela para a
+// fábrica inteira, não o limite da solução.
+//
+// Schema de referência (Supabase / PostgreSQL):
+//   assets(tag, name, motor_type, area, ...)
 //   readings(asset_tag, ts, temperature [°C], current [A], vibration [m/s²], rotation [RPM])
 //
-// Janela: 24h, 1 ponto a cada 5 min (~288 pontos/motor).
-// Faixas físicas plausíveis: temp 35–85 °C | vibração 0.5–8 m/s² | rotação ~1750–3500 RPM.
+// Janela das séries: 24h, 1 ponto a cada 5 min (~288 pontos/motor).
 
-// ---------- PRNG determinístico (mulberry32) ----------
+// ---------- PRNG determinístico (mulberry32) — mesma série a cada load ----------
 function mulberry32(seed) {
   let a = seed >>> 0;
   return function () {
@@ -29,106 +40,221 @@ function seedFromTag(tag) {
   return h >>> 0;
 }
 
-// ---------- assets ----------
+// ============================================================================
+//  PLANTA · ÁREAS
+// ============================================================================
+export const PLANT = {
+  tag: "PLT-FORZY-001",
+  name: "Planta Forzy 01",
+  location: "Unidade Industrial — Forzy",
+};
+
+// assetsCount soma 128 (bate com o KPI "Ativos monitorados").
+export const areas = [
+  { tag: "AREA-PROD-01", letter: "A", name: "Produção", assetsCount: 42, icon: "🏭" },
+  { tag: "AREA-UTIL-01", letter: "B", name: "Utilidades", assetsCount: 36, icon: "⚙️" },
+  { tag: "AREA-MANUT-01", letter: "C", name: "Manutenção", assetsCount: 28, icon: "🔧" },
+  { tag: "AREA-EXP-01", letter: "D", name: "Expedição", assetsCount: 22, icon: "📦" },
+];
+
+export const getArea = (tag) => areas.find((a) => a.tag === tag) || null;
+
+// ============================================================================
+//  ATIVOS (motores) — subconjunto detalhado e navegável
+// ============================================================================
+// Cada motor tem TAG, equipamento pai, sensores filhos, datas de manutenção e
+// um perfil de baseline usado pela geração de leituras. `degrading: true` ativa
+// a rampa de degradação (só o MTR-BMB-042 — a estrela).
 export const assets = [
   {
-    tag: "MOT-001",
-    name: "WEG W22-IR3 Premium",
-    motor_type: "Indução trifásico 7.5kW 220V",
-    sector: "Compressores",
-    note: "Ativo real — primeiro a falar. Baseline normal.",
+    tag: "MTR-BMB-042",
+    name: "Motor Bomba de Sucção 042",
+    area: "AREA-PROD-01",
+    parent: "BMB-SUC-004",
+    motor_type: "Indução trifásico · 7,5 kW · 220 V",
+    manufacturer: "WEG W22 IR3 Premium",
+    installDate: "2021-03-12",
+    lastMaintenance: "2026-05-14",
+    nextInspection: "2026-06-26",
+    operatingHours: 38420,
+    sensors: [
+      { tag: "SNS-TEMP-042A", type: "Temperatura", model: "DHT22" },
+      { tag: "SNS-VIB-042B", type: "Vibração", model: "MPU6050" },
+      { tag: "SNS-COR-042C", type: "Corrente", model: "ACS712" },
+      { tag: "PLC-042", type: "Controlador", model: "PLC Siemens S7-1200" },
+    ],
+    profile: { temp: 59, current: 17, vib: 2.2, rot: 1760, degrading: true },
+    note: "Primeiro ativo conectado. Tendência de degradação em rolamento.",
   },
   {
-    tag: "MOT-002",
-    name: "Motor Bomba B2",
-    motor_type: "Indução trifásico 5.5kW",
-    sector: "Bombas",
+    tag: "MTR-BMB-027",
+    name: "Motor Bomba de Recalque 027",
+    area: "AREA-PROD-01",
+    parent: "BMB-REC-002",
+    motor_type: "Indução trifásico · 5,5 kW · 220 V",
+    manufacturer: "WEG W22",
+    installDate: "2020-08-01",
+    lastMaintenance: "2026-04-22",
+    nextInspection: "2026-07-22",
+    operatingHours: 45110,
+    sensors: [
+      { tag: "SNS-TEMP-027A", type: "Temperatura", model: "DHT22" },
+      { tag: "SNS-VIB-027B", type: "Vibração", model: "MPU6050" },
+      { tag: "SNS-COR-027C", type: "Corrente", model: "ACS712" },
+    ],
+    profile: { temp: 50, current: 18, vib: 1.5, rot: 1750, degrading: false },
+    note: "Operação dentro do esperado.",
+  },
+  {
+    tag: "MTR-CMP-018",
+    name: "Motor Compressor de Ar 018",
+    area: "AREA-UTIL-01",
+    parent: "CMP-AR-001",
+    motor_type: "Indução trifásico · 11 kW · 380 V",
+    manufacturer: "WEG W22 IR3",
+    installDate: "2019-11-19",
+    lastMaintenance: "2026-05-30",
+    nextInspection: "2026-08-30",
+    operatingHours: 52300,
+    sensors: [
+      { tag: "SNS-TEMP-018A", type: "Temperatura", model: "DHT22" },
+      { tag: "SNS-VIB-018B", type: "Vibração", model: "MPU6050" },
+      { tag: "SNS-COR-018C", type: "Corrente", model: "ACS712" },
+    ],
+    profile: { temp: 58, current: 24, vib: 1.8, rot: 1770, degrading: false },
     note: "Operação normal.",
   },
   {
-    tag: "MOT-003",
-    name: "Motor Ventilação V1",
-    motor_type: "Indução trifásico 4kW",
-    sector: "Ventilação",
-    note: "Tendência de degradação (temperatura e vibração subindo).",
+    tag: "MTR-VNT-007",
+    name: "Motor Ventilador de Exaustão 007",
+    area: "AREA-UTIL-01",
+    parent: "VNT-EXA-003",
+    motor_type: "Indução trifásico · 4 kW · 220 V",
+    manufacturer: "WEG W21",
+    installDate: "2022-02-10",
+    lastMaintenance: "2026-06-01",
+    nextInspection: "2026-07-12",
+    operatingHours: 21750,
+    sensors: [
+      { tag: "SNS-TEMP-007A", type: "Temperatura", model: "DHT22" },
+      { tag: "SNS-VIB-007B", type: "Vibração", model: "MPU6050" },
+      { tag: "SNS-COR-007C", type: "Corrente", model: "ACS712" },
+    ],
+    profile: { temp: 48, current: 12, vib: 2.4, rot: 3480, degrading: false },
+    note: "Vibração de baseline um pouco mais alta (rotação 3500 RPM).",
   },
   {
-    tag: "MOT-004",
-    name: "Motor Esteira E4",
-    motor_type: "Indução trifásico 3kW",
-    sector: "Esteiras",
+    tag: "MTR-EST-031",
+    name: "Motor Esteira Transportadora 031",
+    area: "AREA-EXP-01",
+    parent: "EST-TRA-009",
+    motor_type: "Indução trifásico · 3 kW · 220 V",
+    manufacturer: "WEG W21",
+    installDate: "2021-09-05",
+    lastMaintenance: "2026-05-08",
+    nextInspection: "2026-08-08",
+    operatingHours: 33980,
+    sensors: [
+      { tag: "SNS-TEMP-031A", type: "Temperatura", model: "DHT22" },
+      { tag: "SNS-VIB-031B", type: "Vibração", model: "MPU6050" },
+      { tag: "SNS-COR-031C", type: "Corrente", model: "ACS712" },
+    ],
+    profile: { temp: 44, current: 10, vib: 1.2, rot: 1760, degrading: false },
     note: "Operação normal.",
+  },
+  {
+    tag: "MTR-PNT-012",
+    name: "Motor Ponte Rolante 012",
+    area: "AREA-MANUT-01",
+    parent: "PNT-ROL-001",
+    motor_type: "Indução trifásico · 6 kW · 380 V",
+    manufacturer: "WEG W22",
+    installDate: "2018-06-30",
+    lastMaintenance: "2026-03-15",
+    nextInspection: "2026-09-15",
+    operatingHours: 61240,
+    sensors: [
+      { tag: "SNS-TEMP-012A", type: "Temperatura", model: "DHT22" },
+      { tag: "SNS-VIB-012B", type: "Vibração", model: "MPU6050" },
+      { tag: "SNS-COR-012C", type: "Corrente", model: "ACS712" },
+    ],
+    profile: { temp: 46, current: 14, vib: 1.6, rot: 1755, degrading: false },
+    note: "Operação intermitente (uso sob demanda).",
   },
 ];
 
-// Perfil de baseline por motor (valores médios + amplitude de ruído).
-const PROFILE = {
-  "MOT-001": { temp: 55, current: 24, vib: 1.8, rot: 1760, degrading: false },
-  "MOT-002": { temp: 50, current: 18, vib: 1.5, rot: 1750, degrading: false },
-  "MOT-003": { temp: 52, current: 15, vib: 2.0, rot: 3500, degrading: true },
-  "MOT-004": { temp: 45, current: 12, vib: 1.2, rot: 1760, degrading: false },
-};
+export const getAsset = (tag) => assets.find((a) => a.tag === tag) || null;
+export const assetsByArea = (areaTag) => assets.filter((a) => a.area === areaTag);
 
-// ---------- parâmetros da série ----------
+// ============================================================================
+//  LEITURAS (séries temporais sintéticas)
+// ============================================================================
 const POINTS = 288; // 24h a cada 5 min
-const STEP_MS = 5 * 60 * 1000; // 5 minutos
+const STEP_MS = 5 * 60 * 1000;
 const WINDOW_MS = (POINTS - 1) * STEP_MS;
+// Âncora temporal fixa => séries reprodutíveis (não usa Date.now em runtime).
+const END_TS = Date.parse("2026-06-24T14:32:00-03:00");
 
 const round = (v, d = 2) => {
   const f = 10 ** d;
   return Math.round(v * f) / f;
 };
 
-// Gera a série de leituras de um motor (ordem cronológica, termina "agora").
-function generateReadings(tag, endTs = Date.now()) {
-  const p = PROFILE[tag];
-  const rnd = mulberry32(seedFromTag(tag));
-  const start = endTs - WINDOW_MS;
+// Gera a série de um motor (ordem cronológica, termina em END_TS).
+function generateReadings(asset) {
+  const p = asset.profile;
+  const rnd = mulberry32(seedFromTag(asset.tag));
+  const start = END_TS - WINDOW_MS;
   const out = [];
 
   for (let i = 0; i < POINTS; i++) {
     const ts = start + i * STEP_MS;
-    const frac = i / (POINTS - 1); // 0 -> 1 ao longo da janela
-    // Ciclo diário suave (turno) + ruído.
-    const diurnal = Math.sin(frac * Math.PI * 2 - Math.PI / 2);
+    const frac = i / (POINTS - 1); // 0 → 1 ao longo da janela
+    const diurnal = Math.sin(frac * Math.PI * 2 - Math.PI / 2); // ciclo de turno
+    const ramp = p.degrading ? frac : 0; // rampa só na estrela
 
-    // Rampa de degradação só no MOT-003 (cresce ao longo do tempo).
-    const ramp = p.degrading ? frac : 0;
-
-    const temperature =
-      p.temp + diurnal * 3 + (rnd() - 0.5) * 1.5 + ramp * 26; // sobe ~26°C no fim
-    const vibration =
-      p.vib + diurnal * 0.15 + (rnd() - 0.5) * 0.25 + ramp * 4.5; // sobe ~4.5 m/s²
-    const current =
-      p.current + diurnal * 0.8 + (rnd() - 0.5) * 0.6 + ramp * 3; // leve aumento de carga
-    const rotation =
-      p.rot - ramp * 40 + (rnd() - 0.5) * 8; // leve queda de RPM sob esforço
+    const temperature = p.temp + diurnal * 3 + (rnd() - 0.5) * 1.6 + ramp * 26; // ~+26 °C
+    const vibration = p.vib + diurnal * 0.15 + (rnd() - 0.5) * 0.25 + ramp * 3.6; // ~+3.6 m/s²
+    const current = p.current + diurnal * 0.8 + (rnd() - 0.5) * 0.6 + ramp * 2.4;
+    const rotation = p.rot - ramp * 30 + (rnd() - 0.5) * 8;
 
     out.push({
-      asset_tag: tag,
+      asset_tag: asset.tag,
       ts: new Date(ts).toISOString(),
-      temperature: round(Math.min(temperature, 85), 1),
+      temperature: round(Math.min(temperature, 92), 1),
       current: round(current, 1),
-      vibration: round(Math.max(vibration, 0.5), 2),
+      vibration: round(Math.max(vibration, 0.4), 2),
       rotation: Math.round(rotation),
     });
   }
   return out;
 }
 
-// readings: { "MOT-001": [...], ... }
 export const readings = Object.fromEntries(
-  assets.map((a) => [a.tag, generateReadings(a.tag)])
+  assets.map((a) => [a.tag, generateReadings(a)])
 );
 
-// ---------- helpers de conveniência ----------
 export const latestReading = (tag) => {
   const arr = readings[tag];
   return arr ? arr[arr.length - 1] : null;
 };
 
-// Limiares simples para estado operacional (mock visual).
-const THRESHOLDS = { temp: { warn: 65, crit: 75 }, vib: { warn: 4.5, crit: 6 } };
+// ============================================================================
+//  ESTADO OPERACIONAL · RISCO
+// ============================================================================
+// Limiares de realce (espelhados pela UI). Calibrados para o MTR-BMB-042 cair
+// em "alerta" (Atenção) — sintoma claro, mas ainda não parada crítica.
+export const THRESHOLDS = {
+  temp: { warn: 70, crit: 90 },
+  vib: { warn: 4.5, crit: 7.5 },
+};
+
+const STATUS_LABEL = {
+  normal: "Normal",
+  alerta: "Atenção",
+  critico: "Crítico",
+  desconhecido: "Desconhecido",
+};
 
 export function assetStatus(tag) {
   const r = latestReading(tag);
@@ -140,4 +266,193 @@ export function assetStatus(tag) {
   return "normal";
 }
 
-export const getAsset = (tag) => assets.find((a) => a.tag === tag) || null;
+export const statusLabel = (status) => STATUS_LABEL[status] ?? STATUS_LABEL.desconhecido;
+
+// Risco preditivo. A estrela tem um diagnóstico curado (evidências/narrativa);
+// os demais são derivados do estado atual.
+const RISK_CURATED = {
+  "MTR-BMB-042": {
+    level: "Médio/Alto",
+    score: 72,
+    confidence: 87,
+    component: "Rolamento — lado acoplamento",
+    windowHours: 72,
+    headline:
+      "Risco de falha em rolamento detectado. Recomenda-se inspeção em até 72h para evitar parada não planejada.",
+    origin: "SNS-VIB-042B",
+    bases: ["Histórico de falhas", "Manual WEG W22", "OS anteriores"],
+    evidence: [
+      "Vibração aumentou 23% nos últimos 5 dias",
+      "Temperatura média subiu de 68 °C para 82 °C",
+      "Falha semelhante registrada na OS-2025-118",
+      "Manual técnico recomenda inspeção acima de 80 °C em operação contínua",
+    ],
+  },
+};
+
+export function assetRisk(tag) {
+  if (RISK_CURATED[tag]) return RISK_CURATED[tag];
+  const status = assetStatus(tag);
+  if (status === "critico")
+    return { level: "Alto", score: 80, confidence: 84, component: "—", windowHours: 24 };
+  if (status === "alerta")
+    return { level: "Médio", score: 55, confidence: 80, component: "—", windowHours: 120 };
+  return { level: "Baixo", score: 12, confidence: 95, component: "—", windowHours: null };
+}
+
+// ============================================================================
+//  ALERTAS
+// ============================================================================
+export const alerts = [
+  {
+    id: "ALR-2026-0312",
+    tag: "MTR-BMB-042",
+    severity: "critico",
+    title: "Risco de falha em rolamento",
+    message:
+      "Risco de falha em rolamento detectado. Recomenda-se inspeção em até 72h para evitar parada não planejada.",
+    confidence: 87,
+    origin: "SNS-VIB-042B",
+    bases: ["Histórico de falhas", "Manual WEG W22", "OS anteriores"],
+    ts: "2026-06-24T14:32:00-03:00",
+    status: "Aberto",
+  },
+  {
+    id: "ALR-2026-0309",
+    tag: "MTR-VNT-007",
+    severity: "alerta",
+    title: "Vibração acima do baseline",
+    message:
+      "Vibração média 12% acima do baseline histórico do ventilador. Monitorar evolução na próxima janela.",
+    confidence: 74,
+    origin: "SNS-VIB-007B",
+    bases: ["Baseline histórico", "ISO 10816-3"],
+    ts: "2026-06-24T11:05:00-03:00",
+    status: "Em análise",
+  },
+  {
+    id: "ALR-2026-0301",
+    tag: "MTR-CMP-018",
+    severity: "alerta",
+    title: "Temperatura sazonal elevada",
+    message:
+      "Temperatura do compressor 6% acima do esperado para a carga atual. Verificar ventilação do ambiente.",
+    confidence: 69,
+    origin: "SNS-TEMP-018A",
+    bases: ["Curva de carga", "Manual WEG W22"],
+    ts: "2026-06-23T16:48:00-03:00",
+    status: "Em análise",
+  },
+];
+
+export const alertsForTag = (tag) => alerts.filter((a) => a.tag === tag);
+
+// ============================================================================
+//  ORDENS DE MANUTENÇÃO (OS)
+// ============================================================================
+export const maintenanceOrders = [
+  {
+    id: "OS-2026-204",
+    tag: "MTR-BMB-042",
+    type: "Preditiva",
+    title: "Inspeção de rolamento — gerada por alerta preditivo",
+    priority: "Alta",
+    status: "Aberta",
+    openedAt: "2026-06-24",
+    dueAt: "2026-06-26",
+    assignee: "Equipe de Manutenção Mecânica",
+    origin: "ALR-2026-0312",
+  },
+  {
+    id: "OS-2025-118",
+    tag: "MTR-BMB-027",
+    type: "Corretiva",
+    title: "Substituição de rolamento após falha — motor de bomba",
+    priority: "Alta",
+    status: "Concluída",
+    openedAt: "2025-11-08",
+    dueAt: "2025-11-09",
+    assignee: "Leandro M. (Manutenção)",
+    origin: "Falha em campo",
+  },
+  {
+    id: "OS-2026-187",
+    tag: "MTR-BMB-042",
+    type: "Preventiva",
+    title: "Lubrificação e alinhamento — janela programada",
+    priority: "Média",
+    status: "Concluída",
+    openedAt: "2026-05-14",
+    dueAt: "2026-05-14",
+    assignee: "Equipe de Manutenção Mecânica",
+    origin: "Plano de manutenção",
+  },
+  {
+    id: "OS-2026-192",
+    tag: "MTR-CMP-018",
+    type: "Preventiva",
+    title: "Troca de filtro e verificação de correias",
+    priority: "Baixa",
+    status: "Programada",
+    openedAt: "2026-06-18",
+    dueAt: "2026-08-30",
+    assignee: "Equipe de Utilidades",
+    origin: "Plano de manutenção",
+  },
+];
+
+export const ordersForTag = (tag) => maintenanceOrders.filter((o) => o.tag === tag);
+
+// ============================================================================
+//  DOCUMENTOS TÉCNICOS (conhecimento vinculado)
+// ============================================================================
+export const documents = [
+  {
+    id: "DOC-001",
+    label: "Manual técnico WEG W22 IR3 Premium",
+    kind: "Manual do fabricante",
+    meta: "PDF · 184 págs · rev. 2023",
+    tags: ["MTR-BMB-042", "MTR-CMP-018", "MTR-BMB-027"],
+  },
+  {
+    id: "DOC-002",
+    label: "ISO 10816-3 — severidade de vibração",
+    kind: "Norma técnica",
+    meta: "Limites de vibração para máquinas industriais",
+    tags: ["MTR-BMB-042", "MTR-VNT-007"],
+  },
+  {
+    id: "DOC-003",
+    label: "Datasheet sensor MPU6050",
+    kind: "Datasheet de sensor",
+    meta: "Faixa, resolução e ruído do acelerômetro",
+    tags: ["SNS-VIB-042B"],
+  },
+  {
+    id: "DOC-004",
+    label: "Plano de manutenção — Bombas (Produção)",
+    kind: "Plano interno",
+    meta: "Periodicidade e checklist por ativo",
+    tags: ["MTR-BMB-042", "MTR-BMB-027"],
+  },
+  {
+    id: "DOC-005",
+    label: "OS-2025-118 — relatório de falha em rolamento",
+    kind: "Histórico de OS",
+    meta: "Causa raiz, peças trocadas e tempo de parada",
+    tags: ["MTR-BMB-042", "MTR-BMB-027"],
+  },
+];
+
+export const docsForTag = (tag) =>
+  documents.filter((d) => d.tags.includes(tag));
+
+// ============================================================================
+//  KPIs do dashboard (visão da planta)
+// ============================================================================
+export const kpis = {
+  monitoredAssets: 128,
+  criticalAlerts: 3,
+  plannedMaintenance: 7,
+  dataReliability: 94, // %
+};

@@ -16,8 +16,8 @@ import { readings } from "../data/mock.js";
 
 // Métricas disponíveis + faixas de alerta/crítico (espelham o mock).
 const METRICS = {
-  temperature: { label: "Temperatura", unit: "°C", color: "var(--laranja)", warn: 65, crit: 75 },
-  vibration: { label: "Vibração", unit: "m/s²", color: "var(--roxo-claro)", warn: 4.5, crit: 6 },
+  temperature: { label: "Temperatura", unit: "°C", color: "var(--laranja)", warn: 70, crit: 90 },
+  vibration: { label: "Vibração", unit: "m/s²", color: "var(--roxo-claro)", warn: 4.5, crit: 7.5 },
   current: { label: "Corrente", unit: "A", color: "var(--ok)" },
   rotation: { label: "Rotação", unit: "RPM", color: "var(--alerta)" },
 };
