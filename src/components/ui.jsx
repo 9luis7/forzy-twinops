@@ -2,11 +2,15 @@
 import { statusLabel } from "../data/mock.js";
 
 // Badge de estado operacional: normal | alerta | critico | desconhecido.
+// LED de status (glow) + rótulo humano. Pulsa quando em alerta/crítico.
 export function StatusBadge({ status }) {
   const cls = ["normal", "alerta", "critico"].includes(status) ? status : "neutro";
+  // .led usa as classes ok/alerta/critico — "normal" mapeia para o LED verde.
+  const ledCls = cls === "normal" ? "ok" : cls === "neutro" ? "" : cls;
+  const pulse = cls === "alerta" || cls === "critico" ? " pulse" : "";
   return (
     <span className={`badge ${cls}`}>
-      <span className={`dot ${cls}`} style={{ width: 8, height: 8 }} />
+      <span className={`led ${ledCls}${pulse}`} />
       {statusLabel(status)}
     </span>
   );

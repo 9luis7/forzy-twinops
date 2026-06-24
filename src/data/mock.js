@@ -442,6 +442,27 @@ export const documents = [
     meta: "Causa raiz, peças trocadas e tempo de parada",
     tags: ["MTR-BMB-042", "MTR-BMB-027"],
   },
+  {
+    id: "DOC-006",
+    label: "Ficha de inspeção — Motor Bomba de Sucção 042",
+    kind: "Ficha de inspeção",
+    meta: "Checklist preenchido na última ronda · 14/05/2026",
+    tags: ["MTR-BMB-042"],
+  },
+  {
+    id: "DOC-007",
+    label: "Registro fotográfico — rolamento (lado acoplamento)",
+    kind: "Registro fotográfico de manutenção",
+    meta: "Termografia + inspeção visual · 3 imagens",
+    tags: ["MTR-BMB-042"],
+  },
+  {
+    id: "DOC-008",
+    label: "Evidência de intervenção — lubrificação e alinhamento",
+    kind: "Evidência de intervenção",
+    meta: "Anexo da OS-2026-187 · executado em campo",
+    tags: ["MTR-BMB-042"],
+  },
 ];
 
 export const docsForTag = (tag) =>
