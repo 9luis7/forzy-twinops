@@ -3,7 +3,8 @@
 // Cada etapa lidera com o que ela significa para uma pessoa; o nome técnico fica secundário.
 
 import { useState } from "react";
-import { getAsset, latestReading, assetStatus, statusLabel } from "../data/mock.js";
+import { getAsset, statusLabel } from "../data/mock.js";
+import { useLiveTwin } from "../LiveTwinContext.jsx";
 
 // Recomendação simples derivada do estado (mock da camada de decisão).
 function recommendation(status) {
@@ -93,10 +94,11 @@ const STATUS_CLS = { normal: "ok", alerta: "alerta", critico: "critico", desconh
 
 export default function DataPipeline({ tag }) {
   const [active, setActive] = useState("sensor");
+  const twin = useLiveTwin();
 
   const asset = tag ? getAsset(tag) : null;
-  const reading = tag ? latestReading(tag) : null;
-  const status = tag ? assetStatus(tag) : "desconhecido";
+  const reading = tag ? twin.readingOf(tag) : null;
+  const status = tag ? twin.statusOf(tag) : "desconhecido";
   const ctx = { asset, reading, status };
 
   const activeStep = STEPS.find((s) => s.key === active);

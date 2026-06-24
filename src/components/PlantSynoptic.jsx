@@ -13,11 +13,9 @@ import {
   PLANT,
   areas,
   assetsByArea,
-  assetStatus,
-  alerts,
-  latestReading,
   statusLabel,
 } from "../data/mock.js";
+import { useLiveTwin } from "../LiveTwinContext.jsx";
 
 // ---- Paleta de estado (mapeada às variáveis de design) -------------------------------
 const STATUS_COLOR = {
@@ -64,9 +62,9 @@ function cellRect(index) {
 }
 
 // ---- Glifo de motor (cilindro + eixo, com leve profundidade) --------------------------
-function MotorGlyph({ x, y, asset, status, scale = 1 }) {
+function MotorGlyph({ x, y, asset, status, reading, scale = 1 }) {
   const color = STATUS_COLOR[status] || STATUS_COLOR.desconhecido;
-  const r = latestReading(asset.tag);
+  const r = reading;
   const temp = r ? `${r.temperature.toFixed(1)}°C` : "—";
   const vib = r ? `${r.vibration.toFixed(2)} m/s²` : "—";
   const tip = `${asset.tag} · ${asset.name} · ${temp} · ${vib}`;
@@ -200,10 +198,11 @@ function MotorGlyph({ x, y, asset, status, scale = 1 }) {
 
 // ---- Componente principal -------------------------------------------------------------
 export default function PlantSynoptic({ nav }) {
+  const twin = useLiveTwin();
   // Pré-computa, por área: motores, estados e o pior estado da zona.
   const zones = areas.map((area, i) => {
     const motors = assetsByArea(area.tag);
-    const statuses = motors.map((m) => assetStatus(m.tag));
+    const statuses = motors.map((m) => twin.statusOf(m.tag));
     const worst = motors.length ? worstStatus(statuses) : "desconhecido";
     const counts = statuses.reduce(
       (acc, s) => {
@@ -215,7 +214,7 @@ export default function PlantSynoptic({ nav }) {
     return { area, motors, statuses, worst, counts, rect: cellRect(i) };
   });
 
-  const totalAlerts = alerts.length;
+  const totalAlerts = twin.alertsList().length;
 
   // Centro de cada zona (para roteamento dos tubos da canaleta).
   const center = (r) => ({ x: r.x + r.w / 2, y: r.y + r.h / 2 });
@@ -485,7 +484,8 @@ export default function PlantSynoptic({ nav }) {
                       x={gx}
                       y={gy}
                       asset={m}
-                      status={assetStatus(m.tag)}
+                      status={twin.statusOf(m.tag)}
+                      reading={twin.readingOf(m.tag)}
                       scale={0.95}
                     />
                   </g>

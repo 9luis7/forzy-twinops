@@ -247,6 +247,7 @@ export const latestReading = (tag) => {
 export const THRESHOLDS = {
   temp: { warn: 70, crit: 90 },
   vib: { warn: 4.5, crit: 7.5 },
+  current: { warn: 26, crit: 32 },
 };
 
 const STATUS_LABEL = {
@@ -570,6 +571,176 @@ export function heartbeatPoint(i, { incidentTick = null } = {}) {
     vibration: round(Math.max(vibration, 0.4), 2),
     current: round(current, 1),
     rotation: Math.round(rotation),
+  };
+}
+
+// ============================================================================
+//  CENÁRIOS DE FALHA AO VIVO (loop determinístico) — só a estrela
+// ============================================================================
+// O painel ao vivo cicla por estes cenários: cada ciclo nasce de uma operação
+// ESTÁVEL, SOBE até cruzar o limiar (DETECÇÃO no painel inteiro), SEGURA no pico
+// e então NORMALIZA — antes de passar ao próximo cenário. A forma é um envelope
+// por fase (estável → subida → pico → recuperação) e o valor de cada métrica é
+// baseline + intensidade*efeito (determinístico por tick). Cada cenário aponta o
+// COMPONENTE culpado, o SENSOR de origem e o diagnóstico — é isso que faz o
+// gêmeo digital, os gauges e o banner reagirem em sincronia.
+export const LIVE_PHASES = { stable: 7, onset: 10, peak: 8, recovery: 11 };
+export const LIVE_CYCLE_LEN =
+  LIVE_PHASES.stable + LIVE_PHASES.onset + LIVE_PHASES.peak + LIVE_PHASES.recovery;
+
+export const SCENARIOS = [
+  {
+    id: "overheat",
+    name: "Superaquecimento do estator",
+    short: "Superaquecimento",
+    component: "CMP-STA-042B",
+    sensor: "SNS-TEMP-042A",
+    primaryMetric: "temperature",
+    severity: "critico",
+    effect: { temp: 31, vib: 0.5, current: 0.8, rot: -22 },
+    confidence: 91,
+    bases: ["Curva de carga", "Manual WEG W22", "ISO 10816-3"],
+    diagnosis:
+      "Temperatura do estator subindo acima do limite crítico (90 °C). Padrão compatível com refrigeração insuficiente ou sobrecarga térmica contínua.",
+    recommendation:
+      "Verificar ventilação/defletor e a carga do motor. Inspeção térmica recomendada antes de retomar regime contínuo.",
+    causes: [
+      "Refrigeração insuficiente (defletor/ventilador)",
+      "Sobrecarga térmica em operação contínua",
+      "Ventilação do ambiente obstruída",
+      "Falha incipiente de isolamento do estator",
+    ],
+    evidence: [
+      "Temperatura cruzou 90 °C com corrente ainda dentro da faixa",
+      "Subida térmica sem pico de corrente aponta refrigeração, não sobrecarga elétrica",
+      "Manual técnico recomenda inspeção acima de 80 °C em operação contínua",
+    ],
+  },
+  {
+    id: "overload",
+    name: "Sobrecarga elétrica",
+    short: "Sobrecarga elétrica",
+    component: "CMP-SHF-042C",
+    sensor: "SNS-COR-042C",
+    primaryMetric: "current",
+    severity: "critico",
+    effect: { temp: 6, vib: 0.7, current: 16, rot: -34 },
+    confidence: 88,
+    bases: ["Curva de carga", "Histórico de falhas", "Manual WEG W22"],
+    diagnosis:
+      "Corrente acima da faixa operacional com queda de rotação. Assinatura de sobrecarga mecânica no acoplamento/eixo.",
+    recommendation:
+      "Reduzir carga e inspecionar acoplamento e alinhamento do eixo. Avaliar travamento parcial na carga acionada.",
+    causes: [
+      "Sobrecarga mecânica na carga acionada",
+      "Desalinhamento ou empenamento do eixo",
+      "Travamento parcial do acoplamento",
+      "Queda de tensão de alimentação",
+    ],
+    evidence: [
+      "Corrente cruzou 32 A acompanhada de queda de rotação",
+      "Temperatura sobe de forma secundária ao esforço elétrico",
+      "Sem assinatura de defeito localizado de rolamento",
+    ],
+  },
+  {
+    id: "imbalance",
+    name: "Desbalanceamento mecânico",
+    short: "Desbalanceamento",
+    component: "CMP-BRG-042A",
+    sensor: "SNS-VIB-042B",
+    primaryMetric: "vibration",
+    severity: "critico",
+    effect: { temp: 7, vib: 5.6, current: 1.0, rot: -16 },
+    confidence: 86,
+    bases: ["ISO 10816-3", "Baseline histórico", "OS anteriores"],
+    diagnosis:
+      "Vibração acima do limite crítico com oscilação de rotação. Assinatura típica de desbalanceamento/folga mecânica no conjunto girante.",
+    recommendation:
+      "Programar balanceamento e verificar fixação e folgas. Reinspecionar rolamento do lado acoplamento.",
+    causes: [
+      "Desbalanceamento de massa no conjunto girante",
+      "Folga mecânica / fixação inadequada",
+      "Desgaste de rolamento",
+      "Acúmulo de material no rotor/pás",
+    ],
+    evidence: [
+      "Vibração cruzou 7,5 m/s² com rotação instável",
+      "Padrão difere de defeito localizado de pista (rolamento puro)",
+      "Oscilação de rotação acompanha o pico de vibração",
+    ],
+  },
+];
+
+export const getScenario = (id) => SCENARIOS.find((s) => s.id === id) || null;
+
+// Estado do loop num tick global: cenário ativo, fase e intensidade 0..1.
+export function liveCycleState(globalTick) {
+  const cyc = Math.floor(globalTick / LIVE_CYCLE_LEN);
+  const scenario = SCENARIOS[((cyc % SCENARIOS.length) + SCENARIOS.length) % SCENARIOS.length];
+  const local = ((globalTick % LIVE_CYCLE_LEN) + LIVE_CYCLE_LEN) % LIVE_CYCLE_LEN;
+  const { stable, onset, peak, recovery } = LIVE_PHASES;
+  let phase, intensity;
+  if (local < stable) {
+    phase = "stable";
+    intensity = 0;
+  } else if (local < stable + onset) {
+    phase = "onset";
+    intensity = (local - stable) / onset;
+  } else if (local < stable + onset + peak) {
+    phase = "peak";
+    intensity = 1;
+  } else {
+    phase = "recovery";
+    intensity = 1 - (local - stable - onset - peak) / recovery;
+  }
+  return { scenario, phase, intensity: Math.max(0, Math.min(1, intensity)), cycleIndex: cyc };
+}
+
+// Status derivado dos VALORES vs limiares — espelha EXATAMENTE a cor dos gauges.
+// Assim o badge, o gêmeo digital e o banner viram no mesmo ponto em que o gauge
+// cruza o limiar (sem "acender antes"). Inclui corrente (cenário de sobrecarga).
+export function readingStatus(reading) {
+  if (!reading) return "desconhecido";
+  const t = THRESHOLDS;
+  if (
+    reading.temperature >= t.temp.crit ||
+    reading.vibration >= t.vib.crit ||
+    reading.current >= t.current.crit
+  )
+    return "critico";
+  if (
+    reading.temperature >= t.temp.warn ||
+    reading.vibration >= t.vib.warn ||
+    reading.current >= t.current.warn
+  )
+    return "alerta";
+  return "normal";
+}
+
+// Ponto ao vivo determinístico para o loop de cenários (1/seg).
+export function liveScenarioPoint(globalTick) {
+  const { scenario, phase, intensity, cycleIndex } = liveCycleState(globalTick);
+  const rnd = mulberry32((0x9e3779b9 ^ ((globalTick + 1) * 0x85ebca6b)) >>> 0);
+  const b = HEARTBEAT.baseline;
+  const e = scenario.effect;
+  const wobble = Math.sin(globalTick / 6); // micro-oscilação suave
+
+  const temperature = b.temp + intensity * e.temp + wobble * 0.6 + (rnd() - 0.5) * 0.8;
+  const vibration = b.vib + intensity * e.vib + wobble * 0.12 + (rnd() - 0.5) * 0.18;
+  const current = b.current + intensity * e.current + wobble * 0.3 + (rnd() - 0.5) * 0.4;
+  const rotation = b.rot + intensity * e.rot + (rnd() - 0.5) * 6;
+
+  return {
+    t: globalTick,
+    temperature: round(Math.min(temperature, 96), 1),
+    vibration: round(Math.max(vibration, 0.4), 2),
+    current: round(Math.max(current, 0), 1),
+    rotation: Math.round(rotation),
+    scenarioId: scenario.id,
+    phase,
+    intensity: round(intensity, 2),
+    cycleIndex,
   };
 }
 

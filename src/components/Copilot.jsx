@@ -3,15 +3,17 @@
 // motor. A ideia é mostrar conhecimento saindo da cabeça do técnico e indo para o
 // sistema — com causas, ação recomendada e evidências rastreáveis.
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   getAsset,
+  getComponent,
   assetStatus,
   assetRisk,
   latestReading,
   componentForSensor,
   auditMeta,
 } from "../data/mock.js";
+import { useLiveTwin } from "../LiveTwinContext.jsx";
 
 // Monta o banco de respostas para um ativo. Todo o conteúdo vem de dados
 // estruturados do mock (componentes, sensores, evidências, OS, validação) —
@@ -98,7 +100,85 @@ function buildAnswers(tag) {
   };
 }
 
-const QUESTION_KEYS = ["vibracao", "acao", "historico"];
+// Respostas AO VIVO do motor-estrela — refletem o cenário ativo do loop (ou o
+// estado estável). É o que mantém o copiloto coerente com o banner/gráfico.
+function buildLiveAnswers({ tag, scenario, status, reading, risk, meta }) {
+  const degrading = status !== "normal" && !!scenario;
+  const comp = scenario ? getComponent(scenario.component) : null;
+  const compLabel = comp ? `${comp.tag} · ${comp.name}` : null;
+
+  if (!degrading) {
+    return {
+      estado: {
+        title: `Como está o ${tag} agora?`,
+        component: null,
+        sensors: [],
+        causes: ["Todas as métricas dentro da faixa de baseline para a carga atual."],
+        action: "Nenhuma ação corretiva necessária. Manter monitoramento contínuo.",
+        evidence: [
+          `Temperatura ${reading ? reading.temperature : "—"} °C · vibração ${reading ? reading.vibration : "—"} m/s² · corrente ${reading ? reading.current : "—"} A`,
+          "Sem desvio relevante frente aos limiares operacionais",
+        ],
+        validation: "Não requer validação (dentro da faixa)",
+      },
+      acao: {
+        title: "Qual ação você recomenda agora?",
+        component: null,
+        sensors: [],
+        causes: null,
+        action: "Seguir o plano de manutenção preventiva vigente. Sem intervenção fora de janela.",
+        evidence: ["Indicadores dentro da faixa esperada"],
+        validation: null,
+      },
+      historico: {
+        title: "Há histórico de falha parecida nesta planta?",
+        component: null,
+        sensors: [],
+        causes: null,
+        action: "Sem ocorrência relevante para o estado atual deste ativo.",
+        evidence: ["Sem OS corretivas recentes vinculadas ao estado atual"],
+        validation: null,
+      },
+    };
+  }
+
+  return {
+    estado: {
+      title: `O que o gêmeo digital está detectando agora no ${tag}?`,
+      component: compLabel,
+      sensors: [scenario.sensor],
+      causes: scenario.causes,
+      action: scenario.recommendation,
+      evidence: scenario.evidence,
+      validation: meta.humanValidation,
+    },
+    acao: {
+      title: "Qual ação você recomenda agora?",
+      component: compLabel,
+      sensors: [scenario.sensor],
+      causes: null,
+      action: scenario.recommendation,
+      evidence: [
+        `Nível de risco estimado: ${risk.level} (confiança ${scenario.confidence}%)`,
+        `Origem do sinal: ${scenario.sensor}`,
+        `Pontuado por ${meta.scoringModel} · trace ${meta.traceId}`,
+      ],
+      validation: meta.humanValidation,
+    },
+    historico: {
+      title: "Há histórico de falha parecida nesta planta?",
+      component: null,
+      sensors: [],
+      causes: null,
+      action: `Padrão de ${scenario.short.toLowerCase()} comparado ao baseline e ao histórico do ativo (ex.: OS-2025-118, em motor de bomba semelhante).`,
+      evidence: [
+        "OS-2025-118 — intervenção corretiva registrada em motor de bomba semelhante",
+        "Assinatura atual confrontada com o histórico da planta",
+      ],
+      validation: null,
+    },
+  };
+}
 
 function Answer({ a }) {
   return (
@@ -147,14 +227,43 @@ function Answer({ a }) {
 }
 
 export default function Copilot({ tag }) {
-  const answers = useMemo(() => buildAnswers(tag), [tag]);
+  const twin = useLiveTwin();
+  const isStar = twin.isStar(tag);
+  const scenario = twin.scenarioOf(tag);
+  const status = twin.statusOf(tag);
+  const reading = twin.readingOf(tag);
+  const risk = twin.riskOf(tag);
+  const meta = auditMeta(tag);
+
+  // Chave do estado vivo: muda quando um cenário entra/sai (estrela); senão, é a TAG.
+  const stateKey = isStar ? (scenario ? scenario.id : "normal") : tag;
+
+  const answers = useMemo(
+    () =>
+      isStar
+        ? buildLiveAnswers({ tag, scenario, status, reading, risk, meta })
+        : buildAnswers(tag),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [stateKey, tag]
+  );
+
+  const keys = Object.keys(answers);
+  const seedConv = () => [
+    { role: "user", text: answers[keys[0]].title },
+    { role: "bot", answer: answers[keys[0]] },
+  ];
+
   // Conversa inicia com a pergunta-chave já respondida (caminho ensaiado da demo).
-  const [conversation, setConversation] = useState(() => [
-    { role: "user", text: answers.vibracao.title },
-    { role: "bot", answer: answers.vibracao },
-  ]);
-  const [asked, setAsked] = useState(() => new Set(["vibracao"]));
-  // Obs.: o pai monta <Copilot key={tag} /> — trocar de ativo remonta e reseta a conversa.
+  const [conversation, setConversation] = useState(seedConv);
+  const [asked, setAsked] = useState(() => new Set([keys[0]]));
+
+  // Re-semeia quando o estado vivo muda — o copiloto "percebe" o novo problema
+  // (ou a normalização), mantendo-se coerente com o banner e o gráfico.
+  useEffect(() => {
+    setConversation(seedConv());
+    setAsked(new Set([keys[0]]));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [stateKey]);
 
   const ask = (qk) => {
     const a = answers[qk];
@@ -172,7 +281,7 @@ export default function Copilot({ tag }) {
       </h3>
 
       <div className="copilot-q-row">
-        {QUESTION_KEYS.map((qk) => (
+        {keys.map((qk) => (
           <button
             key={qk}
             className={`copilot-q ${asked.has(qk) ? "active" : ""}`}

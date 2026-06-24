@@ -6,10 +6,9 @@ import {
   PLANT,
   areas,
   assetsByArea,
-  assetStatus,
-  componentsForAsset,
   componentForSensor,
 } from "../data/mock.js";
+import { useLiveTwin } from "../LiveTwinContext.jsx";
 
 export default function TagTree({
   selectedTag,
@@ -18,6 +17,7 @@ export default function TagTree({
   onSelectAsset,
   onSelectComponent,
 }) {
+  const twin = useLiveTwin();
   // Áreas com ativos detalhados começam expandidas; foca a área selecionada.
   const [open, setOpen] = useState(() => {
     const s = new Set(areas.filter((a) => assetsByArea(a.tag).length).map((a) => a.tag));
@@ -71,7 +71,7 @@ export default function TagTree({
                   {motors.map((m) => {
                     const active = m.tag === selectedTag;
                     const expanded = openAsset === m.tag;
-                    const comps = componentsForAsset(m.tag);
+                    const comps = twin.componentsOf(m.tag);
                     return (
                       <li key={m.tag}>
                         <button
@@ -81,7 +81,7 @@ export default function TagTree({
                           }}
                           style={treeBtn(active)}
                         >
-                          <span className={`led ${ledCls(dotCls(m.tag))}`} />
+                          <span className={`led ${ledCls(cmpCls(twin.statusOf(m.tag)))}`} />
                           <span className="mono" style={{ fontSize: 12.5 }}>{m.tag}</span>
                         </button>
 
@@ -164,11 +164,6 @@ export default function TagTree({
       </ul>
     </aside>
   );
-}
-
-function dotCls(tag) {
-  const s = assetStatus(tag);
-  return ["normal", "alerta", "critico"].includes(s) ? s : "neutro";
 }
 
 function cmpCls(status) {
