@@ -1,0 +1,7 @@
+# Arquivos que não precisam subir no deploy (CLI). O build da Vercel gera o dist.
+node_modules
+dist
+*.local
+.env
+.env.*
+!.env.example
