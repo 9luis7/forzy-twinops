@@ -20,7 +20,7 @@ export default function App() {
         </p>
       </header>
 
-      <DataPipeline />
+      <DataPipeline tag={selectedTag} />
       <div style={{ display: "grid", gridTemplateColumns: "260px 1fr", gap: 16, marginTop: 16 }}>
         <TagTree selectedTag={selectedTag} onSelect={setSelectedTag} />
         <div>
