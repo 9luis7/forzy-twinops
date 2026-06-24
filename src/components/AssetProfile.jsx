@@ -37,6 +37,42 @@ function Fact({ label, children, hint }) {
   );
 }
 
+// Limites operacionais configurados — a "parametrização que dispara o alerta"
+// (conceito central da solução Forzy). Mostra os limiares e o estado atual.
+function LimitRow({ metric, unit, warn, crit, value }) {
+  const state =
+    value == null ? "neutro" : value >= crit ? "critico" : value >= warn ? "alerta" : "normal";
+  const label = {
+    normal: "dentro do limite",
+    alerta: "em atenção",
+    critico: "acima do crítico",
+    neutro: "—",
+  }[state];
+  return (
+    <div
+      style={{
+        flex: "1 1 220px",
+        background: "var(--surface-2)",
+        border: "1px solid var(--borda)",
+        borderRadius: 12,
+        padding: "11px 13px",
+      }}
+    >
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
+        <span style={{ fontWeight: 600 }}>{metric}</span>
+        <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+          <span className={`led ${state === "normal" ? "ok" : state}`} />
+          <span className="muted small">{label}</span>
+        </span>
+      </div>
+      <div className="muted small" style={{ marginTop: 6 }}>
+        Atenção ≥ <b style={{ color: "var(--alerta)" }}>{warn} {unit}</b> · Crítico ≥{" "}
+        <b style={{ color: "var(--critico)" }}>{crit} {unit}</b>
+      </div>
+    </div>
+  );
+}
+
 // Valor atual por TAG de sensor (mapeia o tipo do sensor → métrica da leitura).
 function sensorValue(asset, sensorTag, reading) {
   const s = asset.sensors.find((x) => x.tag === sensorTag);
@@ -323,6 +359,33 @@ export default function AssetProfile({ asset, nav, selectedComponent }) {
         ) : (
           <p className="muted small">Sem leituras.</p>
         )}
+
+        {/* Limites operacionais — a parametrização que dispara o alerta (visão Forzy) */}
+        <div style={{ marginTop: 16 }}>
+          <div
+            className="section-title"
+            style={{ marginBottom: 8, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, flexWrap: "wrap" }}
+          >
+            <span>
+              Limites operacionais{" "}
+              <span className="muted small" style={{ fontWeight: 400 }}>
+                · o sistema alerta ao atingir estes valores
+              </span>
+            </span>
+            <button
+              className="btn"
+              disabled
+              title="Demo — limites fixos nesta versão do protótipo"
+              style={{ opacity: 0.65, cursor: "default" }}
+            >
+              ⚙ Ajustar limites
+            </button>
+          </div>
+          <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+            <LimitRow metric="Temperatura" unit="°C" warn={THRESHOLDS.temp.warn} crit={THRESHOLDS.temp.crit} value={reading?.temperature} />
+            <LimitRow metric="Vibração" unit="m/s²" warn={THRESHOLDS.vib.warn} crit={THRESHOLDS.vib.crit} value={reading?.vibration} />
+          </div>
+        </div>
 
         {/* Sensores do ativo */}
         <div style={{ marginTop: 14 }}>

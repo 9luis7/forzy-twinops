@@ -36,8 +36,14 @@ export default function TagTree({
 
   return (
     <aside className="card" style={{ alignSelf: "start" }}>
-      <h3>Árvore TAG</h3>
-      <div style={{ fontWeight: 600, marginBottom: 8 }}>🏭 {PLANT.name}</div>
+      <h3 style={{ display: "flex", alignItems: "center", gap: 8 }}>
+        <span className="led ok pulse" />
+        Navegação do ativo
+      </h3>
+      <div style={{ marginBottom: 10 }}>
+        <div style={{ fontWeight: 600 }}>🏭 {PLANT.name}</div>
+        <div className="muted mono" style={{ fontSize: 11.5, marginTop: 1 }}>{PLANT.tag}</div>
+      </div>
 
       <ul style={{ listStyle: "none", margin: 0, padding: 0 }}>
         {areas.map((area) => {
@@ -75,7 +81,7 @@ export default function TagTree({
                           }}
                           style={treeBtn(active)}
                         >
-                          <span className={`dot ${dotCls(m.tag)}`} style={{ width: 9, height: 9 }} />
+                          <span className={`led ${ledCls(dotCls(m.tag))}`} />
                           <span className="mono" style={{ fontSize: 12.5 }}>{m.tag}</span>
                         </button>
 
@@ -97,7 +103,7 @@ export default function TagTree({
                                     <span style={{ color: "var(--texto-fraco)", width: 10 }}>
                                       {cOpen ? "▾" : "▸"}
                                     </span>
-                                    <span className={`dot ${cmpCls(c.status)}`} style={{ width: 8, height: 8 }} />
+                                    <span className={`led ${ledCls(cmpCls(c.status))}`} />
                                     <span className="mono" style={{ fontSize: 12 }}>{c.tag}</span>
                                   </button>
 
@@ -167,6 +173,15 @@ function dotCls(tag) {
 
 function cmpCls(status) {
   return ["normal", "alerta", "critico"].includes(status) ? status : "neutro";
+}
+
+// Mapeia o estado (normal|alerta|critico|neutro) para as classes do LED (.led),
+// que usa ok/alerta/critico. "alerta"/"critico" pulsam para chamar atenção.
+function ledCls(state) {
+  if (state === "normal") return "ok";
+  if (state === "alerta") return "alerta pulse";
+  if (state === "critico") return "critico pulse";
+  return "";
 }
 
 function treeBtn(active) {
