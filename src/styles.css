@@ -1,0 +1,26 @@
+:root {
+  /* Paleta Forzy */
+  --bg: #0e0b1a;
+  --surface: #1a1430;
+  --surface-2: #241a45;
+  --roxo: #6b2fb5;
+  --roxo-claro: #9a6cff;
+  --laranja: #ff7a18;
+  --texto: #ece9f5;
+  --texto-fraco: #a89fc4;
+  --ok: #2fbf71;
+  --alerta: #ffb020;
+  --critico: #ff4d4d;
+  --borda: #2e2552;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--texto);
+  font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
+}
+
+a { color: var(--roxo-claro); }
