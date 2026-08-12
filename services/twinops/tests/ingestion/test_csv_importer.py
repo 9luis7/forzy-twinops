@@ -64,3 +64,24 @@ def test_invalid_csv_row_is_rejected_without_becoming_zero(tmp_path):
     only = repo.history(HistoryQuery(asset_tag="MTR-BMB-042"))[0]
     assert only.sensor_id == "s2"
     assert only.measurements.vibration_velocity_rms.value == 0.0
+
+
+def test_csv_rows_with_missing_identity_or_timestamp_are_counted_as_rejected(tmp_path):
+    csv_fixture_path = tmp_path / "telemetry.csv"
+    csv_fixture_path.write_text(
+        HEADER
+        + ",2026-08-10T15:00:00Z,0.04,0.0,34\n"
+        + "s1\n",
+        encoding="utf-8",
+    )
+    repo = SQLiteTelemetryRepository(tmp_path / "telemetry.db")
+    repo.initialize()
+
+    report = import_csv(
+        csv_fixture_path,
+        repo,
+        "MTR-BMB-042",
+        datetime(2026, 8, 12, 15, 0, tzinfo=timezone.utc),
+    )
+
+    assert (report.rows_read, report.samples_inserted, report.rejected) == (2, 0, 2)
