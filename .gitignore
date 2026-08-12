@@ -25,3 +25,8 @@ pnpm-debug.log*
 .idea/
 .DS_Store
 Thumbs.db
+
+# Scratch local de agentes / worktrees
+.superpowers/
+.worktrees/
+tmp/
