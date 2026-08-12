@@ -8,6 +8,12 @@ import pytest
 from twinops.contracts.models import CanonicalSensorReading
 
 
+def pytest_configure(config):
+    config.addinivalue_line(
+        "markers", "performance: deterministic local latency acceptance check"
+    )
+
+
 @pytest.fixture
 def sample_factory():
     base = datetime(2026, 8, 12, 13, 0, tzinfo=timezone.utc)
@@ -65,4 +71,3 @@ def sample_factory():
         )
 
     return make
-
