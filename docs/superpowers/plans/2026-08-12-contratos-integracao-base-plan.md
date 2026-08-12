@@ -89,8 +89,9 @@ Expected: FAIL porque schemas/fixtures ainda não existem.
 
 - [ ] **Step 4: Criar schemas fechados e fixtures exatas da spec**
 
-Use `additionalProperties: false`; números usam `type: "number"`; `observedAt`
-aceita string ISO ou null; enums e nomes de propriedades devem coincidir com o
+Use `additionalProperties: false`; números usam `type: "number"`; `scheduledAt`
+e `observedAt` aceitam string ISO ou null; provenance exige `sourceSystem` e
+`ingestedAt`; enums e nomes de propriedades devem coincidir com o
 pacote 00. O snapshot live válido deve conter dois itens em `channels` e não
 deve conter `currentA`, `rotationRpm` nem o campo `vibration`.
 
@@ -163,8 +164,13 @@ Expected: FAIL porque pacote/modelos ainda não existem.
 - [ ] **Step 3: Criar bootstrap Python e modelos estritos**
 
 Use aliases camelCase, `ConfigDict(extra="forbid", strict=True,
-populate_by_name=True)` e enums literais compatíveis com os JSON Schemas. Não
+populate_by_name=True, allow_inf_nan=False)` e enums literais compatíveis com os JSON Schemas. Não
 duplicar regras com conversões permissivas.
+
+O pacote exporta ainda
+`to_sensor_telemetry_frame(CanonicalSensorReading) -> SensorTelemetryFrame`,
+que remove `raw`, hash e provenance sem alterar métricas/qualidade, além do
+contrato fechado `AssessmentEvidence` descrito no pacote 00.
 
 - [ ] **Step 4: Instalar editável e rodar testes**
 
@@ -269,6 +275,7 @@ it("maps the legacy vibration acceleration without calling it RMS velocity", () 
   });
   expect(snapshot.mode).toBe("replay");
   expect(snapshot.channels[0].measurements.vibrationAcceleration.value).toBe(2.1);
+  expect(snapshot.channels[0].measurements.vibrationAcceleration.unit).toBe("m/s²");
   expect(snapshot.channels[0].measurements.vibrationVelocityRms).toBeNull();
 });
 ```

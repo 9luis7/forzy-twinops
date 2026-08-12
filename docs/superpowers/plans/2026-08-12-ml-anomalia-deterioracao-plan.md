@@ -12,6 +12,9 @@
 
 - Não modificar `services/twinops/pyproject.toml` nem `services/twinops/src/twinops/contracts/**`.
 - Importar `CanonicalSensorReading` e `AssetConditionAssessment` de `twinops.contracts.models`.
+- Produzir somente evidências `AssessmentEvidence` fechadas: `id`, `feature`,
+  `value` finito e `unit` obrigatórios; comparativos opcionais/nullables e
+  `direction` restrita a `up|down|stable|unknown`.
 - Fronteira pública: `AssessmentScorer.assess(samples: Sequence[CanonicalSensorReading], *, now: datetime) -> AssetConditionAssessment`.
 - Proibido random split por linha, feature centrada ou ajuste com dados futuros.
 - Aceleração não entra no score oficial enquanto `statistic="unknown"`.

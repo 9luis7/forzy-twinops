@@ -36,7 +36,7 @@ const toFrame = ({ assetTag, reading, index }) => {
       vibrationVelocityRms: null,
       vibrationAcceleration: {
         value: asNullable(reading?.vibration),
-        unit: "g",
+        unit: "m/s²",
         statistic: "unknown",
         semanticConfidence: "unconfirmed",
       },

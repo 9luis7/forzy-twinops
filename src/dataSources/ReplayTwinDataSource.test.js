@@ -37,6 +37,7 @@ it("maps the legacy vibration acceleration without calling it RMS velocity", () 
   expect(snapshot.channels[0].sourceMode).toBe("replay");
   expect(snapshot.channels[0].timestampQuality).toBe("synthetic");
   expect(snapshot.channels[0].measurements.vibrationAcceleration.value).toBe(2.1);
+  expect(snapshot.channels[0].measurements.vibrationAcceleration.unit).toBe("m/s²");
   expect(snapshot.channels[0].measurements.vibrationVelocityRms).toBeNull();
 });
 

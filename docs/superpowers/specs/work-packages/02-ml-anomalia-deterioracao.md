@@ -49,6 +49,9 @@ Não editar collector, storage base, frontend, 3D ou copiloto.
 Produzir `AssetConditionAssessment` conforme o pacote 00. Evidências devem informar
 feature, valor, unidade, baseline, desvio, direção e janela. O score significa
 distância do baseline histórico, não probabilidade de falha.
+Cada item usa `AssessmentEvidence`: `id`, `feature`, `value` finito e `unit` são
+obrigatórios; `baseline`, `deviation`, `direction` e `windowSeconds` são campos
+tipados opcionais/nullables, sem propriedades extras.
 
 Artefatos:
 

@@ -39,6 +39,9 @@ Não editar ML, collector, twin 3D, contratos, `LiveTwinContext`, mocks ou
 
 Request contém pergunta, asset, avaliação atual, referências de evidência e
 limitações. Não envia a store completa nem histórico bruto desnecessário.
+As referências apontam somente para `AssessmentEvidence.id`; cada evidência
+recebida segue o contrato fechado do pacote 00, com feature/valor/unidade
+obrigatórios e campos comparativos tipados opcionais/nullables.
 
 Response contém:
 

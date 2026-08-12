@@ -8,10 +8,17 @@ const gatewayUrl = (baseUrl, assetTag) => `${baseUrl.replace(/\/$/, "")}${snapsh
 const responseError = (response) =>
   new Error(`Gateway snapshot request failed with status ${response.status ?? "unknown"}`);
 
+const assertSameOriginBaseUrl = (baseUrl) => {
+  if (typeof baseUrl !== "string" || baseUrl.includes("\\") || (baseUrl !== "" && !baseUrl.startsWith("/")) || baseUrl.startsWith("//")) {
+    throw new TypeError("GatewayTwinDataSource baseUrl must be empty or a same-origin absolute path");
+  }
+};
+
 /**
  * Creates a same-origin gateway-backed source for canonical digital-twin snapshots.
  */
 export function createGatewayTwinDataSource({ baseUrl = "", fetchImpl = fetch, pollMs = 5000 } = {}) {
+  assertSameOriginBaseUrl(baseUrl);
   if (typeof fetchImpl !== "function") {
     throw new TypeError("GatewayTwinDataSource fetchImpl must be a function");
   }

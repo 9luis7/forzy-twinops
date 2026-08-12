@@ -16,6 +16,8 @@
 - API externa fica desabilitada por padrão até autorização de privacidade.
 - Score nunca é apresentado como probabilidade de falha, RUL ou causa raiz.
 - Toda afirmação sobre estado atual deve citar `evidenceRefs` válidas ou declarar dados insuficientes.
+- `evidenceRefs` contém somente ids de `AssessmentEvidence` validada pelo
+  contrato fechado; o copiloto não aceita nem cria propriedades ad hoc.
 - Falha total de providers deve manter resposta determinística e não afetar o alerta.
 
 ## Mapa de arquivos

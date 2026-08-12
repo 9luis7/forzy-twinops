@@ -24,7 +24,9 @@ NonEmptyString = Annotated[str, StringConstraints(min_length=1)]
 class ContractModel(BaseModel):
     """Shared validation and serialization settings for public contracts."""
 
-    model_config = ConfigDict(extra="forbid", strict=True, populate_by_name=True)
+    model_config = ConfigDict(
+        extra="forbid", strict=True, populate_by_name=True, allow_inf_nan=False
+    )
 
 
 class EmptyObject(ContractModel):
@@ -64,7 +66,8 @@ class CanonicalSensorReading(ContractModel):
     source: Literal["forzy-live", "forzy-csv"]
     asset_tag: NonEmptyString = Field(alias="assetTag")
     sensor_id: Literal["s1", "s2"] = Field(alias="sensorId")
-    observed_at: Timestamp = Field(alias="observedAt")
+    scheduled_at: Timestamp | None = Field(alias="scheduledAt")
+    observed_at: Timestamp | None = Field(alias="observedAt")
     received_at: Timestamp = Field(alias="receivedAt")
     measurements: Measurements
     quality_flags: list[str] = Field(alias="qualityFlags")
@@ -72,10 +75,23 @@ class CanonicalSensorReading(ContractModel):
     raw: dict
     provenance: "Provenance"
 
+    @model_validator(mode="after")
+    def source_timestamps_and_provenance_are_coherent(self) -> Self:
+        if self.source == "forzy-live":
+            if self.scheduled_at is None or self.observed_at is not None:
+                raise ValueError("live readings require scheduledAt and observedAt=null")
+            if self.provenance.source_system != "forzy-api":
+                raise ValueError("live readings require provenance.sourceSystem=forzy-api")
+            if self.provenance.ingested_at != self.received_at:
+                raise ValueError("live provenance.ingestedAt must equal receivedAt")
+        elif self.scheduled_at is not None:
+            raise ValueError("CSV readings require scheduledAt=null")
+        return self
+
 
 class Provenance(ContractModel):
     source_system: NonEmptyString = Field(alias="sourceSystem")
-    imported_at: Timestamp = Field(alias="importedAt")
+    ingested_at: Timestamp = Field(alias="ingestedAt")
 
 
 class NullableVelocityMeasurement(Measurement):
@@ -83,8 +99,9 @@ class NullableVelocityMeasurement(Measurement):
     unit: Literal["mm/s"]
 
 
-class NullableAccelerationMeasurement(NullableVelocityMeasurement):
-    unit: Literal["g"]
+class NullableAccelerationMeasurement(Measurement):
+    value: float | None
+    unit: Literal["g", "m/s²"]
     statistic: Literal["unknown"]
 
 
@@ -147,6 +164,17 @@ class ModelMetadata(ContractModel):
     trained_until: Timestamp = Field(alias="trainedUntil")
 
 
+class AssessmentEvidence(ContractModel):
+    id: NonEmptyString
+    feature: NonEmptyString
+    value: float
+    unit: NonEmptyString
+    baseline: float | None = None
+    deviation: float | None = None
+    direction: Literal["up", "down", "stable", "unknown"] | None = None
+    window_seconds: float | None = Field(default=None, alias="windowSeconds", ge=0)
+
+
 class AssetConditionAssessment(ContractModel):
     schema_version: Literal["1.0"] = Field(alias="schemaVersion")
     assessment_id: Uuid = Field(alias="assessmentId")
@@ -159,7 +187,7 @@ class AssetConditionAssessment(ContractModel):
     component_tag: str | None = Field(alias="componentTag")
     recommendation: str | None
     human_validation_required: bool = Field(alias="humanValidationRequired")
-    evidence: list[EmptyObject]
+    evidence: list[AssessmentEvidence]
     model: ModelMetadata
     limitations: list[str]
 

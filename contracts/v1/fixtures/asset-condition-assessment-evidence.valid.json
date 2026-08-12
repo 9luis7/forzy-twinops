@@ -1,0 +1,16 @@
+{
+  "schemaVersion": "1.0",
+  "assessmentId": "00000000-0000-4000-8000-000000000003",
+  "assetTag": "MTR-BMB-042",
+  "sensorId": "s1",
+  "window": { "start": "2026-08-12T14:55:00.000Z", "end": "2026-08-12T15:00:00.000Z", "receivedAt": "2026-08-12T15:00:01.000Z", "freshnessMs": 1000 },
+  "quality": { "status": "ok", "flags": [] },
+  "operatingContext": { "state": "steady", "estimated": true },
+  "assessment": { "status": "watch", "anomalyScore": 0.5, "deteriorationScore": 0.2, "scoreSemantics": "relative_to_historical_baseline_not_failure_probability", "episodeId": null, "persistenceSeconds": 60 },
+  "componentTag": null,
+  "recommendation": null,
+  "humanValidationRequired": true,
+  "evidence": [{ "id": "ev-1", "feature": "velocity_rms_ewma", "value": 0.08, "unit": "mm/s", "baseline": 0.04, "deviation": 0.04, "direction": "up", "windowSeconds": 300 }],
+  "model": { "name": "robust-baseline", "version": "1.0.0", "configHash": "sha256:0000000000000000000000000000000000000000000000000000000000000000", "trainedUntil": "2026-08-12T14:55:00.000Z" },
+  "limitations": []
+}

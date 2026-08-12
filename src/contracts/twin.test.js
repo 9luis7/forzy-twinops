@@ -117,6 +117,17 @@ it("rejects an assessment with invalid numeric, quality, model, or evidence data
   expect(() => assertDigitalTwinSnapshot(candidate)).toThrow(/assessment.evidence\[0\]/);
 });
 
+it("accepts typed assessment evidence and rejects non-finite evidence values", () => {
+  const candidate = snapshot();
+  candidate.assessment.evidence = [{
+    id: "ev-1", feature: "velocity_rms_ewma", value: 0.08, unit: "mm/s",
+    baseline: null, deviation: 0.04, direction: "up", windowSeconds: 300,
+  }];
+  expect(assertDigitalTwinSnapshot(candidate)).toBe(candidate);
+  candidate.assessment.evidence[0].value = Number.NaN;
+  expect(() => assertDigitalTwinSnapshot(candidate)).toThrow(/evidence\[0\].value/);
+});
+
 it("isDigitalTwinSnapshot returns false rather than throwing for invalid values", () => {
   expect(isDigitalTwinSnapshot(null)).toBe(false);
   expect(isDigitalTwinSnapshot({ schemaVersion: "2.0" })).toBe(false);

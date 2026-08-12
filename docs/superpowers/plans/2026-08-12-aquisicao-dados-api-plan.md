@@ -57,18 +57,21 @@ O pacote 00 deve fornecer, e este plano somente consome:
 
 ```python
 from twinops.contracts.models import CanonicalSensorReading, SensorTelemetryFrame, DigitalTwinSnapshot
+from twinops.contracts.projections import to_sensor_telemetry_frame
 
 CanonicalSensorReading.model_validate(data: dict[str, object]) -> CanonicalSensorReading
 CanonicalSensorReading.model_dump(mode="json", by_alias=True) -> dict[str, object]
 SensorTelemetryFrame.model_validate(data: dict[str, object]) -> SensorTelemetryFrame
 DigitalTwinSnapshot.model_validate(data: dict[str, object]) -> DigitalTwinSnapshot
+to_sensor_telemetry_frame(reading: CanonicalSensorReading) -> SensorTelemetryFrame
 ```
 
 `CanonicalSensorReading` usa os aliases JSON normativos `schemaVersion`, `readingId`,
-`assetTag`, `sensorId`, `receivedAt`, `observedAt`, `measurements`,
+`assetTag`, `sensorId`, `scheduledAt`, `receivedAt`, `observedAt`, `measurements`,
 `qualityFlags`, `payloadHash`, `raw` e `provenance`. `SensorTelemetryFrame` é a
 projeção consumer-safe do endpoint: não contém `raw` e usa métricas `null` quando
-indisponíveis. Se o pacote 00 entregar
+indisponíveis. Essa projeção deve ser criada exclusivamente por
+`to_sensor_telemetry_frame`; não se remove apenas `raw` de um dump canônico. Se o pacote 00 entregar
 outro caminho de import, o integrador deve alinhar o import antes da execução;
 o worker do pacote 01 não duplica nem altera o modelo.
 
@@ -100,12 +103,19 @@ def test_adapts_exact_s1_payload_and_preserves_zero_and_raw():
                                 received_at=RECEIVED, asset_tag="MTR-BMB-042")
     body = sample.model_dump(mode="json", by_alias=True)
     assert body["source"] == "forzy-live"
+    assert body["scheduledAt"] == SLOT.isoformat().replace("+00:00", "Z")
     assert body["observedAt"] is None
+    assert body["receivedAt"] == RECEIVED.isoformat().replace("+00:00", "Z")
     assert body["measurements"]["vibrationVelocityRms"]["value"] == 0.04
     assert body["measurements"]["vibrationAcceleration"]["value"] == 0.0
     assert body["measurements"]["vibrationAcceleration"]["statistic"] == "unknown"
     assert body["raw"] == raw
-    assert len(body["payloadHash"]) == 64
+    assert body["payloadHash"].startswith("sha256:")
+    assert len(body["payloadHash"]) == 71
+    assert body["provenance"] == {
+        "sourceSystem": "forzy-api",
+        "ingestedAt": body["receivedAt"],
+    }
 
 @pytest.mark.parametrize("bad", [None, "0.04", float("inf"), float("nan")])
 def test_rejects_non_finite_or_non_numeric_velocity(bad):
@@ -191,8 +201,11 @@ def adapt_live_payload(*, sensor_id: Literal["s1", "s2"], payload: Mapping[str, 
                     "unit": "g", "statistic": "unknown", "semanticConfidence": "unconfirmed"},
                 "temperature": {"value": _number(values, "Temperatura", sensor_id),
                     "unit": "degC", "semanticConfidence": "inferred_from_datasheet"}},
-            "qualityFlags": [], "payloadHash": hashlib.sha256(canonical_raw).hexdigest(),
-            "raw": payload}
+            "qualityFlags": [],
+            "payloadHash": f"sha256:{hashlib.sha256(canonical_raw).hexdigest()}",
+            "raw": payload,
+            "provenance": {"sourceSystem": "forzy-api",
+                "ingestedAt": received_at.isoformat().replace("+00:00", "Z")}}
     return CanonicalSensorReading.model_validate(data)
 ```
 
@@ -784,18 +797,22 @@ def import_csv(path: Path, repository: TelemetryRepository, asset_tag: str,
                           ("vibration_velocity_rms", "vibration_acceleration", "temperature")]
                 if not all(math.isfinite(v) for v in values): raise ValueError("finite")
                 observed = datetime.fromisoformat(row["observed_at"].replace("Z", "+00:00"))
-                row_hash = hashlib.sha256(f"{file_hash}:{line_number}:{sensor}".encode()).hexdigest()
+                row_hash = f"sha256:{hashlib.sha256(f'{file_hash}:{line_number}:{sensor}'.encode()).hexdigest()}"
                 data = {"schemaVersion": "1.0", "readingId": str(uuid.uuid4()),
                     "source": "forzy-csv", "assetTag": asset_tag, "sensorId": sensor,
-                    "scheduledAt": None, "receivedAt": received_at.isoformat(),
-                    "observedAt": observed.isoformat(), "measurements": {
+                    "scheduledAt": None,
+                    "receivedAt": received_at.isoformat().replace("+00:00", "Z"),
+                    "observedAt": observed.isoformat().replace("+00:00", "Z"),
+                    "measurements": {
                     "vibrationVelocityRms": {"value": values[0], "unit": "mm/s",
                         "semanticConfidence": "inferred_from_datasheet"},
                     "vibrationAcceleration": {"value": values[1], "unit": "g",
                         "statistic": "unknown", "semanticConfidence": "unconfirmed"},
                     "temperature": {"value": values[2], "unit": "degC",
                         "semanticConfidence": "inferred_from_datasheet"}},
-                    "qualityFlags": [], "payloadHash": row_hash, "raw": dict(row)}
+                    "qualityFlags": [], "payloadHash": row_hash, "raw": dict(row),
+                    "provenance": {"sourceSystem": "forzy-csv-import",
+                        "ingestedAt": received_at.isoformat().replace("+00:00", "Z")}}
                 inserted_now = repository.insert_sample(CanonicalSensorReading.model_validate(data))
                 inserted += int(inserted_now); duplicates += int(not inserted_now)
             except (KeyError, TypeError, ValueError): rejected += 1
@@ -876,28 +893,26 @@ Expected: FAIL com `ModuleNotFoundError: No module named 'twinops.main'`.
 # telemetry_routes.py
 from datetime import datetime, timezone
 from fastapi import APIRouter, Query, Request
+from twinops.contracts.projections import to_sensor_telemetry_frame
 from twinops.storage.repository import HistoryQuery
 
 router = APIRouter(prefix="/api/v1/twin/assets", tags=["telemetry"])
-
-def public_sample(sample) -> dict[str, object]:
-    body = sample.model_dump(mode="json", by_alias=True)
-    body.pop("raw", None)
-    return body
 
 @router.get("/{asset_tag}/history")
 def history(request: Request, asset_tag: str, sensorId: str | None = None,
             from_: datetime | None = Query(None, alias="from"),
             to: datetime | None = None, limit: int = Query(200, ge=1, le=1000)):
     query = HistoryQuery(asset_tag, sensorId, None, from_, to, limit)
-    return {"items": [public_sample(s) for s in request.app.state.repository.history(query)],
+    return {"items": [to_sensor_telemetry_frame(s).model_dump(mode="json", by_alias=True)
+                      for s in request.app.state.repository.history(query)],
             "limit": limit}
 
 @router.get("/{asset_tag}/snapshot")
 def snapshot(request: Request, asset_tag: str):
     samples = request.app.state.repository.latest(asset_tag)
     now = datetime.now(timezone.utc)
-    channels = [public_sample(s) for s in samples]
+    channels = [to_sensor_telemetry_frame(s).model_dump(mode="json", by_alias=True)
+                for s in samples]
     return {"schemaVersion": "1.0", "assetTag": asset_tag, "mode": "live",
             "generatedAt": now.isoformat().replace("+00:00", "Z"),
             "status": "unknown" if not channels else "insufficient_data",

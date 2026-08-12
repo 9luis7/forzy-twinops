@@ -3,24 +3,42 @@
   "$id": "forzy://contracts/v1/canonical-sensor-reading",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schemaVersion", "readingId", "source", "assetTag", "sensorId", "observedAt", "receivedAt", "measurements", "qualityFlags", "payloadHash", "raw", "provenance"],
+  "required": ["schemaVersion", "readingId", "source", "assetTag", "sensorId", "scheduledAt", "observedAt", "receivedAt", "measurements", "qualityFlags", "payloadHash", "raw", "provenance"],
   "properties": {
     "schemaVersion": { "const": "1.0" },
     "readingId": { "$ref": "#/$defs/uuid" },
     "source": { "enum": ["forzy-live", "forzy-csv"] },
     "assetTag": { "type": "string", "minLength": 1 },
     "sensorId": { "enum": ["s1", "s2"] },
-    "observedAt": { "$ref": "#/$defs/timestamp" },
+    "scheduledAt": { "$ref": "#/$defs/timestampOrNull" },
+    "observedAt": { "$ref": "#/$defs/timestampOrNull" },
     "receivedAt": { "$ref": "#/$defs/timestamp" },
     "measurements": { "$ref": "#/$defs/measurements" },
     "qualityFlags": { "type": "array", "items": { "type": "string" } },
     "payloadHash": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
     "raw": { "type": "object" },
-    "provenance": { "type": "object", "additionalProperties": false, "required": ["sourceSystem", "importedAt"], "properties": { "sourceSystem": { "type": "string", "minLength": 1 }, "importedAt": { "$ref": "#/$defs/timestamp" } } }
+    "provenance": { "type": "object", "additionalProperties": false, "required": ["sourceSystem", "ingestedAt"], "properties": { "sourceSystem": { "type": "string", "minLength": 1 }, "ingestedAt": { "$ref": "#/$defs/timestamp" } } }
   },
+  "allOf": [
+    {
+      "if": { "properties": { "source": { "const": "forzy-live" } } },
+      "then": {
+        "properties": {
+          "scheduledAt": { "$ref": "#/$defs/timestamp" },
+          "observedAt": { "const": null },
+          "provenance": { "type": "object", "properties": { "sourceSystem": { "const": "forzy-api" } } }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "source": { "const": "forzy-csv" } } },
+      "then": { "properties": { "scheduledAt": { "const": null } } }
+    }
+  ],
   "$defs": {
     "uuid": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$" },
     "timestamp": { "type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\\.[0-9]+)?Z$" },
+    "timestampOrNull": { "type": ["string", "null"], "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\\.[0-9]+)?Z$" },
     "measurements": { "type": "object", "additionalProperties": false, "required": ["vibrationVelocityRms", "vibrationAcceleration", "temperature"], "properties": { "vibrationVelocityRms": { "$ref": "#/$defs/velocity" }, "vibrationAcceleration": { "$ref": "#/$defs/acceleration" }, "temperature": { "$ref": "#/$defs/temperature" } } },
     "velocity": { "type": "object", "additionalProperties": false, "required": ["value", "unit", "semanticConfidence"], "properties": { "value": { "type": "number" }, "unit": { "const": "mm/s" }, "semanticConfidence": { "$ref": "#/$defs/confidence" } } },
     "acceleration": { "type": "object", "additionalProperties": false, "required": ["value", "unit", "statistic", "semanticConfidence"], "properties": { "value": { "type": "number" }, "unit": { "const": "g" }, "statistic": { "const": "unknown" }, "semanticConfidence": { "$ref": "#/$defs/confidence" } } },

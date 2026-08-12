@@ -9,6 +9,7 @@ const CONFIDENCE = new Set(["confirmed", "inferred_from_datasheet", "unconfirmed
 const ASSESSMENT_STATUS = new Set(["normal", "watch", "alert", "insufficient_data"]);
 const QUALITY_STATUS = new Set(["ok", "degraded", "insufficient_data"]);
 const OPERATING_STATES = new Set(["steady", "startup", "shutdown", "stopped", "unknown"]);
+const EVIDENCE_DIRECTIONS = new Set(["up", "down", "stable", "unknown"]);
 const TIMESTAMP = /^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]+)?Z$/;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const HASH = /^sha256:[0-9a-f]{64}$/;
@@ -47,7 +48,7 @@ const assertMeasurement = (value, field, unit, extra = {}) => {
   if (value === null) return;
   requiredObject(value, field, ["value", "unit", ...Object.keys(extra), "semanticConfidence"]);
   if (value.value !== null) finiteNumber(value.value, `${field}.value`);
-  if (value.unit !== unit) invalid(`${field}.unit`);
+  if (!(Array.isArray(unit) ? unit.includes(value.unit) : value.unit === unit)) invalid(`${field}.unit`);
   if (!CONFIDENCE.has(value.semanticConfidence)) invalid(`${field}.semanticConfidence`);
   for (const [key, expected] of Object.entries(extra)) if (value[key] !== expected) invalid(`${field}.${key}`);
 };
@@ -72,7 +73,7 @@ const assertFrame = (value, field) => {
   assertMeasurement(
     value.measurements.vibrationAcceleration,
     `${field}.measurements.vibrationAcceleration`,
-    "g",
+    ["g", "m/s²"],
     { statistic: "unknown" }
   );
   assertMeasurement(value.measurements.temperature, `${field}.measurements.temperature`, "degC");
@@ -118,7 +119,26 @@ const assertAssessment = (value) => {
   nullableString(value.recommendation, `${field}.recommendation`);
   if (typeof value.humanValidationRequired !== "boolean") invalid(`${field}.humanValidationRequired`);
   if (!Array.isArray(value.evidence)) invalid(`${field}.evidence`);
-  value.evidence.forEach((item, index) => requiredObject(item, `${field}.evidence[${index}]`, []));
+  value.evidence.forEach((item, index) => {
+    const evidenceField = `${field}.evidence[${index}]`;
+    if (!isObject(item)) invalid(evidenceField);
+    const allowed = ["id", "feature", "value", "unit", "baseline", "deviation", "direction", "windowSeconds"];
+    const keys = Object.keys(item);
+    if (keys.some((key) => !allowed.includes(key))) invalid(evidenceField);
+    for (const key of ["id", "feature", "value", "unit"]) if (!(key in item)) invalid(`${evidenceField}.${key}`);
+    string(item.id, `${evidenceField}.id`);
+    string(item.feature, `${evidenceField}.feature`);
+    finiteNumber(item.value, `${evidenceField}.value`);
+    string(item.unit, `${evidenceField}.unit`);
+    for (const numeric of ["baseline", "deviation"]) {
+      if (numeric in item && item[numeric] !== null) finiteNumber(item[numeric], `${evidenceField}.${numeric}`);
+    }
+    if ("direction" in item && item.direction !== null && !EVIDENCE_DIRECTIONS.has(item.direction)) invalid(`${evidenceField}.direction`);
+    if ("windowSeconds" in item && item.windowSeconds !== null) {
+      finiteNumber(item.windowSeconds, `${evidenceField}.windowSeconds`);
+      if (item.windowSeconds < 0) invalid(`${evidenceField}.windowSeconds`);
+    }
+  });
   requiredObject(value.model, `${field}.model`, ["name", "version", "configHash", "trainedUntil"]);
   string(value.model.name, `${field}.model.name`);
   string(value.model.version, `${field}.model.version`);

@@ -234,7 +234,7 @@ Expected: commit contém somente dependências/scripts e baseline; o worker rece
     sensorId: "s1" | "s2",
     temperature: { value: number | null, unit: "degC" },
     vibrationVelocityRms: { value: number | null, unit: "mm/s" },
-    vibrationAcceleration: { value: number | null, unit: "g", statistic: "unknown" | "rms" | "peak" },
+    vibrationAcceleration: { value: number | null, unit: "g" | "m/s²", statistic: "unknown" | "rms" | "peak" },
     placementLabel: "Posição não validada"
   }],
   warning: string | null
@@ -313,7 +313,7 @@ export const alertSnapshot = {
     model: {
       name: "robust-baseline",
       version: "1.0.0",
-      configHash: "sha256-config",
+      configHash: `sha256:${"0".repeat(64)}`,
       trainedUntil: "2026-08-11T23:59:59.000Z"
     },
     limitations: []
@@ -385,7 +385,7 @@ function channelView(channel) {
     sensorId: channel.sensorId,
     temperature: reading(m.temperature, "degC"),
     vibrationVelocityRms: reading(m.vibrationVelocityRms, "mm/s"),
-    vibrationAcceleration: reading(m.vibrationAcceleration, "g", "unknown"),
+    vibrationAcceleration: reading(m.vibrationAcceleration, m.vibrationAcceleration?.unit ?? "g", "unknown"),
     placementLabel: "Posição não validada"
   };
 }

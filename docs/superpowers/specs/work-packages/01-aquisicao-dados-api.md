@@ -52,6 +52,11 @@ simples satisfizerem os testes.
 - Adapters com `dados1`/`dados2`, casing e acentos exatos.
 - Zero preservado; campo ausente/string/null/infinito rejeitado.
 - Raw e hash preservados; `observedAt=null` para live.
+- Live grava `scheduledAt` no slot, `payloadHash=sha256:<64hex>` e provenance
+  `{sourceSystem: "forzy-api", ingestedAt: receivedAt}`. CSV grava
+  `scheduledAt=null` e preserva o timestamp original válido em `observedAt`.
+- Snapshot e histórico usam `to_sensor_telemetry_frame`; remover somente `raw`
+  de um dump canônico não é uma projeção pública válida.
 - Agenda nas bordas: seg 11:59 off, 12:00 on; qua 13:59 on, 14:00 off;
   quinta off.
 - Retry do mesmo slot não duplica.

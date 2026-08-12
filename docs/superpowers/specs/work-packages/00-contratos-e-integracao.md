@@ -27,7 +27,8 @@ integrador; nenhum outro worker altera esses contratos sem aprovação.
   "source": "forzy-live|forzy-csv",
   "assetTag": "MTR-BMB-042",
   "sensorId": "s1|s2",
-  "observedAt": "ISO-8601 UTC",
+  "scheduledAt": "ISO-8601 UTC|null",
+  "observedAt": "ISO-8601 UTC|null",
   "receivedAt": "ISO-8601 UTC",
   "measurements": {
     "vibrationVelocityRms": {
@@ -48,9 +49,9 @@ integrador; nenhum outro worker altera esses contratos sem aprovação.
     }
   },
   "qualityFlags": [],
-  "payloadHash": "sha256",
+  "payloadHash": "sha256:<64 lowercase hex>",
   "raw": {},
-  "provenance": { "sourceSystem": "forzy-live", "importedAt": "ISO-8601 UTC" }
+  "provenance": { "sourceSystem": "forzy-api", "ingestedAt": "ISO-8601 UTC" }
 }
 ```
 
@@ -59,6 +60,9 @@ Regras:
 - `observedAt` permanece nulo no live enquanto a origem não fornecer timestamp;
   no CSV, recebe o timestamp original quando ele for válido.
 - `receivedAt` nunca é descrito como horário real da medição.
+- No live, `provenance.sourceSystem="forzy-api"` e
+  `provenance.ingestedAt=receivedAt`; no CSV, `sourceSystem` identifica o
+  importador. `payloadHash` sempre usa `sha256:` seguido de 64 hex minúsculos.
 - `scheduledAt` identifica o slot de polling; a chave idempotente é
   `(source, sensorId, scheduledAt)`.
 - Para CSV, a idempotência usa o hash do arquivo, o número da linha e o sensor;
@@ -74,6 +78,10 @@ Regras:
 Consumer-safe projection for snapshot channels and history. It never exposes
 `raw` or `provenance`; the explicitly named measurements may be `null` when
 unavailable, as may timestamps, with `timestampQuality` explaining the value.
+`to_sensor_telemetry_frame(reading)` é a única projeção pública: preserva
+identidade, métricas e qualidade; mapeia live/historical e usa qualidade
+`source` quando `observedAt` existe, caso contrário `collector`. A unidade de
+aceleração aceita `g` ou `m/s²` nesta projeção; o canônico real permanece `g`.
 
 ### `AssetConditionAssessment`
 
@@ -108,16 +116,30 @@ unavailable, as may timestamps, with `timestampQuality` explaining the value.
   "componentTag": null,
   "recommendation": null,
   "humanValidationRequired": true,
-  "evidence": [],
+  "evidence": [{
+    "id": "ev-1",
+    "feature": "velocity_rms_ewma",
+    "value": 0.08,
+    "unit": "mm/s",
+    "baseline": 0.04,
+    "deviation": 0.04,
+    "direction": "up",
+    "windowSeconds": 300
+  }],
   "model": {
     "name": "robust-baseline",
     "version": "1.0.0",
-    "configHash": "sha256",
+    "configHash": "sha256:<64 lowercase hex>",
     "trainedUntil": "ISO-8601 UTC"
   },
   "limitations": []
 }
 ```
+
+Cada `AssessmentEvidence` é fechado. `id`, `feature`, `value` finito e `unit`
+não vazia são obrigatórios. `baseline`, `deviation`, `direction`
+(`up|down|stable|unknown`) e `windowSeconds >= 0` são opcionais e podem ser
+nulos.
 
 ### `DigitalTwinSnapshot`
 
