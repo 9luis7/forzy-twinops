@@ -7,7 +7,7 @@ const FRESHNESS_VALUES = new Set(["fresh", "delayed", "expected_idle", "unavaila
 const isObject = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
 
 const invalid = (field) => {
-  throw new TypeError(`Invalid TwinSnapshot ${field}`);
+  throw new TypeError(`Invalid DigitalTwinSnapshot ${field}`);
 };
 
 /**
@@ -16,7 +16,7 @@ const invalid = (field) => {
  * This deliberately checks only the fields needed by consumers at this
  * boundary. Full JSON Schema validation remains in the contract tests.
  */
-export function assertTwinSnapshot(value) {
+export function assertDigitalTwinSnapshot(value) {
   if (!isObject(value)) invalid("value");
   if (value.schemaVersion !== SCHEMA_VERSION) invalid("schemaVersion");
   if (typeof value.assetTag !== "string" || value.assetTag.length === 0) invalid("assetTag");
@@ -30,9 +30,9 @@ export function assertTwinSnapshot(value) {
   return value;
 }
 
-export function isTwinSnapshot(value) {
+export function isDigitalTwinSnapshot(value) {
   try {
-    assertTwinSnapshot(value);
+    assertDigitalTwinSnapshot(value);
     return true;
   } catch {
     return false;

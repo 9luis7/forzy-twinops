@@ -20,18 +20,18 @@ const sampleId = (index) =>
 
 const toSnapshotStatus = (status) => statusByLegacyValue[status] ?? status ?? "unknown";
 
-const toSample = ({ assetTag, reading, index }) => {
+const toFrame = ({ assetTag, reading, index }) => {
   const observedAt = timestamp(reading?.ts);
 
   return {
     schemaVersion: SCHEMA_VERSION,
-    sampleId: sampleId(index),
-    source: "forzy-csv",
+    frameId: sampleId(index),
     assetTag,
     sensorId: "s1",
-    scheduledAt: observedAt,
-    receivedAt: observedAt,
+    sourceMode: "replay",
     observedAt,
+    receivedAt: null,
+    timestampQuality: "synthetic",
     measurements: {
       vibrationVelocityRms: null,
       vibrationAcceleration: {
@@ -47,11 +47,6 @@ const toSample = ({ assetTag, reading, index }) => {
       },
     },
     qualityFlags: [],
-    payloadHash: ZERO_HASH,
-    raw: {
-      current: asNullable(reading?.current),
-      rotation: asNullable(reading?.rotation),
-    },
   };
 };
 
@@ -61,7 +56,7 @@ const toAssessment = ({ assetTag, timestamp: receivedAt, status, scenario, risk 
   const score = asNullable(risk?.score);
   return {
     schemaVersion: SCHEMA_VERSION,
-    inferenceId: "00000000-0000-4000-8000-000000000003",
+    assessmentId: "00000000-0000-4000-8000-000000000003",
     assetTag,
     sensorId: "s1",
     window: { start: receivedAt, end: receivedAt, receivedAt, freshnessMs: 0 },
@@ -95,7 +90,7 @@ const toAssessment = ({ assetTag, timestamp: receivedAt, status, scenario, risk 
 export function buildReplaySnapshot({ assetTag, live, reading, status, scenario, risk }) {
   const generatedAt = timestamp(reading?.ts);
   const history = (live?.points ?? []).map((point, index) =>
-    toSample({ assetTag, reading: point, index: index + 1 })
+    toFrame({ assetTag, reading: point, index: index + 1 })
   );
   const snapshotStatus = toSnapshotStatus(status);
 
@@ -106,7 +101,7 @@ export function buildReplaySnapshot({ assetTag, live, reading, status, scenario,
     generatedAt,
     status: snapshotStatus,
     freshness: "expected_idle",
-    channels: [toSample({ assetTag, reading, index: 0 })],
+    channels: [toFrame({ assetTag, reading, index: 0 })],
     history,
     assessment: toAssessment({
       assetTag,

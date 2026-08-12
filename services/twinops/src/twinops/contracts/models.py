@@ -58,25 +58,58 @@ class Measurements(ContractModel):
     temperature: TemperatureMeasurement
 
 
-class TelemetrySample(ContractModel):
+class CanonicalSensorReading(ContractModel):
     schema_version: Literal["1.0"] = Field(alias="schemaVersion")
-    sample_id: Uuid = Field(alias="sampleId")
+    reading_id: Uuid = Field(alias="readingId")
     source: Literal["forzy-live", "forzy-csv"]
     asset_tag: NonEmptyString = Field(alias="assetTag")
     sensor_id: Literal["s1", "s2"] = Field(alias="sensorId")
-    scheduled_at: Timestamp | None = Field(alias="scheduledAt")
+    observed_at: Timestamp = Field(alias="observedAt")
     received_at: Timestamp = Field(alias="receivedAt")
-    observed_at: Timestamp | None = Field(alias="observedAt")
     measurements: Measurements
     quality_flags: list[str] = Field(alias="qualityFlags")
     payload_hash: Sha256 = Field(alias="payloadHash")
-    raw: EmptyObject
+    raw: dict
+    provenance: "Provenance"
 
-    @model_validator(mode="after")
-    def live_samples_have_no_observed_timestamp(self) -> Self:
-        if self.source == "forzy-live" and self.observed_at is not None:
-            raise ValueError("forzy-live samples must set observedAt to null")
-        return self
+
+class Provenance(ContractModel):
+    source_system: NonEmptyString = Field(alias="sourceSystem")
+    imported_at: Timestamp = Field(alias="importedAt")
+
+
+class NullableVelocityMeasurement(Measurement):
+    value: float | None
+    unit: Literal["mm/s"]
+
+
+class NullableAccelerationMeasurement(NullableVelocityMeasurement):
+    unit: Literal["g"]
+    statistic: Literal["unknown"]
+
+
+class NullableTemperatureMeasurement(Measurement):
+    value: float | None
+    unit: Literal["degC"]
+
+
+class FrameMeasurements(ContractModel):
+    vibration_velocity_rms: NullableVelocityMeasurement | None = Field(alias="vibrationVelocityRms")
+    vibration_acceleration: NullableAccelerationMeasurement | None = Field(alias="vibrationAcceleration")
+    temperature: NullableTemperatureMeasurement | None
+
+
+class SensorTelemetryFrame(ContractModel):
+    schema_version: Literal["1.0"] = Field(alias="schemaVersion")
+    frame_id: Uuid = Field(alias="frameId")
+    asset_tag: NonEmptyString = Field(alias="assetTag")
+    sensor_id: Literal["s1", "s2"] = Field(alias="sensorId")
+    source_mode: Literal["replay", "live", "historical"] = Field(alias="sourceMode")
+    observed_at: Timestamp | None = Field(alias="observedAt")
+    received_at: Timestamp | None = Field(alias="receivedAt")
+    timestamp_quality: Literal["source", "collector", "synthetic", "unknown"] = Field(alias="timestampQuality")
+    measurements: FrameMeasurements
+    quality_flags: list[str] = Field(alias="qualityFlags")
 
 
 class AssessmentWindow(ContractModel):
@@ -114,9 +147,9 @@ class ModelMetadata(ContractModel):
     trained_until: Timestamp = Field(alias="trainedUntil")
 
 
-class DetectionAssessment(ContractModel):
+class AssetConditionAssessment(ContractModel):
     schema_version: Literal["1.0"] = Field(alias="schemaVersion")
-    inference_id: Uuid = Field(alias="inferenceId")
+    assessment_id: Uuid = Field(alias="assessmentId")
     asset_tag: NonEmptyString = Field(alias="assetTag")
     sensor_id: Literal["s1", "s2"] = Field(alias="sensorId")
     window: AssessmentWindow
@@ -138,16 +171,16 @@ class Capabilities(ContractModel):
     twin_3d: bool = Field(alias="twin3d")
 
 
-class TwinSnapshot(ContractModel):
+class DigitalTwinSnapshot(ContractModel):
     schema_version: Literal["1.0"] = Field(alias="schemaVersion")
     asset_tag: NonEmptyString = Field(alias="assetTag")
     mode: Literal["replay", "live"]
     generated_at: Timestamp = Field(alias="generatedAt")
     status: Literal["normal", "watch", "alert", "unknown", "insufficient_data"]
     freshness: Literal["fresh", "delayed", "expected_idle", "unavailable", "unknown"]
-    channels: list[TelemetrySample]
-    history: list[TelemetrySample]
-    assessment: DetectionAssessment | None
+    channels: list[SensorTelemetryFrame]
+    history: list[SensorTelemetryFrame]
+    assessment: AssetConditionAssessment | None
     capabilities: Capabilities
 
     @model_validator(mode="after")

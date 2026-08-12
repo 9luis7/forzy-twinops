@@ -1,5 +1,5 @@
 import { expect, it } from "vitest";
-import { assertTwinSnapshot, isTwinSnapshot, SCHEMA_VERSION } from "./twin.js";
+import { assertDigitalTwinSnapshot, isDigitalTwinSnapshot, SCHEMA_VERSION } from "./twin.js";
 
 const snapshot = () => ({
   schemaVersion: "1.0",
@@ -17,13 +17,13 @@ it("exports the current schema version", () => {
 });
 
 it("rejects an unknown schema version", () => {
-  expect(() => assertTwinSnapshot({ schemaVersion: "2.0" })).toThrow(/schemaVersion/);
+  expect(() => assertDigitalTwinSnapshot({ schemaVersion: "2.0" })).toThrow(/schemaVersion/);
 });
 
 it("accepts the public snapshot boundary and returns the same value", () => {
   const value = snapshot();
-  expect(assertTwinSnapshot(value)).toBe(value);
-  expect(isTwinSnapshot(value)).toBe(true);
+  expect(assertDigitalTwinSnapshot(value)).toBe(value);
+  expect(isDigitalTwinSnapshot(value)).toBe(true);
 });
 
 it.each([
@@ -35,10 +35,10 @@ it.each([
   ["history", {}],
   ["capabilities", []],
 ])("rejects an invalid %s", (field, value) => {
-  expect(() => assertTwinSnapshot({ ...snapshot(), [field]: value })).toThrow(field);
+  expect(() => assertDigitalTwinSnapshot({ ...snapshot(), [field]: value })).toThrow(field);
 });
 
-it("isTwinSnapshot returns false rather than throwing for invalid values", () => {
-  expect(isTwinSnapshot(null)).toBe(false);
-  expect(isTwinSnapshot({ schemaVersion: "2.0" })).toBe(false);
+it("isDigitalTwinSnapshot returns false rather than throwing for invalid values", () => {
+  expect(isDigitalTwinSnapshot(null)).toBe(false);
+  expect(isDigitalTwinSnapshot({ schemaVersion: "2.0" })).toBe(false);
 });

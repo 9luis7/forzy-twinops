@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from twinops.contracts.models import TelemetrySample, TwinSnapshot
+from twinops.contracts.models import CanonicalSensorReading, DigitalTwinSnapshot
 
 
 FIXTURES = Path("contracts/v1/fixtures")
@@ -13,9 +13,9 @@ FIXTURES = Path("contracts/v1/fixtures")
 @pytest.mark.parametrize(
     ("fixture_name", "model_type"),
     [
-        ("telemetry-live-s1.valid.json", TelemetrySample),
-        ("twin-snapshot-live.valid.json", TwinSnapshot),
-        ("twin-snapshot-replay.valid.json", TwinSnapshot),
+        ("canonical-sensor-reading-live-s1.valid.json", CanonicalSensorReading),
+        ("digital-twin-snapshot-live.valid.json", DigitalTwinSnapshot),
+        ("digital-twin-snapshot-replay.valid.json", DigitalTwinSnapshot),
     ],
 )
 def test_valid_fixture_round_trips_with_schema_aliases(fixture_name, model_type):
@@ -28,8 +28,8 @@ def test_valid_fixture_round_trips_with_schema_aliases(fixture_name, model_type)
 
 def test_numeric_string_is_rejected():
     payload = json.loads(
-        (FIXTURES / "telemetry-string.invalid.json").read_text(encoding="utf-8")
+        (FIXTURES / "canonical-sensor-reading-string.invalid.json").read_text(encoding="utf-8")
     )
 
     with pytest.raises(ValidationError):
-        TelemetrySample.model_validate(payload)
+        CanonicalSensorReading.model_validate(payload)

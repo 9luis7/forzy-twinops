@@ -1,5 +1,18 @@
 import { expect, it } from "vitest";
+import { readFileSync } from "node:fs";
+import Ajv from "ajv";
 import { buildReplaySnapshot } from "./ReplayTwinDataSource.js";
+
+const json = (path) => JSON.parse(readFileSync(new URL(path, import.meta.url), "utf8"));
+const replaySnapshotValidator = () => {
+  const ajv = new Ajv({ strict: true });
+  [
+    json("../../contracts/v1/sensor-telemetry-frame.schema.json"),
+    json("../../contracts/v1/asset-condition-assessment.schema.json"),
+    json("../../contracts/v1/digital-twin-snapshot.schema.json"),
+  ].forEach((schema) => ajv.addSchema(schema));
+  return ajv.getSchema("forzy://contracts/v1/digital-twin-snapshot");
+};
 
 it("maps the legacy vibration acceleration without calling it RMS velocity", () => {
   const snapshot = buildReplaySnapshot({
@@ -20,9 +33,48 @@ it("maps the legacy vibration acceleration without calling it RMS velocity", () 
   expect(snapshot.mode).toBe("replay");
   expect(snapshot.generatedAt).toBe("2026-08-12T15:00:00.000Z");
   expect(snapshot.status).toBe("normal");
-  expect(snapshot.channels[0].receivedAt).toBe("2026-08-12T15:00:00.000Z");
+  expect(snapshot.channels[0].receivedAt).toBeNull();
+  expect(snapshot.channels[0].sourceMode).toBe("replay");
+  expect(snapshot.channels[0].timestampQuality).toBe("synthetic");
   expect(snapshot.channels[0].measurements.vibrationAcceleration.value).toBe(2.1);
   expect(snapshot.channels[0].measurements.vibrationVelocityRms).toBeNull();
+});
+
+it.each([
+  ["normal", "normal"],
+  ["alerta", "alert"],
+  ["critico", "alert"],
+  ["desconhecido", "unknown"],
+])("maps legacy status %s to %s", (legacyStatus, expectedStatus) => {
+  const snapshot = buildReplaySnapshot({
+    assetTag: "MTR-BMB-042",
+    live: { points: [], running: false },
+    reading: { ts: 1_786_497_600_000, temperature: 34, vibration: 2.1 },
+    status: legacyStatus,
+    scenario: null,
+    risk: null,
+  });
+
+  expect(snapshot.status).toBe(expectedStatus);
+  expect(snapshot.generatedAt).toBe("2026-08-12T01:20:00.000Z");
+  expect(snapshot.channels[0]).toMatchObject({
+    observedAt: "2026-08-12T01:20:00.000Z",
+    receivedAt: null,
+    timestampQuality: "synthetic",
+  });
+});
+
+it("produces a replay snapshot accepted by the separated Ajv contracts", () => {
+  const snapshot = buildReplaySnapshot({
+    assetTag: "MTR-BMB-042",
+    live: { points: [], running: false },
+    reading: { ts: "2026-08-12T15:00:00.000Z", temperature: 34, vibration: 2.1 },
+    status: "normal",
+    scenario: null,
+    risk: null,
+  });
+
+  expect(replaySnapshotValidator()(snapshot)).toBe(true);
 });
 
 it("marks alert replay assessments as demo scenarios instead of model inference", () => {
@@ -63,6 +115,5 @@ it("preserves missing legacy readings as null", () => {
     vibrationAcceleration: { value: null },
     temperature: { value: null },
   });
-  expect(snapshot.channels[0].raw.current).toBeNull();
-  expect(snapshot.channels[0].raw.rotation).toBeNull();
+  expect(snapshot.channels[0]).not.toHaveProperty("raw");
 });

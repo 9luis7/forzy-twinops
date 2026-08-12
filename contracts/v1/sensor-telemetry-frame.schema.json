@@ -1,0 +1,19 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "forzy://contracts/v1/sensor-telemetry-frame",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "frameId", "assetTag", "sensorId", "sourceMode", "observedAt", "receivedAt", "timestampQuality", "measurements", "qualityFlags"],
+  "properties": {
+    "schemaVersion": { "const": "1.0" }, "frameId": { "$ref": "#/$defs/uuid" }, "assetTag": { "type": "string", "minLength": 1 }, "sensorId": { "enum": ["s1", "s2"] }, "sourceMode": { "enum": ["replay", "live", "historical"] }, "observedAt": { "$ref": "#/$defs/timestampOrNull" }, "receivedAt": { "$ref": "#/$defs/timestampOrNull" }, "timestampQuality": { "enum": ["source", "collector", "synthetic", "unknown"] }, "measurements": { "$ref": "#/$defs/measurements" }, "qualityFlags": { "type": "array", "items": { "type": "string" } }
+  },
+  "$defs": {
+    "uuid": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$" },
+    "timestampOrNull": { "type": ["string", "null"], "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\\.[0-9]+)?Z$" },
+    "measurements": { "type": "object", "additionalProperties": false, "required": ["vibrationVelocityRms", "vibrationAcceleration", "temperature"], "properties": { "vibrationVelocityRms": { "anyOf": [{ "const": null }, { "$ref": "#/$defs/velocity" }] }, "vibrationAcceleration": { "anyOf": [{ "const": null }, { "$ref": "#/$defs/acceleration" }] }, "temperature": { "anyOf": [{ "const": null }, { "$ref": "#/$defs/temperature" }] } } },
+    "velocity": { "type": "object", "additionalProperties": false, "required": ["value", "unit", "semanticConfidence"], "properties": { "value": { "type": ["number", "null"] }, "unit": { "const": "mm/s" }, "semanticConfidence": { "$ref": "#/$defs/confidence" } } },
+    "acceleration": { "type": "object", "additionalProperties": false, "required": ["value", "unit", "statistic", "semanticConfidence"], "properties": { "value": { "type": ["number", "null"] }, "unit": { "const": "g" }, "statistic": { "const": "unknown" }, "semanticConfidence": { "$ref": "#/$defs/confidence" } } },
+    "temperature": { "type": "object", "additionalProperties": false, "required": ["value", "unit", "semanticConfidence"], "properties": { "value": { "type": ["number", "null"] }, "unit": { "const": "degC" }, "semanticConfidence": { "$ref": "#/$defs/confidence" } } },
+    "confidence": { "enum": ["confirmed", "inferred_from_datasheet", "unconfirmed"] }
+  }
+}

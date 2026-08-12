@@ -1,0 +1,7 @@
+{
+  "schemaVersion": "1.0", "assetTag": "MTR-BMB-042", "mode": "live", "generatedAt": "2026-08-12T15:00:01.000Z", "status": "insufficient_data", "freshness": "fresh",
+  "channels": [
+    { "schemaVersion": "1.0", "frameId": "00000000-0000-4000-8000-000000000001", "assetTag": "MTR-BMB-042", "sensorId": "s1", "sourceMode": "live", "observedAt": null, "receivedAt": "2026-08-12T15:00:01.000Z", "timestampQuality": "collector", "measurements": { "vibrationVelocityRms": { "value": 0.04, "unit": "mm/s", "semanticConfidence": "inferred_from_datasheet" }, "vibrationAcceleration": { "value": 0, "unit": "g", "statistic": "unknown", "semanticConfidence": "unconfirmed" }, "temperature": { "value": 34, "unit": "degC", "semanticConfidence": "inferred_from_datasheet" } }, "qualityFlags": [] },
+    { "schemaVersion": "1.0", "frameId": "00000000-0000-4000-8000-000000000002", "assetTag": "MTR-BMB-042", "sensorId": "s2", "sourceMode": "live", "observedAt": null, "receivedAt": "2026-08-12T15:00:01.000Z", "timestampQuality": "collector", "measurements": { "vibrationVelocityRms": { "value": 0.05, "unit": "mm/s", "semanticConfidence": "inferred_from_datasheet" }, "vibrationAcceleration": { "value": 0, "unit": "g", "statistic": "unknown", "semanticConfidence": "unconfirmed" }, "temperature": { "value": 35, "unit": "degC", "semanticConfidence": "inferred_from_datasheet" } }, "qualityFlags": [] }
+  ], "history": [], "assessment": null, "capabilities": { "replayControls": false, "liveUpdates": true, "copilot": false, "twin3d": true }
+}
