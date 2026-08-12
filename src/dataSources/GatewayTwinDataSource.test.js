@@ -1,23 +1,15 @@
 import { afterEach, expect, it, vi } from "vitest";
 import { createGatewayTwinDataSource } from "./GatewayTwinDataSource.js";
+import { buildReplaySnapshot } from "./ReplayTwinDataSource.js";
 
-const snapshot = {
-  schemaVersion: "1.0",
+const snapshot = buildReplaySnapshot({
   assetTag: "MTR-BMB-042",
-  mode: "live",
-  generatedAt: "2026-08-12T15:00:00.000Z",
+  live: { points: [], running: false },
+  reading: { ts: "2026-08-12T15:00:00.000Z", temperature: 34, vibration: 2.1 },
   status: "normal",
-  freshness: "fresh",
-  channels: [],
-  history: [],
-  assessment: null,
-  capabilities: {
-    replayControls: false,
-    liveUpdates: true,
-    copilot: false,
-    twin3d: true,
-  },
-};
+  scenario: null,
+  risk: null,
+});
 
 afterEach(() => vi.useRealTimers());
 
@@ -32,14 +24,14 @@ it("requests the asset snapshot from the same-origin gateway route", async () =>
   });
 });
 
-it("rejects an invalid DigitalTwinSnapshot returned by the gateway", async () => {
+it("rejects a full-contract-invalid DigitalTwinSnapshot returned by the gateway", async () => {
   const fetchImpl = vi.fn().mockResolvedValue({
     ok: true,
-    json: async () => ({ schemaVersion: "1.0", assetTag: "MTR-BMB-042" }),
+    json: async () => ({ ...snapshot, mode: "live", channels: [] }),
   });
   const source = createGatewayTwinDataSource({ fetchImpl });
 
-  await expect(source.getSnapshot("MTR-BMB-042")).rejects.toThrow(/DigitalTwinSnapshot mode/);
+  await expect(source.getSnapshot("MTR-BMB-042")).rejects.toThrow(/DigitalTwinSnapshot channels/);
 });
 
 it("reports polling failures without substituting a normal snapshot", async () => {
@@ -72,4 +64,18 @@ it("stops polling when the subscription is cancelled", async () => {
   await vi.advanceTimersByTimeAsync(10_000);
 
   expect(fetchImpl).toHaveBeenCalledTimes(1);
+});
+
+it("aborts an in-flight gateway request when the subscription is cancelled", () => {
+  let requestSignal;
+  const fetchImpl = vi.fn((_, { signal }) => {
+    requestSignal = signal;
+    return new Promise(() => {});
+  });
+  const source = createGatewayTwinDataSource({ fetchImpl });
+
+  const unsubscribe = source.subscribe("MTR-BMB-042", vi.fn());
+  unsubscribe();
+
+  expect(requestSignal.aborted).toBe(true);
 });
