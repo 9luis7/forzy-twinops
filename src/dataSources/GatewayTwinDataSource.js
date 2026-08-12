@@ -9,7 +9,13 @@ const responseError = (response) =>
   new Error(`Gateway snapshot request failed with status ${response.status ?? "unknown"}`);
 
 const assertSameOriginBaseUrl = (baseUrl) => {
-  if (typeof baseUrl !== "string" || baseUrl.includes("\\") || (baseUrl !== "" && !baseUrl.startsWith("/")) || baseUrl.startsWith("//")) {
+  if (
+    typeof baseUrl !== "string" ||
+    /[\x00-\x1f\x7f]/.test(baseUrl) ||
+    baseUrl.includes("\\") ||
+    (baseUrl !== "" && !baseUrl.startsWith("/")) ||
+    baseUrl.startsWith("//")
+  ) {
     throw new TypeError("GatewayTwinDataSource baseUrl must be empty or a same-origin absolute path");
   }
 };

@@ -30,17 +30,25 @@ it.each([
   "\\\\example.com",
   "/api\\escape",
   "relative/path",
+  "/\n/evil.example",
+  "/\r/evil.example",
+  "/\t/evil.example",
+  "/\0/evil.example",
+  `/\x7f/evil.example`,
 ])("rejects unsafe gateway baseUrl %s", (baseUrl) => {
   expect(() => createGatewayTwinDataSource({ baseUrl, fetchImpl: vi.fn() })).toThrow(/baseUrl/);
 });
 
-it("accepts an empty or absolute-path same-origin baseUrl", async () => {
+it.each([
+  ["", "/api/v1/twin/assets/MTR-BMB-042/snapshot"],
+  ["/api-root", "/api-root/api/v1/twin/assets/MTR-BMB-042/snapshot"],
+])("accepts same-origin baseUrl %j", async (baseUrl, expectedUrl) => {
   const fetchImpl = vi.fn().mockResolvedValue({ ok: true, json: async () => snapshot });
-  const source = createGatewayTwinDataSource({ baseUrl: "/gateway/", fetchImpl });
+  const source = createGatewayTwinDataSource({ baseUrl, fetchImpl });
 
   await source.getSnapshot("MTR-BMB-042");
 
-  expect(fetchImpl).toHaveBeenCalledWith("/gateway/api/v1/twin/assets/MTR-BMB-042/snapshot", expect.anything());
+  expect(fetchImpl).toHaveBeenCalledWith(expectedUrl, expect.anything());
 });
 
 it("rejects a full-contract-invalid DigitalTwinSnapshot returned by the gateway", async () => {

@@ -63,3 +63,17 @@ coleta, ML ou copiloto além da projeção contratual pública.
 - Os condicionais do JSON Schema garantem a semântica por origem; a igualdade
   `provenance.ingestedAt == receivedAt` é reforçada no modelo Pydantic, pois
   draft-07 não oferece comparação entre valores de propriedades.
+
+## Residual same-origin hardening
+
+- Re-review identificou que controles ASCII em `baseUrl`, por exemplo
+  `"/\n/evil.example"`, podiam ser normalizados de forma perigosa.
+- O guard agora rejeita `[\x00-\x1f\x7f]` antes das verificações existentes de
+  backslash, URL absoluta, path relativo e prefixo protocol-relative.
+- RED focado: 5 falhas para newline, carriage return, tab, NUL e DEL.
+- GREEN focado: `GatewayTwinDataSource.test.js`, 17/17 PASS.
+- Suíte JS completa: 6 arquivos, 56/56 PASS.
+- Build de produção: PASS; permanece somente o warning conhecido de chunk
+  principal > 500 kB.
+- O commit residual separado contém exclusivamente o guard, seus testes e esta
+  atualização de evidência.
