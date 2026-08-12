@@ -30,3 +30,9 @@ Thumbs.db
 .superpowers/
 .worktrees/
 tmp/
+
+# Python local artifacts
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
