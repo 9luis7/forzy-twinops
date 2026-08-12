@@ -101,6 +101,50 @@ it("marks alert replay assessments as demo scenarios instead of model inference"
   expect(snapshot.assessment.limitations).toContain("demo_scenario_not_model_inference");
 });
 
+it("does not emit an assessment for a normal replay without a finite risk score", () => {
+  const snapshot = buildReplaySnapshot({
+    assetTag: "MTR-BMB-042",
+    live: { points: [], running: false },
+    reading: { ts: "2026-08-12T15:00:00.000Z", temperature: 34, vibration: 2.1 },
+    status: "normal",
+    scenario: null,
+    risk: null,
+  });
+
+  expect(snapshot.assessment).toBeNull();
+  expect(replaySnapshotValidator()(snapshot)).toBe(true);
+});
+
+it("does not invent an assessment when a scenario has no finite risk score", () => {
+  const snapshot = buildReplaySnapshot({
+    assetTag: "MTR-BMB-042",
+    live: { points: [], running: false },
+    reading: { ts: "2026-08-12T15:00:00.000Z", temperature: 81, vibration: 7.8 },
+    status: "alerta",
+    scenario: { id: "imbalance" },
+    risk: { level: "Alto" },
+  });
+
+  expect(snapshot.status).toBe("alert");
+  expect(snapshot.assessment).toBeNull();
+  expect(replaySnapshotValidator()(snapshot)).toBe(true);
+});
+
+it("does not emit an assessment for a non-finite risk score", () => {
+  const snapshot = buildReplaySnapshot({
+    assetTag: "MTR-BMB-042",
+    live: { points: [], running: false },
+    reading: { ts: "2026-08-12T15:00:00.000Z", temperature: 81, vibration: 7.8 },
+    status: "alerta",
+    scenario: { id: "imbalance" },
+    risk: { level: "Alto", score: Number.NaN },
+  });
+
+  expect(snapshot.status).toBe("alert");
+  expect(snapshot.assessment).toBeNull();
+  expect(replaySnapshotValidator()(snapshot)).toBe(true);
+});
+
 it("preserves missing legacy readings as null", () => {
   const snapshot = buildReplaySnapshot({
     assetTag: "MTR-BMB-042",

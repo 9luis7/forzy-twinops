@@ -61,7 +61,11 @@ describe("contracts/v1", () => {
     const missingS2 = clone(live);
     missingS2.channels = [missingS2.channels[0]];
     const duplicateS1 = clone(live);
-    duplicateS1.channels[1] = { ...duplicateS1.channels[0], sampleId: "00000000-0000-4000-8000-000000000003" };
+    duplicateS1.channels[1] = {
+      ...duplicateS1.channels[0],
+      frameId: "00000000-0000-4000-8000-000000000003",
+      sensorId: "s1",
+    };
     const embeddedObservedLive = clone(live);
 
     expect(snapshot(live)).toBe(true);

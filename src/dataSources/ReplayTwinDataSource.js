@@ -51,9 +51,9 @@ const toFrame = ({ assetTag, reading, index }) => {
 };
 
 const toAssessment = ({ assetTag, timestamp: receivedAt, status, scenario, risk }) => {
-  if (!scenario && !risk) return null;
+  if (!Number.isFinite(risk?.score)) return null;
 
-  const score = asNullable(risk?.score);
+  const score = risk.score;
   return {
     schemaVersion: SCHEMA_VERSION,
     assessmentId: "00000000-0000-4000-8000-000000000003",

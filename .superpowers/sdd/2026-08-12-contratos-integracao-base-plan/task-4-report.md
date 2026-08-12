@@ -73,3 +73,20 @@ claim `forzy-csv`, `scheduledAt`, or `raw` on the consumer projection.
 - Python contracts: 4 tests passed using the renamed Pydantic models and
   fixtures.
 - `npm.cmd run build` passed. Vite retained its existing >500 kB chunk warning.
+
+## Fix round 2/5
+
+- `buildReplaySnapshot` now creates `AssetConditionAssessment` only when
+  `risk.score` is a finite number. A scenario without a score, or with `NaN`,
+  retains the legacy-derived snapshot status and sets `assessment` to `null`.
+- Replay tests cover normal/no assessment, alert/scenario/finite score,
+  scenario without a score, and a non-finite input score; each required null
+  case is accepted by Ajv.
+- The duplicate-S1 schema test now gives the duplicate frame a valid new
+  `frameId` and explicitly sets `sensorId: "s1"`, so it proves the live
+  S1/S2 containment invariant instead of failing on an unknown legacy field.
+
+RED: two adapter tests failed because an assessment was emitted with missing or
+`NaN` score. GREEN: Gate 0 JS passed (4 files, 32 tests) and the production
+build passed. Python contracts were not touched. Vite retained its existing
+>500 kB chunk warning.
