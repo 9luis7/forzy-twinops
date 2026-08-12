@@ -15,11 +15,15 @@ export function createTwinDataSource({ getSnapshot, subscribe, capabilities } = 
   }
 
   return Object.freeze({
-    getSnapshot(assetTag) {
+    async getSnapshot(assetTag) {
       return getSnapshot(assetTag);
     },
     subscribe(assetTag, listener) {
-      return subscribe(assetTag, listener);
+      const unsubscribe = subscribe(assetTag, listener);
+      if (typeof unsubscribe !== "function") {
+        throw new TypeError("TwinDataSource subscribe must return an unsubscribe function");
+      }
+      return unsubscribe;
     },
     capabilities: Object.freeze({ ...capabilities }),
   });
