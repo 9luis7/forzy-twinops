@@ -1,0 +1,12 @@
+{
+  "schemaVersion": "1.0",
+  "assetTag": "MTR-BMB-042",
+  "mode": "replay",
+  "generatedAt": "2026-08-12T15:00:01.000Z",
+  "status": "normal",
+  "freshness": "expected_idle",
+  "channels": [],
+  "history": [],
+  "assessment": null,
+  "capabilities": { "replayControls": true, "liveUpdates": false, "copilot": false, "twin3d": true }
+}

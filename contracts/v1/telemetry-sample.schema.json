@@ -1,0 +1,66 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "forzy://contracts/v1/telemetry-sample",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "sampleId", "source", "assetTag", "sensorId", "scheduledAt", "receivedAt", "observedAt", "measurements", "qualityFlags", "payloadHash", "raw"],
+  "properties": {
+    "schemaVersion": { "const": "1.0" },
+    "sampleId": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$" },
+    "source": { "enum": ["forzy-live", "forzy-csv"] },
+    "assetTag": { "type": "string", "minLength": 1 },
+    "sensorId": { "enum": ["s1", "s2"] },
+    "scheduledAt": { "$ref": "#/$defs/isoTimestampOrNull" },
+    "receivedAt": { "$ref": "#/$defs/isoTimestamp" },
+    "observedAt": { "$ref": "#/$defs/isoTimestampOrNull" },
+    "measurements": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["vibrationVelocityRms", "vibrationAcceleration", "temperature"],
+      "properties": {
+        "vibrationVelocityRms": { "$ref": "#/$defs/velocityMeasurement" },
+        "vibrationAcceleration": { "$ref": "#/$defs/accelerationMeasurement" },
+        "temperature": { "$ref": "#/$defs/temperatureMeasurement" }
+      }
+    },
+    "qualityFlags": { "type": "array", "items": { "type": "string" } },
+    "payloadHash": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "raw": { "type": "object", "additionalProperties": false }
+  },
+  "$defs": {
+    "isoTimestamp": { "type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\\.[0-9]+)?Z$" },
+    "isoTimestampOrNull": { "type": ["string", "null"], "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\\.[0-9]+)?Z$" },
+    "semanticConfidence": { "enum": ["confirmed", "inferred_from_datasheet", "unconfirmed"] },
+    "velocityMeasurement": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["value", "unit", "semanticConfidence"],
+      "properties": {
+        "value": { "type": "number" },
+        "unit": { "const": "mm/s" },
+        "semanticConfidence": { "$ref": "#/$defs/semanticConfidence" }
+      }
+    },
+    "accelerationMeasurement": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["value", "unit", "statistic", "semanticConfidence"],
+      "properties": {
+        "value": { "type": "number" },
+        "unit": { "const": "g" },
+        "statistic": { "enum": ["unknown"] },
+        "semanticConfidence": { "$ref": "#/$defs/semanticConfidence" }
+      }
+    },
+    "temperatureMeasurement": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["value", "unit", "semanticConfidence"],
+      "properties": {
+        "value": { "type": "number" },
+        "unit": { "const": "degC" },
+        "semanticConfidence": { "$ref": "#/$defs/semanticConfidence" }
+      }
+    }
+  }
+}
