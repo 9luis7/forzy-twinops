@@ -1,8 +1,14 @@
 import { describe, expect, it } from "vitest";
+import { assertDigitalTwinSnapshot, isDigitalTwinSnapshot } from "../../contracts/twin.js";
 import { buildTwinViewModel } from "./twinViewModel.js";
 import { alertSnapshot, manifestWithApprovedMotorBinding } from "./testFixtures.js";
 
 describe("buildTwinViewModel", () => {
+  it("uses a complete canonical alert snapshot fixture", () => {
+    expect(assertDigitalTwinSnapshot(alertSnapshot)).toBe(alertSnapshot);
+    expect(isDigitalTwinSnapshot(alertSnapshot)).toBe(true);
+  });
+
   it("highlights only nodes explicitly bound to assessment.componentTag", () => {
     const vm = buildTwinViewModel({
       snapshot: alertSnapshot,

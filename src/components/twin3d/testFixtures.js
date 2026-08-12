@@ -39,7 +39,39 @@ export const liveSnapshot = {
 export const alertSnapshot = {
   ...normalSnapshot,
   status: "alert",
-  assessment: { componentTag: "CMP-MOTOR-VALIDATED" },
+  assessment: {
+    schemaVersion: "1.0",
+    assessmentId: "22222222-2222-4222-8222-222222222222",
+    assetTag: "MTR-BMB-042",
+    sensorId: "s1",
+    window: {
+      start: "2026-08-12T14:55:00.000Z",
+      end: "2026-08-12T15:00:00.000Z",
+      receivedAt: "2026-08-12T15:00:00.080Z",
+      freshnessMs: 80,
+    },
+    quality: { status: "ok", flags: [] },
+    operatingContext: { state: "steady", estimated: true },
+    assessment: {
+      status: "alert",
+      anomalyScore: 0.8,
+      deteriorationScore: 0.7,
+      scoreSemantics: "relative_to_historical_baseline_not_failure_probability",
+      episodeId: "episode-001",
+      persistenceSeconds: 60,
+    },
+    componentTag: "CMP-MOTOR-VALIDATED",
+    recommendation: "Inspecionar o conjunto com validação humana.",
+    humanValidationRequired: true,
+    evidence: [],
+    model: {
+      name: "robust-baseline",
+      version: "1.0.0",
+      configHash: `sha256:${"0".repeat(64)}`,
+      trainedUntil: "2026-08-11T23:59:59.000Z",
+    },
+    limitations: [],
+  },
 };
 
 export const manifestWithApprovedMotorBinding = {

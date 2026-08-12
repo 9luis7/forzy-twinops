@@ -24,6 +24,9 @@ export function parseModelManifest(value) {
   if (value.units !== "m") invalid("units");
   if (value.upAxis !== "Y") invalid("upAxis");
   if (!isObject(value.groups)) invalid("groups");
+  for (const name of Object.keys(value.groups)) {
+    if (!GROUP_NAMES.includes(name)) invalid(`groups.${name}`);
+  }
 
   for (const name of GROUP_NAMES) {
     const group = value.groups[name];

@@ -8,6 +8,16 @@ it("rejects a manifest without all physical groups", () => {
   expect(() => parseModelManifest({ ...manifestWithApprovedMotorBinding, groups: incomplete })).toThrow(/base/);
 });
 
+it("rejects forged physical groups", () => {
+  expect(() => parseModelManifest({
+    ...manifestWithApprovedMotorBinding,
+    groups: {
+      ...manifestWithApprovedMotorBinding.groups,
+      forged: { nodeNames: ["FORGED_01"], componentTag: null },
+    },
+  })).toThrow(/groups\.forged/);
+});
+
 it("rejects sensor coordinates while placement is unvalidated", () => {
   expect(() => parseModelManifest({
     ...manifestWithApprovedMotorBinding,

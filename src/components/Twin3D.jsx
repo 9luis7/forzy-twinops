@@ -1,6 +1,4 @@
-import { Component, Suspense, lazy } from "react";
-
-const LazyTwin3DCanvas = lazy(() => import("./twin3d/Twin3DCanvas.jsx"));
+import React, { Component, Suspense, lazy } from "react";
 
 export function canUseWebGL() {
   try {
@@ -31,16 +29,24 @@ class Twin3DErrorBoundary extends Component {
   }
 }
 
-export default function Twin3D({ snapshot, asset, activeComponent, onSelectComponent, fallback }) {
-  if (!snapshot || snapshot.capabilities?.twin3d !== true || !canUseWebGL() || prefersReducedMotion()) {
-    return fallback;
-  }
+export function createTwin3DComponent(loadCanvas) {
+  const LazyTwin3DCanvas = lazy(loadCanvas);
 
-  return (
-    <Twin3DErrorBoundary fallback={fallback}>
-      <Suspense fallback={fallback}>
-        <LazyTwin3DCanvas snapshot={snapshot} asset={asset} activeComponent={activeComponent} onSelectComponent={onSelectComponent} />
-      </Suspense>
-    </Twin3DErrorBoundary>
-  );
+  return function Twin3D({ snapshot, asset, activeComponent, onSelectComponent, fallback }) {
+    if (!snapshot || snapshot.capabilities?.twin3d !== true || !canUseWebGL() || prefersReducedMotion()) {
+      return fallback;
+    }
+
+    return (
+      <Twin3DErrorBoundary fallback={fallback}>
+        <Suspense fallback={fallback}>
+          <LazyTwin3DCanvas snapshot={snapshot} asset={asset} activeComponent={activeComponent} onSelectComponent={onSelectComponent} />
+        </Suspense>
+      </Twin3DErrorBoundary>
+    );
+  };
 }
+
+const Twin3D = createTwin3DComponent(() => import("./twin3d/Twin3DCanvas.jsx"));
+
+export default Twin3D;
