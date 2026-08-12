@@ -1,0 +1,32 @@
+{
+  "assessmentConfigHash": "sha256:9e9b0a68c95711cc918593a8319ae00704034c7f3fe1ec83e7b898f0c4d265a1",
+  "baseline": {
+    "alert_threshold": 70.0,
+    "ewma_alpha": 0.35,
+    "feature_columns": [
+      "velocity_ewma",
+      "velocity_slope",
+      "velocity_change_point",
+      "temperature_deviation"
+    ],
+    "minimum_scale": 1e-06,
+    "persistence_seconds": 30.0,
+    "robust_z_at_score_100": 6.0,
+    "watch_threshold": 40.0
+  },
+  "dataset": {
+    "expectedRealRows": 7183,
+    "fixtureRows": 4,
+    "kind": "deterministic_reference_fixture_not_real_forzy_csv",
+    "realDatasetStatus": "missing_from_workspace"
+  },
+  "features": {
+    "long_window_seconds": 60,
+    "min_points": 3,
+    "short_window_seconds": 10
+  },
+  "scorer": {
+    "gap_seconds": 15.0,
+    "max_freshness_seconds": 30.0
+  }
+}

@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import argparse
 from dataclasses import asdict, dataclass
+from hashlib import sha256
+from pathlib import Path
 from time import perf_counter
 from typing import Iterable, Sequence
 
@@ -151,6 +154,63 @@ def run_backtest(
     )
 
 
+def run_backtest_csv(
+    input_path: str | Path,
+    output_path: str | Path,
+    *,
+    holdout_count: int = 2,
+) -> BacktestReport:
+    """Run the frozen pipeline from an already curated feature CSV."""
+
+    source = Path(input_path)
+    frame = pd.read_csv(source)
+    frame["event_at"] = pd.to_datetime(frame["event_at"], utc=True)
+    if frame["feature_valid"].dtype != bool:
+        frame["feature_valid"] = frame["feature_valid"].map(
+            {"True": True, "False": False, "true": True, "false": False}
+        )
+    folds = build_walk_forward_folds(
+        frame["cycle_id"].unique(), holdout_count=holdout_count
+    )
+    baseline_template = RobustBaseline()
+    report = run_backtest(frame, baseline_template, folds)
+    frozen_train = frame.loc[
+        frame["cycle_id"].isin(folds[-1].train_cycle_ids)
+    ].copy()
+    frozen_pipeline = RobustBaseline(baseline_template.config).fit(frozen_train)
+    from twinops.ml.artifacts import save_artifact_bundle
+
+    save_artifact_bundle(
+        output_path,
+        frozen_pipeline,
+        {
+            "dataset": {
+                "kind": "curated_feature_csv",
+                "filename": source.name,
+                "sha256": f"sha256:{sha256(source.read_bytes()).hexdigest()}",
+                "rows": len(frame),
+                "cycleCount": int(frame["cycle_id"].nunique()),
+            },
+            "holdoutCount": holdout_count,
+            "baseline": asdict(baseline_template.config),
+        },
+        report,
+    )
+    return report
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        description="Chronological TwinOps backtest from a curated feature CSV."
+    )
+    parser.add_argument("--input", required=True, type=Path)
+    parser.add_argument("--output", required=True, type=Path)
+    parser.add_argument("--holdout-count", type=int, default=2)
+    args = parser.parse_args(argv)
+    run_backtest_csv(args.input, args.output, holdout_count=args.holdout_count)
+    return 0
+
+
 def _episode_count(group: pd.DataFrame, status: str) -> int:
     return int(group.loc[group["status"].eq(status), "episode_id"].dropna().nunique())
 
@@ -164,3 +224,6 @@ def _steady_alert_seconds(group: pd.DataFrame) -> float:
     times = pd.to_datetime(steady["event_at"], utc=True).array.asi8 / 1_000_000_000
     return float(np.diff(times).sum())
 
+
+if __name__ == "__main__":
+    raise SystemExit(main())

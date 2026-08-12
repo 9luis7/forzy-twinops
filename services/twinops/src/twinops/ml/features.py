@@ -48,6 +48,7 @@ def compute_trailing_features(frame: pd.DataFrame, config: FeatureConfig) -> pd.
         "velocity_rms",
         "temperature",
         "operating_state",
+        "is_new_information",
     }
     missing = required.difference(frame.columns)
     if missing:
@@ -63,7 +64,16 @@ def compute_trailing_features(frame: pd.DataFrame, config: FeatureConfig) -> pd.
 
     grouped = output.groupby(["sensor_id", "cycle_id"], sort=False)
     for _, positions in grouped.indices.items():
-        ordered_positions = np.asarray(positions, dtype=int)
+        ordered_positions = np.asarray(
+            [
+                position
+                for position in positions
+                if bool(output.iloc[position].is_new_information)
+            ],
+            dtype=int,
+        )
+        if not len(ordered_positions):
+            continue
         times = pd.to_datetime(output.iloc[ordered_positions]["event_at"], utc=True)
         order = np.argsort(times.array.asi8, kind="stable")
         ordered_positions = ordered_positions[order]
@@ -133,7 +143,16 @@ def _compute_phase_temperature(output: pd.DataFrame, config: FeatureConfig) -> N
         ["sensor_id", "cycle_id", "operating_state"], sort=False
     ).indices
     for _, positions in groups.items():
-        ordered = np.asarray(positions, dtype=int)
+        ordered = np.asarray(
+            [
+                position
+                for position in positions
+                if bool(output.iloc[position].is_new_information)
+            ],
+            dtype=int,
+        )
+        if not len(ordered):
+            continue
         times = pd.to_datetime(output.iloc[ordered]["event_at"], utc=True)
         order = np.argsort(times.array.asi8, kind="stable")
         ordered = ordered[order]

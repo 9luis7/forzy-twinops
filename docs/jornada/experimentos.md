@@ -41,7 +41,8 @@ um histórico próprio.
 
 ## EXP-003: alerta antecipado com ML clássico
 
-**Status:** planejado.
+**Status:** pipeline implementado e validado com fixtures; execução no CSV real
+pendente porque o arquivo de 7.183 registros não está disponível no workspace.
 
 **Hipótese:** tendências e mudanças de regime em velocidade de vibração RMS,
 aceleração de vibração e temperatura conseguem indicar deterioração antes de
@@ -53,13 +54,21 @@ um limite crítico.
 - detecção de change point;
 - Isolation Forest ou método equivalente de anomalia multivariada.
 
-**Métricas:**
+**Métricas congeladas antes do holdout:**
 
-- antecedência do alerta;
-- taxa de falsos alertas;
-- eventos não detectados;
+- score por ciclo e regime;
+- episódios `watch`/`alert` por ativação e tempo steady em alerta;
+- estabilidade de limiares entre folds;
+- ranking de eventos candidatos, sem tratá-los como verdadeiros positivos;
+- antecedência relativa ao evento candidato, nunca lead time de falha;
 - latência da inferência;
 - estabilidade diante de gaps e leituras duplicadas.
+
+**Resultado disponível:** o baseline robusto, o replay cronológico por ciclo e
+o challenger Isolation Forest foram validados por testes determinísticos. A
+medição local com fixture de 1.000 amostras ficou abaixo do gate de 100 ms, mas
+não representa resultado por ciclo do CSV real. O challenger nunca é promovido
+automaticamente.
 
 **Critério de honestidade:** enquanto não houver falhas confirmadas, o sistema
 deve comunicar risco de anomalia ou deterioração, não previsão confirmada de
@@ -110,19 +119,24 @@ substituir o acesso às fontes reais.
 
 ## EXP-006: reinterpretar a EDA com a semântica correta do sensor
 
-**Status:** planejado.
+**Status:** notebook e pipeline reproduzíveis concluídos; EDA real não executada
+porque o CSV de 7.183 registros não foi encontrado. Nenhum resultado foi
+inferido do mock `readings_rows.csv` de 677 linhas.
 
 **Pergunta:** os eventos encontrados continuam investigáveis quando
 `Velocidade` é interpretada como velocidade de vibração RMS em `mm/s`?
 
-**Hipótese:** mudanças conjuntas entre velocidade RMS, aceleração e temperatura
-conseguem separar partidas, paradas e regimes anômalos sem usar RPM.
+**Hipótese:** mudanças em velocidade RMS e temperatura separada por fase podem
+identificar regimes e eventos candidatos sem usar RPM. Aceleração permanece
+fora do score enquanto sua estatística for desconhecida.
 
-**Procedimento:** reconstruir os ciclos, revisar as unidades, comparar S1 com
-S2, analisar a defasagem térmica e reavaliar os eventos de 13:48:10 e 13:56:10.
+**Procedimento:** reconstruir ciclos cronológicos, revisar unidades, segmentar
+fases estimadas, analisar temperatura dentro da mesma fase e reavaliar os
+eventos de 13:48:10 e 13:56:10. Não comparar S1 com S2 fisicamente antes de
+confirmar montagem e eixo.
 
-**Métricas:** magnitude e duração da mudança, diferença entre sensores,
-repetição em outros ciclos, qualidade da aquisição e distância do baseline.
+**Métricas:** magnitude e duração da mudança, persistência, repetição em outros
+ciclos, qualidade da aquisição e distância do baseline.
 
 **Critério de sucesso:** produzir uma interpretação compatível com a física do
 sensor e classificar cada evento como comportamento normal, anomalia candidata
@@ -130,6 +144,9 @@ ou inconclusivo.
 
 **Limitação conhecida:** o arquivo atual não contém RPM, setpoint, carga nem
 rótulo de falha confirmado.
+
+**Resultado atual:** somente o mecanismo foi validado com fixtures. Os eventos
+13:48:10 e 13:56:10 continuam sem classificação até a execução no CSV real.
 
 ## Template de novo experimento
 

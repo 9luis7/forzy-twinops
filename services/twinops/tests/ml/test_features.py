@@ -73,3 +73,20 @@ def test_temperature_baseline_is_kept_separate_by_operating_phase(sample_factory
     assert features["temperature_phase_points"].tolist() == [1, 1, 1, 1]
     assert features.iloc[2].temperature_median == 60.0
 
+
+def test_duplicate_payload_does_not_enter_trailing_feature_history(sample_factory):
+    curated = curate_samples(
+        [
+            sample_factory(second=0, velocity=0.1, payload_hash="duplicate"),
+            sample_factory(second=1, velocity=10.0, payload_hash="duplicate"),
+            sample_factory(second=2, velocity=0.1),
+        ],
+        gap_seconds=10,
+    )
+
+    features = compute_trailing_features(curated, CONFIG)
+
+    assert not features.iloc[1].feature_valid
+    assert features.iloc[2].feature_valid
+    assert features.iloc[2].velocity_median == 0.1
+    assert features.iloc[2].velocity_ewma == 0.1

@@ -1,0 +1,16 @@
+{
+  "baselineVersusChallengerDecision": "baseline_retained_challenger_not_evaluated_on_real_data",
+  "candidateEvents": [],
+  "candidateTimesPendingReview": [
+    "13:48:10",
+    "13:56:10"
+  ],
+  "cycleResults": [],
+  "limitations": [
+    "The compatible 7,183-row CSV was not found in the workspace.",
+    "No per-cycle or event conclusion was inferred from fixture data.",
+    "readings_rows.csv was not used because it is a 677-row mock with another schema."
+  ],
+  "realDatasetExecuted": false,
+  "status": "fixture_validation_only_real_eda_pending"
+}

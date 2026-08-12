@@ -2,7 +2,11 @@ from datetime import datetime, timedelta, timezone
 
 import pandas as pd
 
-from twinops.ml.backtest import build_walk_forward_folds, run_backtest
+from twinops.ml.backtest import (
+    build_walk_forward_folds,
+    run_backtest,
+    run_backtest_csv,
+)
 from twinops.ml.baseline import BaselineConfig, RobustBaseline
 
 
@@ -71,3 +75,15 @@ def test_candidate_ranking_is_explicitly_not_ground_truth():
         for event in report.candidate_events
     )
 
+
+def test_curated_csv_entrypoint_writes_a_verified_bundle(tmp_path):
+    input_path = tmp_path / "curated-features.csv"
+    output_path = tmp_path / "artifacts"
+    _six_cycle_features().to_csv(input_path, index=False)
+
+    report = run_backtest_csv(input_path, output_path)
+
+    assert report.holdout_frozen
+    assert (output_path / "pipeline.joblib").is_file()
+    assert (output_path / "feature-manifest.json").is_file()
+    assert (output_path / "backtest-report.json").is_file()

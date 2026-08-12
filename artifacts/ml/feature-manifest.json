@@ -1,0 +1,41 @@
+{
+  "features": [
+    {
+      "causality": "trailing_only",
+      "name": "velocity_ewma",
+      "unit": "mm/s"
+    },
+    {
+      "causality": "trailing_only",
+      "name": "velocity_slope",
+      "unit": "mm/s/s"
+    },
+    {
+      "causality": "trailing_only",
+      "name": "velocity_change_point",
+      "unit": "mm/s"
+    },
+    {
+      "causality": "trailing_only_phase_separated",
+      "name": "temperature_deviation",
+      "unit": "degC"
+    }
+  ],
+  "files": {
+    "backtest-report.json": "sha256:734bdec9a986892494c4822eaba5aa9fda76deb6db7efb08de5179e85b4aa6ee",
+    "model-card.md": "sha256:0dd9971224754f87ea8bd5c24d7889e21fdac74852027839e71e53ddcd8e54cb",
+    "pipeline-config.json": "sha256:eb6c5223796bd0d6a38dba4452baa2edf09097df3fca72dfa8bf747b6151841b",
+    "pipeline.joblib": "sha256:8977ed9dee06c90413df71345eb0f3d6cb09a98ede8d6348bef29d472177a92a"
+  },
+  "model": {
+    "configHash": "sha256:5ff7b883606cf692a0eb1ba7e0a7f5d6b5468c3899cd508194d2e6fca3360415",
+    "name": "robust-baseline",
+    "version": "1.0.0"
+  },
+  "officialScoreExclusions": [
+    "vibration_acceleration_statistic_unknown",
+    "physical_s1_s2_difference_unconfirmed"
+  ],
+  "schemaVersion": "1.0",
+  "scoreSemantics": "relative_to_historical_baseline_not_failure_probability"
+}
