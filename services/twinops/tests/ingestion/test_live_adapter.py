@@ -74,3 +74,14 @@ def test_settings_are_server_side_and_validate_positive_intervals(tmp_path):
                 "TWINOPS_POLL_INTERVAL_SECONDS": "0",
             }
         )
+
+
+@pytest.mark.parametrize("invalid", ["nan", "inf", "-inf"])
+def test_settings_reject_non_finite_intervals(invalid):
+    with pytest.raises(ValueError, match="finite"):
+        Settings.from_env(
+            {
+                "TWINOPS_UPSTREAM_BASE_URL": "https://example.invalid",
+                "TWINOPS_POLL_INTERVAL_SECONDS": invalid,
+            }
+        )

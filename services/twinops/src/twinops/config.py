@@ -1,6 +1,7 @@
 """Validated server-side configuration for acquisition and storage."""
 
 from dataclasses import dataclass
+import math
 from pathlib import Path
 from typing import Mapping
 
@@ -21,8 +22,13 @@ class Settings:
             raise ValueError("TWINOPS_UPSTREAM_BASE_URL must use https")
         interval = float(env.get("TWINOPS_POLL_INTERVAL_SECONDS", "5"))
         timeout = float(env.get("TWINOPS_REQUEST_TIMEOUT_SECONDS", "2"))
-        if interval <= 0 or timeout <= 0:
-            raise ValueError("poll interval and timeout must be positive")
+        if (
+            not math.isfinite(interval)
+            or not math.isfinite(timeout)
+            or interval <= 0
+            or timeout <= 0
+        ):
+            raise ValueError("poll interval and timeout must be positive finite numbers")
         return cls(
             upstream_base_url=url,
             database_path=Path(
