@@ -101,3 +101,8 @@ class Collector:
             return "expected_idle"
         await self.collect_slot(slot)
         return "collected"
+
+    async def run(self, *, stop, interval_seconds, clock, sleep) -> None:
+        while not stop.is_set():
+            await self.tick(clock())
+            await sleep(interval_seconds)
