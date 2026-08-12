@@ -9,18 +9,25 @@
     "build": "vite build",
     "preview": "vite preview",
     "test": "vitest",
-    "test:run": "vitest run"
+    "test:run": "vitest run",
+    "test:e2e": "playwright test",
+    "build:manifest": "vite build --manifest"
   },
   "dependencies": {
+    "@react-three/drei": "9.117.3",
+    "@react-three/fiber": "8.17.10",
     "ajv": "^8.17.1",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
-    "recharts": "^2.12.7"
+    "recharts": "^2.12.7",
+    "three": "0.169.0"
   },
   "devDependencies": {
-    "@testing-library/react": "^16.1.0",
+    "@playwright/test": "1.47.2",
+    "@testing-library/jest-dom": "6.6.3",
+    "@testing-library/react": "16.1.0",
     "@vitejs/plugin-react": "^4.3.1",
-    "jsdom": "^25.0.1",
+    "jsdom": "25.0.1",
     "vite": "^5.4.2",
     "vitest": "^2.1.9"
   }
