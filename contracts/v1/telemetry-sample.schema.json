@@ -27,6 +27,17 @@
     "payloadHash": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
     "raw": { "type": "object", "additionalProperties": false }
   },
+  "allOf": [
+    {
+      "if": {
+        "properties": { "source": { "const": "forzy-live" } },
+        "required": ["source"]
+      },
+      "then": {
+        "properties": { "observedAt": { "const": null } }
+      }
+    }
+  ],
   "$defs": {
     "isoTimestamp": { "type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\\.[0-9]+)?Z$" },
     "isoTimestampOrNull": { "type": ["string", "null"], "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\\.[0-9]+)?Z$" },
