@@ -3,7 +3,7 @@
 ## Missão
 
 Substituir respostas mockadas por explicações ancoradas em
-`DetectionAssessment`, sem permitir que o modelo de linguagem crie ou altere o
+`AssetConditionAssessment`, sem permitir que o modelo de linguagem crie ou altere o
 alerta.
 
 ## Ownership exclusivo sugerido

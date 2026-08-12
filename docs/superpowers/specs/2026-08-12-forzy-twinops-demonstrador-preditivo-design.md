@@ -74,7 +74,7 @@ flowchart LR
     API --> RAW["Raw append-only"]
     API --> DB["SQLite no demonstrador"]
     DB --> ML["Features causais + ML clássico"]
-    ML --> SNAP["TwinSnapshot versionado"]
+    ML --> SNAP["DigitalTwinSnapshot versionado"]
     SNAP --> FE["React/Vite"]
     SNAP --> COP["Contexto estruturado do copiloto"]
     COP --> LOCAL["Qwen local"]
@@ -102,7 +102,7 @@ flowchart LR
 O contrato normativo está em
 [`work-packages/00-contratos-e-integracao.md`](work-packages/00-contratos-e-integracao.md).
 
-O backend produz `TwinSnapshot`. O frontend não recalcula score, severidade ou
+O backend produz `DigitalTwinSnapshot`. O frontend não recalcula score, severidade ou
 risco. Replay e live implementam a mesma interface. Valores ausentes continuam
 ausentes; corrente e RPM não podem ser preenchidos com mock quando a fonte for
 real.
@@ -119,7 +119,7 @@ aquisição, `observedAt` permanece nulo. A UI não pode renomear `receivedAt` c
 4. O repositório grava raw e registro curado de forma idempotente.
 5. O scorer atualiza features causais e retorna avaliação ou
    `insufficient_data`.
-6. A API agrega canais, qualidade, histórico e avaliação em `TwinSnapshot`.
+6. A API agrega canais, qualidade, histórico e avaliação em `DigitalTwinSnapshot`.
 7. A UI atualiza gráfico, badges, alertas e twin a partir do mesmo snapshot.
 8. O copiloto recebe uma projeção imutável da avaliação; indisponibilidade de
    linguagem não interrompe coleta, score ou alerta.

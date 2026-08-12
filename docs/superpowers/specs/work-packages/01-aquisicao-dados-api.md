@@ -35,7 +35,7 @@ integrador do pacote 00 e são apenas consumidos por este worker.
 
 ## Persistência mínima
 
-Campos indexados: `sample_id`, `source`, `asset_tag`, `sensor_id`,
+Campos indexados: `reading_id`, `source`, `asset_tag`, `sensor_id`,
 `scheduled_at`, `received_at`, `observed_at`, valores, semântica/unidades,
 `quality_flags`, `payload_hash`, `raw`.
 

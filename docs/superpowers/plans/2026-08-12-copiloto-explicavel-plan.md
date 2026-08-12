@@ -4,7 +4,7 @@
 
 **Goal:** Explicar avaliações estruturadas com rastreabilidade, usando fallback determinístico e deixando Qwen/API atrás de uma interface server-side configurável.
 
-**Architecture:** O frontend envia pergunta e projeção mínima do `DetectionAssessment` ao gateway. O backend valida referências, tenta providers autorizados e sempre pode retornar uma explicação determinística; nenhum provider recalcula score, status ou causa.
+**Architecture:** O frontend envia pergunta e projeção mínima do `AssetConditionAssessment` ao gateway. O backend valida referências, tenta providers autorizados e sempre pode retornar uma explicação determinística; nenhum provider recalcula score, status ou causa.
 
 **Tech Stack:** React 18, Vitest, Python 3.11+, FastAPI, pytest, httpx; adapter OpenAI-compatible opcional para Qwen/API.
 
@@ -40,7 +40,7 @@
 - Test: `services/twinops/tests/copilot/test_deterministic.py`
 
 **Interfaces:**
-- Produces: `build_explanation_context(question: str, assessment: DetectionAssessment) -> ExplanationContext`.
+- Produces: `build_explanation_context(question: str, assessment: AssetConditionAssessment) -> ExplanationContext`.
 - Produces: `deterministic_explanation(context: ExplanationContext) -> ExplanationResponse`.
 
 - [ ] **Step 1: Escrever teste que proíbe evidência inventada**

@@ -46,7 +46,7 @@ Não editar collector, storage base, frontend, 3D ou copiloto.
 
 ## Saída
 
-Produzir `DetectionAssessment` conforme o pacote 00. Evidências devem informar
+Produzir `AssetConditionAssessment` conforme o pacote 00. Evidências devem informar
 feature, valor, unidade, baseline, desvio, direção e janela. O score significa
 distância do baseline histórico, não probabilidade de falha.
 

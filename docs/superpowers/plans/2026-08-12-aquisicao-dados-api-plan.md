@@ -4,7 +4,7 @@
 
 **Goal:** Construir a trilha real de aquisição do Forzy TwinOps, com coleta isolada de S1/S2, importação CSV idempotente, persistência auditável em SQLite e API canônica sem expor o upstream.
 
-**Architecture:** Um único serviço Python modular usa adapters puros para converter live/CSV em `TelemetrySample`, um repositório SQLite append-only atrás de um `Protocol`, e um coletor assíncrono que consulta os sensores em paralelo apenas na janela configurada. FastAPI expõe snapshot, histórico e health; o React nunca acessa o hostname upstream nem os registros raw.
+**Architecture:** Um único serviço Python modular usa adapters puros para converter live/CSV em `CanonicalSensorReading`, um repositório SQLite append-only atrás de um `Protocol`, e um coletor assíncrono que consulta os sensores em paralelo apenas na janela configurada. FastAPI expõe snapshot, histórico e health; o React nunca acessa o hostname upstream nem os registros raw.
 
 **Tech Stack:** Python 3.11+, FastAPI, Pydantic v2, SQLite 3 em modo WAL, `httpx`, `pytest`, `pytest-asyncio`, SQL parametrizado, sem ORM e sem infraestrutura cloud.
 
@@ -56,16 +56,19 @@
 O pacote 00 deve fornecer, e este plano somente consome:
 
 ```python
-from twinops.contracts.models import TelemetrySample, TwinSnapshot
+from twinops.contracts.models import CanonicalSensorReading, SensorTelemetryFrame, DigitalTwinSnapshot
 
-TelemetrySample.model_validate(data: dict[str, object]) -> TelemetrySample
-TelemetrySample.model_dump(mode="json", by_alias=True) -> dict[str, object]
-TwinSnapshot.model_validate(data: dict[str, object]) -> TwinSnapshot
+CanonicalSensorReading.model_validate(data: dict[str, object]) -> CanonicalSensorReading
+CanonicalSensorReading.model_dump(mode="json", by_alias=True) -> dict[str, object]
+SensorTelemetryFrame.model_validate(data: dict[str, object]) -> SensorTelemetryFrame
+DigitalTwinSnapshot.model_validate(data: dict[str, object]) -> DigitalTwinSnapshot
 ```
 
-`TelemetrySample` usa os aliases JSON normativos `schemaVersion`, `sampleId`,
-`assetTag`, `sensorId`, `scheduledAt`, `receivedAt`, `observedAt`,
-`measurements`, `qualityFlags`, `payloadHash` e `raw`. Se o pacote 00 entregar
+`CanonicalSensorReading` usa os aliases JSON normativos `schemaVersion`, `readingId`,
+`assetTag`, `sensorId`, `receivedAt`, `observedAt`, `measurements`,
+`qualityFlags`, `payloadHash`, `raw` e `provenance`. `SensorTelemetryFrame` é a
+projeção consumer-safe do endpoint: não contém `raw` e usa métricas `null` quando
+indisponíveis. Se o pacote 00 entregar
 outro caminho de import, o integrador deve alinhar o import antes da execução;
 o worker do pacote 01 não duplica nem altera o modelo.
 
@@ -78,8 +81,8 @@ o worker do pacote 01 não duplica nem altera o modelo.
 - Test: `services/twinops/tests/ingestion/test_live_adapter.py`
 
 **Interfaces:**
-- Consumes: `TelemetrySample.model_validate(data)` do pacote 00.
-- Produces: `Settings.from_env(env: Mapping[str, str]) -> Settings`; `adapt_live_payload(*, sensor_id: Literal["s1", "s2"], payload: Mapping[str, object], scheduled_at: datetime, received_at: datetime, asset_tag: str) -> TelemetrySample`; `InvalidSensorPayload(sensor_id: str, reason: str)`.
+- Consumes: `CanonicalSensorReading.model_validate(data)` do pacote 00.
+- Produces: `Settings.from_env(env: Mapping[str, str]) -> Settings`; `adapt_live_payload(*, sensor_id: Literal["s1", "s2"], payload: Mapping[str, object], scheduled_at: datetime, received_at: datetime, asset_tag: str) -> CanonicalSensorReading`; `InvalidSensorPayload(sensor_id: str, reason: str)`.
 
 - [ ] **Step 1: Escrever o teste falhando para payload válido, zero e validação estrita**
 
@@ -154,7 +157,7 @@ class Settings:
 from datetime import datetime
 import hashlib, json, math, uuid
 from typing import Literal, Mapping
-from twinops.contracts.models import TelemetrySample
+from twinops.contracts.models import CanonicalSensorReading
 
 class InvalidSensorPayload(ValueError):
     def __init__(self, sensor_id: str, reason: str):
@@ -169,14 +172,14 @@ def _number(data: Mapping[str, object], key: str, sensor_id: str) -> float:
 
 def adapt_live_payload(*, sensor_id: Literal["s1", "s2"], payload: Mapping[str, object],
                        scheduled_at: datetime, received_at: datetime,
-                       asset_tag: str) -> TelemetrySample:
+                       asset_tag: str) -> CanonicalSensorReading:
     root = f"dados{sensor_id[-1]}"
     values = payload.get(root)
     if not isinstance(values, Mapping):
         raise InvalidSensorPayload(sensor_id, f"{root} must be an object")
     canonical_raw = json.dumps(payload, ensure_ascii=False, sort_keys=True,
                                separators=(",", ":")).encode()
-    data = {"schemaVersion": "1.0", "sampleId": str(uuid.uuid4()),
+    data = {"schemaVersion": "1.0", "readingId": str(uuid.uuid4()),
             "source": "forzy-live", "assetTag": asset_tag, "sensorId": sensor_id,
             "scheduledAt": scheduled_at.isoformat().replace("+00:00", "Z"),
             "receivedAt": received_at.isoformat().replace("+00:00", "Z"),
@@ -190,7 +193,7 @@ def adapt_live_payload(*, sensor_id: Literal["s1", "s2"], payload: Mapping[str, 
                     "unit": "degC", "semanticConfidence": "inferred_from_datasheet"}},
             "qualityFlags": [], "payloadHash": hashlib.sha256(canonical_raw).hexdigest(),
             "raw": payload}
-    return TelemetrySample.model_validate(data)
+    return CanonicalSensorReading.model_validate(data)
 ```
 
 - [ ] **Step 4: Rodar o teste do adapter**
@@ -215,8 +218,8 @@ git commit -m "feat(ingestion): add live telemetry adapter"
 - Test: `services/twinops/tests/storage/test_sqlite_repository.py`
 
 **Interfaces:**
-- Consumes: `TelemetrySample` do pacote 00.
-- Produces: `RawReading`, `CollectionAttempt`, `HistoryQuery`, `SensorHealth`; `TelemetryRepository.initialize() -> None`; `append_raw(reading) -> None`; `insert_sample(sample) -> bool`; `record_attempt(attempt) -> None`; `history(query) -> list[TelemetrySample]`; `latest(asset_tag) -> list[TelemetrySample]`; `health(sensor_id) -> SensorHealth | None`.
+- Consumes: `CanonicalSensorReading` do pacote 00.
+- Produces: `RawReading`, `CollectionAttempt`, `HistoryQuery`, `SensorHealth`; `TelemetryRepository.initialize() -> None`; `append_raw(reading) -> None`; `insert_sample(sample) -> bool`; `record_attempt(attempt) -> None`; `history(query) -> list[CanonicalSensorReading]`; `latest(asset_tag) -> list[CanonicalSensorReading]`; `health(sensor_id) -> SensorHealth | None`.
 
 - [ ] **Step 1: Escrever testes falhando para WAL, idempotência e histórico**
 
@@ -267,7 +270,7 @@ Expected: FAIL com `ModuleNotFoundError: No module named 'twinops.storage'`.
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Protocol
-from twinops.contracts.models import TelemetrySample
+from twinops.contracts.models import CanonicalSensorReading
 
 @dataclass(frozen=True)
 class HistoryQuery:
@@ -296,10 +299,10 @@ class SensorHealth:
 class TelemetryRepository(Protocol):
     def initialize(self) -> None: raise NotImplementedError
     def append_raw(self, reading: RawReading) -> None: raise NotImplementedError
-    def insert_sample(self, sample: TelemetrySample) -> bool: raise NotImplementedError
+    def insert_sample(self, sample: CanonicalSensorReading) -> bool: raise NotImplementedError
     def record_attempt(self, attempt: CollectionAttempt) -> None: raise NotImplementedError
-    def history(self, query: HistoryQuery) -> list[TelemetrySample]: raise NotImplementedError
-    def latest(self, asset_tag: str) -> list[TelemetrySample]: raise NotImplementedError
+    def history(self, query: HistoryQuery) -> list[CanonicalSensorReading]: raise NotImplementedError
+    def latest(self, asset_tag: str) -> list[CanonicalSensorReading]: raise NotImplementedError
     def health(self, sensor_id: str) -> SensorHealth | None: raise NotImplementedError
 ```
 
@@ -308,7 +311,7 @@ class TelemetryRepository(Protocol):
 PRAGMA journal_mode=WAL;
 PRAGMA foreign_keys=ON;
 CREATE TABLE IF NOT EXISTS telemetry_samples (
-  sample_id TEXT PRIMARY KEY, schema_version TEXT NOT NULL, source TEXT NOT NULL,
+  reading_id TEXT PRIMARY KEY, schema_version TEXT NOT NULL, source TEXT NOT NULL,
   asset_tag TEXT NOT NULL, sensor_id TEXT NOT NULL, scheduled_at TEXT,
   received_at TEXT NOT NULL, observed_at TEXT, velocity REAL NOT NULL,
   acceleration REAL NOT NULL, temperature REAL NOT NULL,
@@ -363,10 +366,10 @@ class SQLiteTelemetryRepository:
                 reading.received_at.isoformat(), reading.payload_hash,
                 json.dumps(reading.payload, ensure_ascii=False, sort_keys=True)))
 
-    def insert_sample(self, sample: TelemetrySample) -> bool:
+    def insert_sample(self, sample: CanonicalSensorReading) -> bool:
         body = sample.model_dump(mode="json", by_alias=True)
         measurements = body["measurements"]
-        values = (body["sampleId"], body["schemaVersion"], body["source"],
+        values = (body["readingId"], body["schemaVersion"], body["source"],
             body["assetTag"], body["sensorId"], body["scheduledAt"],
             body["receivedAt"], body["observedAt"],
             measurements["vibrationVelocityRms"]["value"],
@@ -397,7 +400,7 @@ class SQLiteTelemetryRepository:
                 attempt.attempted_at.isoformat(), int(attempt.succeeded),
                 attempt.latency_ms, attempt.error_code))
 
-    def history(self, query: HistoryQuery) -> list[TelemetrySample]:
+    def history(self, query: HistoryQuery) -> list[CanonicalSensorReading]:
         if not 1 <= query.limit <= 1000: raise ValueError("limit must be between 1 and 1000")
         where, params = ["asset_tag = ?"], [query.asset_tag]
         for value, clause in ((query.sensor_id, "sensor_id = ?"),
@@ -409,14 +412,14 @@ class SQLiteTelemetryRepository:
             rows = conn.execute("SELECT canonical_json FROM telemetry_samples WHERE "
                 + " AND ".join(where) + " ORDER BY received_at DESC LIMIT ?",
                 (*params, query.limit)).fetchall()
-        return [TelemetrySample.model_validate(json.loads(row[0])) for row in rows]
+        return [CanonicalSensorReading.model_validate(json.loads(row[0])) for row in rows]
 
-    def latest(self, asset_tag: str) -> list[TelemetrySample]:
+    def latest(self, asset_tag: str) -> list[CanonicalSensorReading]:
         with self._connect() as conn:
             rows = conn.execute("SELECT canonical_json FROM telemetry_samples t WHERE "
                 "asset_tag=? AND received_at=(SELECT MAX(received_at) FROM telemetry_samples "
                 "WHERE asset_tag=t.asset_tag AND sensor_id=t.sensor_id)", (asset_tag,)).fetchall()
-        return [TelemetrySample.model_validate(json.loads(row[0])) for row in rows]
+        return [CanonicalSensorReading.model_validate(json.loads(row[0])) for row in rows]
 ```
 
 Adicionar o método health com query parametrizada:
@@ -760,7 +763,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 import csv, hashlib, json, math, uuid
-from twinops.contracts.models import TelemetrySample
+from twinops.contracts.models import CanonicalSensorReading
 from twinops.storage.repository import TelemetryRepository
 
 @dataclass(frozen=True)
@@ -782,7 +785,7 @@ def import_csv(path: Path, repository: TelemetryRepository, asset_tag: str,
                 if not all(math.isfinite(v) for v in values): raise ValueError("finite")
                 observed = datetime.fromisoformat(row["observed_at"].replace("Z", "+00:00"))
                 row_hash = hashlib.sha256(f"{file_hash}:{line_number}:{sensor}".encode()).hexdigest()
-                data = {"schemaVersion": "1.0", "sampleId": str(uuid.uuid4()),
+                data = {"schemaVersion": "1.0", "readingId": str(uuid.uuid4()),
                     "source": "forzy-csv", "assetTag": asset_tag, "sensorId": sensor,
                     "scheduledAt": None, "receivedAt": received_at.isoformat(),
                     "observedAt": observed.isoformat(), "measurements": {
@@ -793,7 +796,7 @@ def import_csv(path: Path, repository: TelemetryRepository, asset_tag: str,
                     "temperature": {"value": values[2], "unit": "degC",
                         "semanticConfidence": "inferred_from_datasheet"}},
                     "qualityFlags": [], "payloadHash": row_hash, "raw": dict(row)}
-                inserted_now = repository.insert_sample(TelemetrySample.model_validate(data))
+                inserted_now = repository.insert_sample(CanonicalSensorReading.model_validate(data))
                 inserted += int(inserted_now); duplicates += int(not inserted_now)
             except (KeyError, TypeError, ValueError): rejected += 1
     return CsvImportReport(file_hash, rows, inserted, duplicates, rejected)
@@ -822,7 +825,7 @@ git commit -m "feat(ingestion): add idempotent CSV import"
 - Test: `services/twinops/tests/api/test_telemetry_routes.py`
 
 **Interfaces:**
-- Consumes: `TelemetryRepository.latest/history`, `TwinSnapshot` e dependency override FastAPI.
+- Consumes: `TelemetryRepository.latest/history`, `DigitalTwinSnapshot` e dependency override FastAPI.
 - Produces: `create_app(repository: TelemetryRepository, settings: Settings, collector: Collector | None = None) -> FastAPI`; endpoints normativos `GET /api/v1/twin/assets/{assetTag}/snapshot` e `GET /api/v1/twin/assets/{assetTag}/history?sensorId=&from=&to=&limit=`.
 
 - [ ] **Step 1: Escrever testes HTTP falhando**
@@ -923,10 +926,10 @@ Validar a resposta e registrar um handler fechado:
 ```python
 from fastapi import Request
 from fastapi.responses import JSONResponse
-from twinops.contracts.models import TwinSnapshot
+from twinops.contracts.models import DigitalTwinSnapshot
 import logging
 
-snapshot_body = TwinSnapshot.model_validate(snapshot_body).model_dump(mode="json", by_alias=True)
+snapshot_body = DigitalTwinSnapshot.model_validate(snapshot_body).model_dump(mode="json", by_alias=True)
 
 @app.exception_handler(Exception)
 async def unexpected_error(request: Request, exc: Exception):

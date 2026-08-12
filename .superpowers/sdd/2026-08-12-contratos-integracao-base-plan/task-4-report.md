@@ -44,7 +44,7 @@ measurements as `null` and keeps RMS vibration absent as `null`. The current
 strict JSON Schema describes numeric measurement values, an object RMS value,
 and an empty `raw` object, so these partial replay snapshots are not valid
 full-schema telemetry samples. This adapter remains compatible with the
-reviewed lightweight frontend `assertTwinSnapshot` boundary; reconciliation of
+reviewed lightweight frontend `assertDigitalTwinSnapshot` boundary; reconciliation of
 the strict transport schema belongs to a later approved contract decision and
 was not changed here.
 

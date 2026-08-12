@@ -4,15 +4,15 @@
 
 **Goal:** Reanalisar o CSV com semântica correta e entregar um scorer determinístico de anomalia e deterioração relativa, sem classificar falhas não rotuladas.
 
-**Architecture:** Um pipeline offline transforma amostras canônicas em ciclos e features exclusivamente trailing. Um baseline robusto é obrigatório; Isolation Forest é apenas challenger. O replay walk-forward congela configuração antes do holdout e o scorer publica `DetectionAssessment` v1.
+**Architecture:** Um pipeline offline transforma amostras canônicas em ciclos e features exclusivamente trailing. Um baseline robusto é obrigatório; Isolation Forest é apenas challenger. O replay walk-forward congela configuração antes do holdout e o scorer publica `AssetConditionAssessment` v1.
 
 **Tech Stack:** Python 3.11+, NumPy, pandas, scikit-learn, Pydantic 2, pytest, joblib.
 
 ## Global Constraints
 
 - Não modificar `services/twinops/pyproject.toml` nem `services/twinops/src/twinops/contracts/**`.
-- Importar `TelemetrySample` e `DetectionAssessment` de `twinops.contracts.models`.
-- Fronteira pública: `AssessmentScorer.assess(samples: Sequence[TelemetrySample], *, now: datetime) -> DetectionAssessment`.
+- Importar `CanonicalSensorReading` e `AssetConditionAssessment` de `twinops.contracts.models`.
+- Fronteira pública: `AssessmentScorer.assess(samples: Sequence[CanonicalSensorReading], *, now: datetime) -> AssetConditionAssessment`.
 - Proibido random split por linha, feature centrada ou ajuste com dados futuros.
 - Aceleração não entra no score oficial enquanto `statistic="unknown"`.
 - Não comparar S1–S2 fisicamente antes de confirmar montagem/eixo.
@@ -44,7 +44,7 @@
 
 **Interfaces:**
 - Produces: `CuratedFrame` com colunas `received_at`, `sensor_id`, valores, `quality_flags`, `cycle_id`, `operating_state`, `state_estimated`.
-- Produces: `curate_samples(samples: Sequence[TelemetrySample], *, gap_seconds: float) -> CuratedFrame`.
+- Produces: `curate_samples(samples: Sequence[CanonicalSensorReading], *, gap_seconds: float) -> CuratedFrame`.
 
 - [ ] **Step 1: Escrever testes de ordem, duplicata, gap e ciclos**
 
@@ -131,7 +131,7 @@ git commit -m "feat(ml): compute causal vibration features"
 
 **Interfaces:**
 - Produces: `RobustBaseline.fit(features) -> RobustBaseline` e `score(features) -> ScoreFrame`.
-- Produces: `AssessmentScorer.assess(samples: Sequence[TelemetrySample], *, now: datetime) -> DetectionAssessment`.
+- Produces: `AssessmentScorer.assess(samples: Sequence[CanonicalSensorReading], *, now: datetime) -> AssetConditionAssessment`.
 
 - [ ] **Step 1: Testar monotonicidade, persistência e qualidade**
 
@@ -155,7 +155,7 @@ versionada, nunca de constantes espalhadas.
 
 Run: `services/twinops/.venv/Scripts/python -m pytest services/twinops/tests/ml/test_baseline.py services/twinops/tests/ml/test_scorer.py -v`
 
-Expected: PASS e `DetectionAssessment` validado pelo modelo compartilhado.
+Expected: PASS e `AssetConditionAssessment` validado pelo modelo compartilhado.
 
 - [ ] **Step 3: Testar determinismo e latência**
 

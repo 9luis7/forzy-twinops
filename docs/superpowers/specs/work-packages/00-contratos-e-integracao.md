@@ -8,28 +8,27 @@ integrador; nenhum outro worker altera esses contratos sem aprovação.
 
 ## Entregáveis
 
-- JSON Schema versionado de `TelemetrySample`, `DetectionAssessment` e
-  `TwinSnapshot`.
+- JSON Schema versionado de `CanonicalSensorReading`, `SensorTelemetryFrame`,
+  `AssetConditionAssessment` e `DigitalTwinSnapshot`.
 - Fixtures mínimas: live válido S1/S2, CSV válido, zero válido, stale, gap,
   duplicado, schema inválido, `insufficient_data`, alerta com evidências.
-- Adapter do replay atual para `TwinSnapshot`.
+- Adapter do replay atual para `DigitalTwinSnapshot`.
 - Documento de compatibilidade e política de versionamento.
 - Testes de contrato executáveis no backend e no frontend.
 
 ## Contrato normativo
 
-### `TelemetrySample`
+### `CanonicalSensorReading`
 
 ```json
 {
   "schemaVersion": "1.0",
-  "sampleId": "uuid",
+  "readingId": "uuid",
   "source": "forzy-live|forzy-csv",
   "assetTag": "MTR-BMB-042",
   "sensorId": "s1|s2",
-  "scheduledAt": "ISO-8601 UTC|null",
+  "observedAt": "ISO-8601 UTC",
   "receivedAt": "ISO-8601 UTC",
-  "observedAt": "ISO-8601 UTC|null",
   "measurements": {
     "vibrationVelocityRms": {
       "value": 0.04,
@@ -50,7 +49,8 @@ integrador; nenhum outro worker altera esses contratos sem aprovação.
   },
   "qualityFlags": [],
   "payloadHash": "sha256",
-  "raw": {}
+  "raw": {},
+  "provenance": { "sourceSystem": "forzy-live", "importedAt": "ISO-8601 UTC" }
 }
 ```
 
@@ -69,12 +69,18 @@ Regras:
 - Aceleração com `statistic=unknown` não entra no score oficial.
 - Unidades inferidas devem permanecer marcadas até confirmação da Forzy.
 
-### `DetectionAssessment`
+### `SensorTelemetryFrame`
+
+Consumer-safe projection for snapshot channels and history. It never exposes
+`raw` or `provenance`; the explicitly named measurements may be `null` when
+unavailable, as may timestamps, with `timestampQuality` explaining the value.
+
+### `AssetConditionAssessment`
 
 ```json
 {
   "schemaVersion": "1.0",
-  "inferenceId": "uuid",
+  "assessmentId": "uuid",
   "assetTag": "MTR-BMB-042",
   "sensorId": "s1",
   "window": {
@@ -113,7 +119,7 @@ Regras:
 }
 ```
 
-### `TwinSnapshot`
+### `DigitalTwinSnapshot`
 
 ```json
 {

@@ -2,7 +2,7 @@
 
 ## Missão
 
-Consumir `TwinSnapshot`, preservar o modo replay e substituir o desenho principal
+Consumir `DigitalTwinSnapshot`, preservar o modo replay e substituir o desenho principal
 por um GLB otimizado do conjunto real, mantendo o SVG como fallback.
 
 ## Pré-condição
@@ -30,7 +30,7 @@ Three.js via React Three Fiber apenas se o orçamento do bundle for aceitável.
 - Otimizar geometria, materiais e tamanho sem alterar proporções.
 - Manifesto mapeia nomes dos sólidos para `motor`, `bomba` e `base`.
 - Telemetria não recarrega o modelo; apenas atualiza overlays/highlights.
-- Estado e evidências vêm exclusivamente de `TwinSnapshot.assessment`.
+- Estado e evidências vêm exclusivamente de `DigitalTwinSnapshot.assessment`.
 - S1/S2 podem aparecer como marcadores “posição não validada”, visualmente
   distintos de sensores posicionados com confirmação.
 - Métricas ausentes mostram `indisponível`; corrente/RPM não usam mock em live.

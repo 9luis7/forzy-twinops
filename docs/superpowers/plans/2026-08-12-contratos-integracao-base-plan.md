@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Congelar schemas e fixtures v1, adaptar o replay atual a `TwinSnapshot` e criar a fronteira de data source consumida pelos workers paralelos.
+**Goal:** Congelar schemas e fixtures v1, adaptar o replay atual a `DigitalTwinSnapshot` e criar a fronteira de data source consumida pelos workers paralelos.
 
 **Architecture:** JSON Schemas em uma pasta neutra são a fonte normativa. O frontend usa adapters puros para converter o loop existente e respostas do gateway ao mesmo snapshot; `LiveTwinContext` preserva a API antiga durante a migração, mas passa a expor `snapshot` como nova fonte de integração.
 
@@ -37,13 +37,14 @@
 - Modify: `package.json`
 - Modify: `package-lock.json`
 - Create: `vitest.config.js`
-- Create: `contracts/v1/telemetry-sample.schema.json`
-- Create: `contracts/v1/detection-assessment.schema.json`
-- Create: `contracts/v1/twin-snapshot.schema.json`
-- Create: `contracts/v1/fixtures/telemetry-live-s1.valid.json`
-- Create: `contracts/v1/fixtures/twin-snapshot-replay.valid.json`
-- Create: `contracts/v1/fixtures/twin-snapshot-live.valid.json`
-- Create: `contracts/v1/fixtures/telemetry-string.invalid.json`
+- Create: `contracts/v1/canonical-sensor-reading.schema.json`
+- Create: `contracts/v1/sensor-telemetry-frame.schema.json`
+- Create: `contracts/v1/asset-condition-assessment.schema.json`
+- Create: `contracts/v1/digital-twin-snapshot.schema.json`
+- Create: `contracts/v1/fixtures/canonical-sensor-reading-live-s1.valid.json`
+- Create: `contracts/v1/fixtures/digital-twin-snapshot-replay.valid.json`
+- Create: `contracts/v1/fixtures/digital-twin-snapshot-live.valid.json`
+- Create: `contracts/v1/fixtures/canonical-sensor-reading-string.invalid.json`
 - Test: `src/contracts/schema.test.js`
 
 **Interfaces:**
@@ -73,9 +74,9 @@ const json = (path) => JSON.parse(readFileSync(new URL(path, import.meta.url), "
 describe("contracts/v1", () => {
   it("accepts canonical live telemetry and rejects numeric strings", () => {
     const ajv = new Ajv({ allErrors: true, strict: true });
-    const validate = ajv.compile(json("../../contracts/v1/telemetry-sample.schema.json"));
-    expect(validate(json("../../contracts/v1/fixtures/telemetry-live-s1.valid.json"))).toBe(true);
-    expect(validate(json("../../contracts/v1/fixtures/telemetry-string.invalid.json"))).toBe(false);
+    const validate = ajv.compile(json("../../contracts/v1/canonical-sensor-reading.schema.json"));
+    expect(validate(json("../../contracts/v1/fixtures/canonical-sensor-reading-live-s1.valid.json"))).toBe(true);
+    expect(validate(json("../../contracts/v1/fixtures/canonical-sensor-reading-string.invalid.json"))).toBe(false);
   });
 });
 ```
@@ -120,7 +121,7 @@ git commit -m "test: freeze twin contract v1"
 - Test: `services/twinops/tests/contracts/test_models.py`
 
 **Interfaces:**
-- Produces: `TelemetrySample`, `DetectionAssessment`, `TwinSnapshot` como modelos Pydantic.
+- Produces: `CanonicalSensorReading`, `SensorTelemetryFrame`, `AssetConditionAssessment` e `DigitalTwinSnapshot` como modelos Pydantic.
 - Produces: serialização pública `model_dump(mode="json", by_alias=True)` compatível com os schemas v1.
 - Produces: dependências compartilhadas Pydantic 2, FastAPI, Uvicorn, httpx,
   NumPy, pandas e scikit-learn; extra `dev` com pytest e pytest-asyncio. Os
@@ -133,19 +134,24 @@ import json
 from pathlib import Path
 import pytest
 from pydantic import ValidationError
-from twinops.contracts.models import TelemetrySample, TwinSnapshot
+from twinops.contracts.models import (
+    AssetConditionAssessment,
+    CanonicalSensorReading,
+    DigitalTwinSnapshot,
+    SensorTelemetryFrame,
+)
 
 FIXTURES = Path("contracts/v1/fixtures")
 
 def test_valid_live_sample_round_trips_with_aliases():
-    payload = json.loads((FIXTURES / "telemetry-live-s1.valid.json").read_text(encoding="utf-8"))
-    model = TelemetrySample.model_validate(payload)
+    payload = json.loads((FIXTURES / "canonical-sensor-reading-live-s1.valid.json").read_text(encoding="utf-8"))
+    model = CanonicalSensorReading.model_validate(payload)
     assert model.model_dump(mode="json", by_alias=True) == payload
 
 def test_numeric_string_is_rejected():
-    payload = json.loads((FIXTURES / "telemetry-string.invalid.json").read_text(encoding="utf-8"))
+    payload = json.loads((FIXTURES / "canonical-sensor-reading-string.invalid.json").read_text(encoding="utf-8"))
     with pytest.raises(ValidationError):
-        TelemetrySample.model_validate(payload)
+        CanonicalSensorReading.model_validate(payload)
 ```
 
 - [ ] **Step 2: Confirmar falha inicial**
@@ -186,19 +192,19 @@ git commit -m "feat: add shared Python twin contracts"
 - Test: `src/dataSources/TwinDataSource.test.js`
 
 **Interfaces:**
-- Produces: `SCHEMA_VERSION`, `assertTwinSnapshot(value)`, `isTwinSnapshot(value)`.
+- Produces: `SCHEMA_VERSION`, `assertDigitalTwinSnapshot(value)`, `isDigitalTwinSnapshot(value)`.
 - Produces: `createTwinDataSource({ getSnapshot, subscribe, capabilities })`.
-- Produces: data source com `getSnapshot(assetTag): Promise<TwinSnapshot>`, `subscribe(assetTag, listener): () => void` e `capabilities` imutável.
+- Produces: data source com `getSnapshot(assetTag): Promise<DigitalTwinSnapshot>`, `subscribe(assetTag, listener): () => void` e `capabilities` imutável.
 
 - [ ] **Step 1: Escrever testes da fronteira pública**
 
 ```js
 import { expect, it, vi } from "vitest";
-import { assertTwinSnapshot } from "./twin.js";
+import { assertDigitalTwinSnapshot } from "./twin.js";
 import { createTwinDataSource } from "../dataSources/TwinDataSource.js";
 
 it("rejects an unknown schema version", () => {
-  expect(() => assertTwinSnapshot({ schemaVersion: "2.0" })).toThrow(/schemaVersion/);
+  expect(() => assertDigitalTwinSnapshot({ schemaVersion: "2.0" })).toThrow(/schemaVersion/);
 });
 
 it("delegates getSnapshot without exposing mutable capabilities", async () => {
@@ -218,7 +224,7 @@ Expected: FAIL por módulos ausentes.
 
 - [ ] **Step 3: Implementar validação mínima e protocolo**
 
-`assertTwinSnapshot` valida versão, `assetTag`, `mode`, `status`, `freshness`,
+`assertDigitalTwinSnapshot` valida versão, `assetTag`, `mode`, `status`, `freshness`,
 arrays `channels/history` e objeto `capabilities`, retornando o próprio objeto.
 Não duplicar Ajv no bundle: Ajv permanece nos testes; a validação runtime é uma
 fronteira pequena e explícita.
@@ -244,7 +250,7 @@ git commit -m "feat: add twin data source contract"
 
 **Interfaces:**
 - Consumes: estado retornado por `useLiveTelemetry` e selectors existentes do mock.
-- Produces: `buildReplaySnapshot({ assetTag, live, reading, status, scenario, risk }): TwinSnapshot`.
+- Produces: `buildReplaySnapshot({ assetTag, live, reading, status, scenario, risk }): DigitalTwinSnapshot`.
 
 - [ ] **Step 1: Criar teste com um tick fixo**
 

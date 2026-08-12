@@ -65,7 +65,7 @@ Expected: FAIL antes de fixtures/routes de interceptação estarem completas.
 
 - [ ] **Step 2: Implementar fixtures/intercepts mínimos**
 
-Não iniciar endpoint real. Cada cenário usa `TwinSnapshot` v1 versionado.
+Não iniciar endpoint real. Cada cenário usa `DigitalTwinSnapshot` v1 versionado.
 
 - [ ] **Step 3: Rodar E2E e commit**
 

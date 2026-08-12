@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Exibir o conjunto motor-bomba real como GLB lazy-loaded a partir do `TwinSnapshot` v1, preservando replay determinístico e retornando ao `MotorMimic` SVG em qualquer falha de WebGL, arquivo ou manifesto.
+**Goal:** Exibir o conjunto motor-bomba real como GLB lazy-loaded a partir do `DigitalTwinSnapshot` v1, preservando replay determinístico e retornando ao `MotorMimic` SVG em qualquer falha de WebGL, arquivo ou manifesto.
 
 **Architecture:** O pacote consome `useLiveTwin().snapshot`, produzido pelo Pacote 00, e o projeta em um view model puro; nenhum score, severidade ou associação física é inferido no frontend. Um shell React pequeno decide entre SVG e um chunk 3D carregado sob demanda; o STEP é convertido offline e gera GLB, manifesto e relatório reproduzíveis antes de entrar em `public/models`.
 
@@ -11,11 +11,11 @@
 ## Global Constraints
 
 - Basear o trabalho no commit `1f21f264f88d7a64fecc37e3b3e620eb46d35587`, no commit das specs e no commit concluído do Pacote 00.
-- O worker consome `TwinSnapshot` v1 e `useLiveTwin().snapshot`; não altera schemas, fixtures compartilhadas, `TwinDataSource`, `LiveTwinContext.jsx`, `useLiveTelemetry.js`, mocks, backend ou `package.json`.
+- O worker consome `DigitalTwinSnapshot` v1 e `useLiveTwin().snapshot`; não altera schemas, fixtures compartilhadas, `TwinDataSource`, `LiveTwinContext.jsx`, `useLiveTelemetry.js`, mocks, backend ou `package.json`.
 - Nunca usar o campo ambíguo `vibration` em código novo do Twin 3D; usar exclusivamente `channels[].measurements.vibrationVelocityRms` e `vibrationAcceleration`.
 - `receivedAt` nunca é exibido como horário real da medição; `observedAt` live permanece nulo enquanto a origem não fornecer timestamp.
 - S1 e S2 permanecem canais separados; nenhuma média implícita entre sensores.
-- Status, evidências e destaque vêm exclusivamente de `TwinSnapshot.status` e `TwinSnapshot.assessment`; o frontend não calcula score, severidade, risco ou componente culpado.
+- Status, evidências e destaque vêm exclusivamente de `DigitalTwinSnapshot.status` e `DigitalTwinSnapshot.assessment`; o frontend não calcula score, severidade, risco ou componente culpado.
 - `componentTag` nulo não produz destaque. Uma associação só existe quando o manifesto contém o mesmo `componentTag`; nomes desconhecidos geram warning e nunca associação silenciosa.
 - Nenhum texto, marcador ou posição 3D afirma ponto, eixo ou método de montagem de S1/S2; ambos aparecem como `Posição não validada` até confirmação da Forzy.
 - Corrente e RPM ausentes em live aparecem como `Indisponível`; dados do mock não completam um snapshot live.
@@ -38,7 +38,7 @@ const twin = useLiveTwin();
 const snapshot = twin.snapshot;
 ```
 
-`snapshot` é `null` durante a primeira carga ou um `TwinSnapshot` v1 com:
+`snapshot` é `null` durante a primeira carga ou um `DigitalTwinSnapshot` v1 com:
 
 ```js
 {
@@ -48,9 +48,9 @@ const snapshot = twin.snapshot;
   generatedAt: "ISO-8601 UTC",
   status: "normal" | "watch" | "alert" | "unknown" | "insufficient_data",
   freshness: "fresh" | "delayed" | "expected_idle" | "unavailable" | "unknown",
-  channels: TelemetrySample[],
-  history: TelemetrySample[],
-  assessment: DetectionAssessment | null,
+  channels: SensorTelemetryFrame[],
+  history: SensorTelemetryFrame[],
+  assessment: AssetConditionAssessment | null,
   capabilities: {
     replayControls: boolean,
     liveUpdates: boolean,
@@ -68,7 +68,7 @@ Arquivos do integrador, consumidos mas nunca editados por este worker:
 
 - `package.json` e `package-lock.json`: dependências/runtime/testes aprovados na Task 1.
 - `contracts/v1/**`: schemas e fixtures normativas.
-- `src/contracts/twin.js`: validação de `TwinSnapshot`.
+- `src/contracts/twin.js`: validação de `DigitalTwinSnapshot`.
 - `src/dataSources/**`: replay e gateway.
 - `src/LiveTwinContext.jsx`: expõe `snapshot` e preserva selectors legados.
 - `src/useLiveTelemetry.js` e `src/data/mock.js`: motor do replay legado.
@@ -115,7 +115,7 @@ Arquivos de ownership exclusivo do worker Twin 3D:
 - Create: `artifacts/twin3d/bundle-baseline.json`
 
 **Interfaces:**
-- Consumes: `useLiveTwin().snapshot: TwinSnapshot | null` do Pacote 00.
+- Consumes: `useLiveTwin().snapshot: DigitalTwinSnapshot | null` do Pacote 00.
 - Produces: `three@0.169.0`, `@react-three/fiber@8.17.10`, `@react-three/drei@9.117.3` como dependências runtime.
 - Produces: `@testing-library/react@16.1.0`, `@testing-library/jest-dom@6.6.3`, `jsdom@25.0.1`, `@playwright/test@1.47.2` como dependências de desenvolvimento, além do Vitest já instalado pelo Pacote 00.
 - Produces: scripts `test:run`, `test:e2e` e `build:manifest`.
@@ -197,7 +197,7 @@ Expected: commit contém somente dependências/scripts e baseline; o worker rece
 - Create: `src/components/twin3d/testFixtures.js`
 
 **Interfaces:**
-- Consumes: `TwinSnapshot` v1 e o JSON de `public/models/conjunto-motor-bomba.manifest.json`.
+- Consumes: `DigitalTwinSnapshot` v1 e o JSON de `public/models/conjunto-motor-bomba.manifest.json`.
 - Produces: `parseModelManifest(value): ModelManifest`; lança `Error("Invalid twin model manifest: ...")` em erro.
 - Produces: `componentTagForNode(manifest, nodeName): string | null`; retorna associação somente quando o node está listado em um grupo com `componentTag` não nulo.
 - Produces: `buildTwinViewModel({ snapshot, manifest, activeComponent }): TwinViewModel`.
@@ -252,17 +252,15 @@ const measurements = {
 
 const channel = (sensorId) => ({
   schemaVersion: "1.0",
-  sampleId: `sample-${sensorId}`,
-  source: "forzy-live",
+  frameId: "11111111-1111-4111-8111-111111111111",
   assetTag: "MTR-BMB-042",
   sensorId,
-  scheduledAt: "2026-08-12T15:00:00.000Z",
+  sourceMode: "replay",
   receivedAt: "2026-08-12T15:00:00.080Z",
   observedAt: null,
+  timestampQuality: "synthetic",
   measurements,
-  qualityFlags: [],
-  payloadHash: `sha256-${sensorId}`,
-  raw: {}
+  qualityFlags: []
 });
 
 export const normalSnapshot = {
@@ -1220,7 +1218,7 @@ git commit -m "test: verify twin 3d fallbacks and budgets"
 
 - O caminho atual da demo continua navegável e replay permanece determinístico/offline.
 - O conjunto real aparece apenas no perfil do ativo compatível e é carregado em chunk lazy.
-- A cena reage ao mesmo `TwinSnapshot` usado pelos demais consumidores, sem recalcular estado.
+- A cena reage ao mesmo `DigitalTwinSnapshot` usado pelos demais consumidores, sem recalcular estado.
 - S1/S2 são apresentados como canais separados e com posição não validada.
 - Qualquer falha de WebGL, chunk, manifesto ou GLB exibe o `MotorMimic` SVG.
 - GLB, manifesto, hashes, versões, bounds, bundle e FPS ficam auditáveis.
