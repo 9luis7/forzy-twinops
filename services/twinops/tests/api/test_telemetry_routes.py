@@ -6,10 +6,14 @@ warnings.filterwarnings(
     message="Using `httpx` with `starlette.testclient` is deprecated.*",
 )
 from fastapi.testclient import TestClient
+import httpx
+import pytest
 
 from twinops.config import Settings
 from twinops.contracts.models import DigitalTwinSnapshot
+from twinops.ingestion.collector import Collector
 from twinops.ingestion.live_adapter import adapt_live_payload
+from twinops.ingestion.upstream import UpstreamClient
 from twinops.main import create_app
 from twinops.storage.sqlite_repository import SQLiteTelemetryRepository
 
@@ -102,3 +106,58 @@ def test_unexpected_repository_error_is_closed_and_sanitized(tmp_path):
     assert response.status_code == 500
     assert response.json() == {"detail": "internal_error"}
     assert settings.upstream_base_url not in response.text
+
+
+@pytest.mark.asyncio
+async def test_simulated_window_reaches_snapshot_and_history_within_two_cycles(tmp_path):
+    repo, settings, _ = api_setup(tmp_path)
+
+    def handler(request: httpx.Request):
+        sensor_id = request.url.path[-2:]
+        return httpx.Response(
+            200,
+            json={
+                f"dados{sensor_id[-1]}": {
+                    "Velocidade": 0.04 if sensor_id == "s1" else 0.05,
+                    "Aceleração": 0.0,
+                    "Temperatura": 34 if sensor_id == "s1" else 35,
+                }
+            },
+        )
+
+    async def no_sleep(_: float):
+        return None
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        collector = Collector(
+            UpstreamClient(
+                http, settings.upstream_base_url, 2.0, sleep=no_sleep
+            ),
+            repo,
+            settings.asset_tag,
+        )
+        assert await collector.tick(
+            datetime(2026, 8, 12, 15, 0, 7, tzinfo=timezone.utc)
+        ) == "collected"
+        assert await collector.tick(
+            datetime(2026, 8, 12, 15, 0, 12, tzinfo=timezone.utc)
+        ) == "collected"
+
+    client = TestClient(create_app(repo, settings))
+    snapshot = client.get(
+        "/api/v1/twin/assets/MTR-BMB-042/snapshot"
+    ).json()
+    history = client.get(
+        "/api/v1/twin/assets/MTR-BMB-042/history?limit=10"
+    ).json()
+
+    assert {channel["sensorId"] for channel in snapshot["channels"]} == {
+        "s1",
+        "s2",
+    }
+    assert all(
+        channel["measurements"]["temperature"] is not None
+        for channel in snapshot["channels"]
+    )
+    assert len(history["items"]) == 4
+    assert not any("raw" in item for item in history["items"])
