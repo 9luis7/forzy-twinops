@@ -10,8 +10,9 @@
 // O histórico curado (OS, documentos, OS-2025-118) permanece — muda apenas o
 // ESTADO ATUAL do estrela (leitura, status, risco, alerta), que passa a ser vivo.
 
-import { createContext, useContext } from "react";
+import React, { createContext, useContext } from "react";
 import { useLiveTelemetry } from "./useLiveTelemetry.js";
+import { buildReplaySnapshot } from "./dataSources/ReplayTwinDataSource.js";
 import {
   HEARTBEAT,
   assetStatus,
@@ -85,8 +86,18 @@ export function LiveTwinProvider({ children }) {
     : null;
 
   const isStar = (tag) => tag === STAR;
+  const snapshot = buildReplaySnapshot({
+    assetTag: STAR,
+    live,
+    reading: starReading,
+    status: starStatus,
+    scenario: starScenario,
+    risk: starRisk,
+  });
 
   const value = {
+    snapshot,
+    dataMode: "replay",
     live,
     STAR,
     starReading,
