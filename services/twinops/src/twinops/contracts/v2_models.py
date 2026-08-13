@@ -1,12 +1,32 @@
 """Strict Pydantic representations of the version 2 TwinOps contracts."""
 
+from datetime import datetime
 from typing import Annotated, Literal, Self
 
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
+from pydantic import (
+    BaseModel,
+    BeforeValidator,
+    ConfigDict,
+    Field,
+    StringConstraints,
+    model_validator,
+)
+
+
+def _validate_rfc3339_utc_timestamp(value: object) -> object:
+    """Reject impossible UTC calendar values without normalizing the input string."""
+
+    if isinstance(value, str):
+        try:
+            datetime.fromisoformat(f"{value[:-1]}+00:00")
+        except ValueError as error:
+            raise ValueError("must be a valid RFC 3339 UTC timestamp") from error
+    return value
 
 
 Timestamp = Annotated[
     str,
+    BeforeValidator(_validate_rfc3339_utc_timestamp),
     StringConstraints(
         pattern=r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]+)?Z$"
     ),

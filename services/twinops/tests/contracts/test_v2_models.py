@@ -35,6 +35,14 @@ def test_source_timestamp_claim_is_rejected():
         )
 
 
+def test_rejects_impossible_rfc3339_timestamp():
+    body = payload("canonical-live-s1.valid.json")
+    body["scheduledAt"] = "2026-13-40T25:61:61Z"
+
+    with pytest.raises(ValidationError):
+        CanonicalSensorReadingV2.model_validate(body)
+
+
 @pytest.mark.parametrize(
     "fixture_name",
     ["snapshot-received-now.valid.json", "snapshot-last-known.valid.json"],
