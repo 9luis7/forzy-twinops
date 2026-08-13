@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+from pathlib import Path
 
 import pytest
 
@@ -130,3 +131,24 @@ def test_settings_validate_timezone_during_startup(timezone_name):
                 "TWINOPS_TIMEZONE": timezone_name,
             }
         )
+
+
+def test_settings_requires_complete_ml_trust_anchors():
+    with pytest.raises(ValueError, match="ML artifact settings must be provided together"):
+        Settings.from_env(
+            {
+                "TWINOPS_UPSTREAM_BASE_URL": "https://invalid.example",
+                "TWINOPS_ML_ARTIFACT_PATH": "artifacts/ml/real-forzy",
+            }
+        )
+
+    settings = Settings.from_env(
+        {
+            "TWINOPS_UPSTREAM_BASE_URL": "https://invalid.example",
+            "TWINOPS_ML_ARTIFACT_PATH": "artifacts/ml/real-forzy",
+            "TWINOPS_ML_MANIFEST_HASH": f"sha256:{'1' * 64}",
+            "TWINOPS_ML_MODEL_HASH": f"sha256:{'2' * 64}",
+        }
+    )
+
+    assert settings.ml_artifact_path == Path("artifacts/ml/real-forzy")

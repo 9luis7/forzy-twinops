@@ -36,3 +36,8 @@ tmp/
 __pycache__/
 *.py[cod]
 *.egg-info/
+
+# Derivados reproduzíveis e cópia original preservada localmente
+artifacts/ml/**/curated-features.csv
+docs/History_*.csv
+data/raw/**

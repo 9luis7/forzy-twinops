@@ -1,0 +1,21 @@
+{
+  "canonicalSamples": 14366,
+  "consecutiveDuplicateRows": 8562,
+  "cycleCount": 204,
+  "gapSeconds": 15.0,
+  "groundTruthLabelsAvailable": false,
+  "newInformationRows": 5804,
+  "observedEndUtc": "2026-05-19T18:43:14.082000+00:00",
+  "observedStartUtc": "2026-05-19T14:46:10.921000+00:00",
+  "schemaVersion": "1.0",
+  "scoreSemantics": "relative_to_historical_baseline_not_failure_probability",
+  "sensorRows": {
+    "s1": 7183,
+    "s2": 7183
+  },
+  "sourceDataRows": 7183,
+  "sourceFile": "forzy-history-2026-05-19.csv",
+  "sourceSha256": "sha256:f09a6613bf6ba3416555a15de6b381bd842474f5f3f33c20660416c7164f0be4",
+  "sourceTimezoneAssumption": "America/Sao_Paulo",
+  "validFeatureRows": 5066
+}

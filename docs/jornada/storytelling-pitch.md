@@ -52,11 +52,18 @@ explicação acessível, consulta conhecimento técnico e apoia a decisão human
 
 - integração com medições reais;
 - construção de histórico a partir de snapshots;
-- detecção reproduzível de tendências e anomalias;
-- medição de latência e antecedência;
+- execução reproduzível de um ranking de anomalias em 7.183 registros reais;
+- scoring clássico por fold abaixo de 8 ms no p95 do backtest local;
+- features mais inferência em cerca de 49 ms no p95 de uma janela local de
+  1.000 leituras, ainda sem incluir a latência ponta a ponta;
 - explicação rastreável pelo copiloto;
 - comparação entre modelo local e API;
 - identificação objetiva das lacunas para escala industrial.
+
+O resultado mais importante não é “já prevemos falhas”. É que o caminho
+técnico completo existe e é rápido, enquanto o próprio experimento revela o
+investimento que falta: histórico longitudinal, falhas confirmadas, contexto
+operacional e melhor contrato de aquisição.
 
 ### 7. O investimento para escalar
 
@@ -72,7 +79,8 @@ explicação acessível, consulta conhecimento técnico e apoia a decisão human
 - "Identificamos eventos candidatos que estão sendo reavaliados com a semântica
   correta do sensor."
 - "O sistema mede risco de anomalia com evidências rastreáveis."
-- "O demonstrador avalia a antecedência e a taxa de falso alerta."
+- "O demonstrador está instrumentado para medir antecedência e falso alerta
+  quando houver eventos confirmados."
 - "A arquitetura separa decisão rápida de explicação por linguagem."
 - "Os experimentos mostram quais investimentos são necessários para escalar."
 

@@ -13,6 +13,8 @@ import numpy as np
 import pandas as pd
 
 from twinops.ml.baseline import RobustBaseline
+from twinops.ml.features import FeatureConfig
+from twinops.ml.scorer import ScorerConfig
 
 
 @dataclass(frozen=True)
@@ -46,21 +48,41 @@ def build_walk_forward_folds(
     if len(cycle_ids) < holdout_count + 3:
         raise ValueError("walk-forward requires two seed cycles, development, and holdout")
     holdout_start = len(cycle_ids) - holdout_count
-    folds = [
-        WalkForwardFold(
-            train_cycle_ids=cycle_ids[:test_index],
-            test_cycle_ids=(cycle_ids[test_index],),
+    folds = []
+    for test_index in range(2, holdout_start):
+        train_cycle_ids = cycle_ids[:test_index]
+        if not _calibration_ready(frame, train_cycle_ids):
+            continue
+        folds.append(
+            WalkForwardFold(
+                train_cycle_ids=train_cycle_ids,
+                test_cycle_ids=(cycle_ids[test_index],),
+            )
         )
-        for test_index in range(2, holdout_start)
-    ]
+    frozen_train_ids = cycle_ids[:holdout_start]
+    if not _calibration_ready(frame, frozen_train_ids):
+        raise ValueError("walk-forward has no valid steady calibration per sensor")
     folds.append(
         WalkForwardFold(
-            train_cycle_ids=cycle_ids[:holdout_start],
+            train_cycle_ids=frozen_train_ids,
             test_cycle_ids=cycle_ids[holdout_start:],
             frozen_holdout=True,
         )
     )
     return folds
+
+
+def _calibration_ready(frame: pd.DataFrame, cycle_ids: tuple[int, ...]) -> bool:
+    required = {"sensor_id", "cycle_id", "operating_state", "feature_valid"}
+    if not required.issubset(frame.columns):
+        return True
+    expected_sensors = {str(value) for value in frame["sensor_id"].unique()}
+    calibration = frame.loc[
+        frame["cycle_id"].isin(cycle_ids)
+        & frame["feature_valid"].astype(bool)
+        & frame["operating_state"].eq("steady")
+    ]
+    return {str(value) for value in calibration["sensor_id"].unique()} == expected_sensors
 
 
 def run_backtest(
@@ -137,6 +159,7 @@ def run_backtest(
                 {
                     "fold": fold_index,
                     "cycle_id": int(row.cycle_id),
+                    "sensor_id": str(row.sensor_id),
                     "observed_at": pd.Timestamp(row.event_at).isoformat(),
                     "score": float(max(row.anomaly_score, row.deterioration_score)),
                     "classification": "candidate_not_ground_truth",
@@ -167,12 +190,14 @@ def run_backtest_csv(
     output_path: str | Path,
     *,
     holdout_count: int = 2,
+    feature_config: FeatureConfig = FeatureConfig(10, 60, 3),
+    scorer_config: ScorerConfig = ScorerConfig(),
 ) -> BacktestReport:
     """Run the frozen pipeline from an already curated feature CSV."""
 
     source = Path(input_path)
     frame = pd.read_csv(source)
-    frame["event_at"] = pd.to_datetime(frame["event_at"], utc=True)
+    frame["event_at"] = pd.to_datetime(frame["event_at"], utc=True, format="mixed")
     if frame["feature_valid"].dtype != bool:
         frame["feature_valid"] = frame["feature_valid"].map(
             {"True": True, "False": False, "true": True, "false": False}
@@ -201,6 +226,8 @@ def run_backtest_csv(
             },
             "holdoutCount": holdout_count,
             "baseline": asdict(baseline_template.config),
+            "features": asdict(feature_config),
+            "scorer": asdict(scorer_config),
         },
         report,
     )

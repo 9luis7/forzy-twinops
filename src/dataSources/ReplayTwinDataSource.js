@@ -114,7 +114,7 @@ export function buildReplaySnapshot({ assetTag, live, reading, status, scenario,
       replayControls: true,
       liveUpdates: false,
       copilot: false,
-      twin3d: true,
+      twin3d: false,
     },
   };
 }

@@ -20,7 +20,7 @@ export const TOUR_STEPS = [
     asset: "MTR-BMB-042",
     target: "motor-mimic",
     title: "O motor sob suspeita",
-    text: "O gêmeo nos leva ao MTR-BMB-042. Cada sensor está desenhado no seu ponto físico real.",
+    text: "O gêmeo nos leva ao MTR-BMB-042. Os pontos dos sensores são ilustrativos até a montagem de S1/S2 ser confirmada.",
   },
   {
     id: "bearing",
@@ -28,7 +28,7 @@ export const TOUR_STEPS = [
     asset: "MTR-BMB-042",
     target: "motor-mimic",
     title: "Onde o risco mora",
-    text: "O rolamento do lado acoplamento está aceso: é o componente que está degradando.",
+    text: "No replay ilustrativo, o rolamento acende como hipótese investigável — não como diagnóstico confirmado.",
   },
   {
     id: "telemetry",

@@ -3,14 +3,17 @@
 Protótipo navegável de **Digital Twin** para manutenção preditiva de motores elétricos industriais.
 Challenge FIAP × Forzy.
 
-> Status: **protótipo navegável** (v0.4). App com sidebar e 4 cenas de demonstração — dados sintéticos, sem backend.
+> Status: **demonstrador preditivo em evolução**. O front preserva o replay
+> determinístico, enquanto o backend já normaliza CSV/API, persiste telemetria,
+> executa ML clássico com artefato verificado e fornece o contrato canônico ao
+> copiloto. Parte dos cards legados ainda é ilustrativa.
 >
 > **Novidades v0.4:** **loop de cenários ao vivo** no motor-estrela — a telemetria
 > determinística (1/seg) cicla sozinha por `estável → falha → detecção → normalização`
 > e percorre vários tipos de falha (superaquecimento, sobrecarga elétrica, desbalanceamento).
 >
 > Essa leitura ao vivo é a **fonte única da verdade de TODO o app** (`LiveTwinContext`):
-> gauges, gêmeo digital (a parte culpada acende), árvore de TAGs, cards, sinótico da planta,
+> gauges, gêmeo ilustrativo (a hipótese do cenário acende), árvore de TAGs, cards, sinótico da planta,
 > KPIs, central de alertas, copiloto e auditoria refletem o **mesmo estado, no mesmo instante**.
 > O alerta do motor é dinâmico — aparece quando um cenário é detectado e some quando normaliza.
 > O histórico curado (OS, documentos) permanece. Controles: Iniciar/Pausar · Reset · Próximo cenário.
@@ -56,8 +59,9 @@ de sensor até virar decisão, com origem rastreável.
 
 - **Front-end:** React + Vite
 - **Gráficos:** Recharts
-- **Dados:** mock total gerado a partir do schema Supabase (sem coleta real nesta fase)
-- **Banco de referência:** Supabase (PostgreSQL) — tabelas `assets` e `readings`
+- **Dados:** replay determinístico, histórico Forzy real e coleta server-side dos endpoints S1/S2
+- **Backend:** FastAPI/Python com SQLite no demonstrador
+- **ML:** baseline robusto causal, backtest walk-forward e artefatos com hashes externos
 
 ## Schema de referência
 
@@ -90,11 +94,32 @@ npm install
 npm run dev
 ```
 
+O backend pode ser instalado e validado separadamente:
+
+```powershell
+python -m venv services/twinops/.venv
+services/twinops/.venv/Scripts/python -m pip install -e "services/twinops[dev]"
+services/twinops/.venv/Scripts/python -m pytest services/twinops/tests
+```
+
+Com as variáveis `TWINOPS_*` configuradas, o histórico nativo pode ser
+importado de forma idempotente:
+
+```powershell
+services/twinops/.venv/Scripts/python -m twinops.cli import-forzy-history data/raw/forzy-history-2026-05-19.csv
+```
+
+Para trocar o replay pelo snapshot canônico do backend no front, defina
+`VITE_TWINOPS_DATA_MODE=live`. Se a API falhar, o contexto preserva o replay
+como fallback explícito. O comando `python -m twinops.ml.real_history` imprime
+os hashes de manifesto e modelo que devem ser copiados para as variáveis
+`TWINOPS_ML_*`; o CSV industrial bruto permanece ignorado pelo Git.
+
 ## As 4 cenas da demo
 
 1. **Visão da Planta** — KPIs + mapa macro das áreas (A Produção · B Utilidades · C Manutenção · D Expedição). Partimos do macro para o micro.
-2. **Drill-down por TAG** — `PLT-FORZY-001 → AREA-PROD-01 → MTR-BMB-042 → CMP-BRG-042A → SNS-VIB-042B`. Perfil do ativo ("LinkedIn da máquina"): leituras, risco, **componentes**, sensores, documentos e OS vinculadas. O sensor de vibração está fisicamente ligado ao **rolamento** sob suspeita.
-3. **Alertas + timeline** — alerta preditivo com **confiança 87%**, origem (`SNS-VIB-042B`) e base consultada; gráfico temporal com a degradação visível.
+2. **Drill-down por TAG** — `PLT-FORZY-001 → AREA-PROD-01 → MTR-BMB-042 → CMP-BRG-042A → SNS-VIB-042B`. Perfil do ativo ("LinkedIn da máquina"): leituras, risco, **componentes**, sensores, documentos e OS vinculadas. A associação do sensor ao rolamento é um cenário ilustrativo do replay; a montagem real de S1/S2 ainda precisa ser confirmada.
+3. **Alertas + timeline** — fluxo de alerta, origem (`SNS-VIB-042B`) e base consultada; a confiança de 87% do cenário legado é ilustrativa e não representa probabilidade produzida pelo modelo real.
 4. **Assistente técnico (copiloto)** — Q&A asset-aware: possíveis causas, ação recomendada e evidências rastreáveis.
 
 ### Caminho ensaiado
@@ -139,8 +164,8 @@ forzy-twinops/
 perfil do ativo + gráfico temporal · alerta preditivo com confiança · assistente técnico (copiloto) ·
 ordens de manutenção · documentos técnicos · auditoria/procedência do dado.
 
-**Fora (evolução):** coleta real de sensor / API de produção · autenticação e permissões ·
-ML funcional · RAG sobre documentos · visão computacional (leitura de placa).
+**Fora (evolução):** API de produção com URL estável/SLA · autenticação e permissões ·
+rótulos de falha e validação longitudinal do ML · RAG sobre documentos · visão computacional (leitura de placa).
 
 > Teatro honesto: o caminho da demo é navegável e coerente; números de planta (128 ativos etc.)
 > são sintéticos e alguns cards são ilustrativos. O objetivo é mostrar a **visão** e a lógica.

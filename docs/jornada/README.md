@@ -73,6 +73,28 @@ existirem casos de teste e falhas recorrentes do modelo base.
 
 ## Evidências disponíveis
 
+### Backtest reproduzível no CSV real
+
+- As 7.183 linhas foram normalizadas em 14.366 leituras canônicas, uma por
+  sensor, preservando o registro bruto e a procedência.
+- O intervalo observado foi de 11:46:10 a 15:43:14 em 19 de maio de 2026. Como
+  o CSV não declara timezone, `America/Sao_Paulo` está registrado como hipótese
+  de importação, não como fato medido.
+- A segmentação por gaps de 15 segundos produziu 204 ciclos. A curadoria
+  separou 8.562 repetições consecutivas, preservou 5.804 novas informações e
+  produziu 5.066 linhas com features válidas.
+- O walk-forward cronológico executou 200 folds e manteve os dois ciclos finais
+  como holdout congelado.
+- A latência local do scoring em lote de cada fold ficou em 4,69 ms no p50,
+  7,47 ms no p95 e 126,78 ms no p99.
+- O ranking gerou eventos candidatos, mas o conjunto não contém rótulos de
+  falha. Score significa distância do baseline histórico, não probabilidade de
+  falha.
+
+**Resultado:** os dados são suficientes para demonstrar ingestão real,
+reprodutibilidade e inferência rápida. Não são suficientes para estimar
+confiabilidade preditiva, taxa de falso alerta ou antecedência de falha.
+
 ### EDA da planilha real
 
 - 7.183 registros em aproximadamente 3 horas e 57 minutos.

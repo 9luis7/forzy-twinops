@@ -279,7 +279,7 @@ const RISK_CURATED = {
     component: "Rolamento — lado acoplamento",
     windowHours: 72,
     headline:
-      "Risco de falha em rolamento detectado. Recomenda-se inspeção em até 72h para evitar parada não planejada.",
+      "Cenário ilustrativo de risco no rolamento; requer validação física e inspeção.",
     origin: "SNS-VIB-042B",
     bases: ["Histórico de falhas", "Manual WEG W22", "OS anteriores"],
     evidence: [
@@ -309,9 +309,9 @@ export const alerts = [
     id: "ALR-2026-0312",
     tag: "MTR-BMB-042",
     severity: "critico",
-    title: "Risco de falha em rolamento",
+    title: "Hipótese ilustrativa no rolamento",
     message:
-      "Risco de falha em rolamento detectado. Recomenda-se inspeção em até 72h para evitar parada não planejada.",
+      "Cenário sintético: hipótese de anomalia no rolamento, sem diagnóstico real confirmado.",
     confidence: 87,
     origin: "SNS-VIB-042B",
     bases: ["Histórico de falhas", "Manual WEG W22", "OS anteriores"],
@@ -482,10 +482,8 @@ export const kpis = {
 // ============================================================================
 //  COMPONENTES (nível entre Motor e Sensor da hierarquia de TAGs)
 // ============================================================================
-// Plant → Area → Motor → Component → Sensor. O componente dá corpo físico à
-// recomendação: o sensor de vibração está montado NO rolamento sob suspeita —
-// não é "o motor", é o componente específico que degrada. Só a estrela tem
-// detalhamento de componentes nesta fase.
+// Replay ilustrativo: a associação do sensor ao rolamento não representa a
+// montagem real de S1/S2 nem um diagnóstico confirmado.
 export const components = [
   {
     tag: "CMP-BRG-042A",
@@ -497,7 +495,7 @@ export const components = [
     risk: { level: "Médio/Alto", score: 72 },
     evidence: [
       "Vibração aumentou 23% nos últimos 5 dias",
-      "Assinatura espectral compatível com defeito de pista externa (BPFO)",
+      "Hipótese ilustrativa de BPFO; o dataset real não contém espectro",
       "Falha semelhante registrada na OS-2025-118",
     ],
     note: "Componente sob suspeita primária da recomendação.",

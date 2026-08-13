@@ -10,9 +10,10 @@
 // O histórico curado (OS, documentos, OS-2025-118) permanece — muda apenas o
 // ESTADO ATUAL do estrela (leitura, status, risco, alerta), que passa a ser vivo.
 
-import React, { createContext, useContext } from "react";
+import React, { createContext, useContext, useEffect, useState } from "react";
 import { useLiveTelemetry } from "./useLiveTelemetry.js";
 import { buildReplaySnapshot } from "./dataSources/ReplayTwinDataSource.js";
+import { createGatewayTwinDataSource } from "./dataSources/GatewayTwinDataSource.js";
 import {
   HEARTBEAT,
   assetStatus,
@@ -25,6 +26,12 @@ import {
 
 const STAR = HEARTBEAT.tag;
 const LiveTwinCtx = createContext(null);
+const configuredGateway =
+  import.meta.env.VITE_TWINOPS_DATA_MODE === "live"
+    ? createGatewayTwinDataSource({
+        baseUrl: import.meta.env.VITE_TWINOPS_API_BASE_URL || "",
+      })
+    : null;
 
 // Risco efetivo derivado do estado ao vivo do motor-estrela.
 function deriveRisk(status, scenario) {
@@ -35,8 +42,82 @@ function deriveRisk(status, scenario) {
   return { level: "Baixo", score: 12, confidence: 95, windowHours: null };
 }
 
-export function LiveTwinProvider({ children }) {
+function canonicalProjection(snapshot) {
+  if (!snapshot) return null;
+  const channels = snapshot.channels.filter((channel) => channel.receivedAt);
+  const primary = channels.find((channel) => channel.sensorId === "s1") || channels[0];
+  const score = snapshot.assessment
+    ? Math.round(
+        Math.max(
+          snapshot.assessment.assessment.anomalyScore,
+          snapshot.assessment.assessment.deteriorationScore
+        )
+      )
+    : 0;
+  const status = {
+    alert: "critico",
+    watch: "alerta",
+    normal: "normal",
+    insufficient_data: "desconhecido",
+    unknown: "desconhecido",
+  }[snapshot.status] || "desconhecido";
+  const reading = primary
+    ? {
+        asset_tag: snapshot.assetTag,
+        ts: primary.observedAt || primary.receivedAt,
+        label: new Date(primary.observedAt || primary.receivedAt).toLocaleTimeString("pt-BR"),
+        temperature: primary.measurements.temperature?.value ?? null,
+        vibration: primary.measurements.vibrationVelocityRms?.value ?? null,
+        current: null,
+        rotation: null,
+        canonical: true,
+      }
+    : null;
+  const assessmentSufficient = ["normal", "watch", "alert"].includes(snapshot.status);
+  const risk = {
+    level: !assessmentSufficient
+      ? "Indeterminado"
+      : snapshot.status === "alert"
+      ? "Alto"
+      : snapshot.status === "watch"
+      ? "Médio"
+      : "Baixo",
+    score: assessmentSufficient ? score : null,
+    confidence: null,
+    windowHours: null,
+  };
+  const assessment = snapshot.assessment;
+  const alert = assessment && ["watch", "alert"].includes(assessment.assessment.status)
+    ? {
+        id: assessment.assessmentId,
+        tag: snapshot.assetTag,
+        severity: assessment.assessment.status === "alert" ? "critico" : "alerta",
+        title: "Desvio relativo ao baseline histórico",
+        message: `Score relativo ${score}/100; requer validação humana.`,
+        confidence: null,
+        origin: assessment.sensorId,
+        bases: [`${assessment.model.name} ${assessment.model.version}`],
+        ts: assessment.window.end,
+        status: "Em análise",
+        live: true,
+      }
+    : null;
+  return { status, reading, risk, alert };
+}
+
+export function LiveTwinProvider({ children, dataSource = configuredGateway }) {
   const live = useLiveTelemetry(true);
+  const [gatewayState, setGatewayState] = useState({ snapshot: null, error: null });
+
+  useEffect(() => {
+    if (!dataSource) {
+      setGatewayState({ snapshot: null, error: null });
+      return undefined;
+    }
+    return dataSource.subscribe(STAR, (error, snapshot) => {
+      setGatewayState({ snapshot: snapshot ?? null, error: error ?? null });
+    });
+  }, [dataSource]);
 
   const starStatus = live.status;
   const starScenario = starStatus !== "normal" ? live.scenario : null;
@@ -86,7 +167,7 @@ export function LiveTwinProvider({ children }) {
     : null;
 
   const isStar = (tag) => tag === STAR;
-  const snapshot = buildReplaySnapshot({
+  const replaySnapshot = buildReplaySnapshot({
     assetTag: STAR,
     live,
     reading: starReading,
@@ -94,10 +175,13 @@ export function LiveTwinProvider({ children }) {
     scenario: starScenario,
     risk: starRisk,
   });
+  const snapshot = gatewayState.snapshot ?? replaySnapshot;
+  const gatewayProjection = canonicalProjection(gatewayState.snapshot);
 
   const value = {
     snapshot,
-    dataMode: "replay",
+    dataMode: gatewayState.snapshot ? "live" : "replay",
+    dataError: gatewayState.error,
     live,
     STAR,
     starReading,
@@ -107,16 +191,29 @@ export function LiveTwinProvider({ children }) {
     starComponents,
     starAlert,
     isStar,
-    statusOf: (tag) => (isStar(tag) ? starStatus : assetStatus(tag)),
-    readingOf: (tag) => (isStar(tag) ? starReading : latestReading(tag)),
-    riskOf: (tag) => (isStar(tag) ? starRisk : assetRisk(tag)),
-    scenarioOf: (tag) => (isStar(tag) ? starScenario : null),
-    componentsOf: (tag) => (isStar(tag) ? starComponents : componentsForAsset(tag)),
-    alertOf: (tag) => (isStar(tag) ? starAlert : alertsForTag(tag)[0] || null),
+    statusOf: (tag) =>
+      isStar(tag) ? (gatewayProjection ? gatewayProjection.status : starStatus) : assetStatus(tag),
+    readingOf: (tag) =>
+      isStar(tag) ? (gatewayProjection ? gatewayProjection.reading : starReading) : latestReading(tag),
+    riskOf: (tag) =>
+      isStar(tag) ? (gatewayProjection ? gatewayProjection.risk : starRisk) : assetRisk(tag),
+    scenarioOf: (tag) =>
+      isStar(tag) && !gatewayProjection ? starScenario : null,
+    componentsOf: (tag) =>
+      isStar(tag)
+        ? gatewayProjection
+          ? []
+          : starComponents
+        : componentsForAsset(tag),
+    alertOf: (tag) =>
+      isStar(tag)
+        ? gatewayProjection?.alert ?? (gatewayProjection ? null : starAlert)
+        : alertsForTag(tag)[0] || null,
     // Lista de alertas com o estrela refletindo o estado ao vivo (some quando normal).
     alertsList: () => {
       const others = alerts.filter((a) => a.tag !== STAR);
-      return starAlert ? [starAlert, ...others] : others;
+      const effectiveAlert = gatewayProjection?.alert ?? (gatewayProjection ? null : starAlert);
+      return effectiveAlert ? [effectiveAlert, ...others] : others;
     },
   };
 

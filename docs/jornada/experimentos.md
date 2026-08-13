@@ -41,8 +41,8 @@ um histórico próprio.
 
 ## EXP-003: alerta antecipado com ML clássico
 
-**Status:** pipeline implementado e validado com fixtures; execução no CSV real
-pendente porque o arquivo de 7.183 registros não está disponível no workspace.
+**Status:** concluído no CSV real para validação do pipeline e latência; eficácia
+preditiva permanece inconclusiva por ausência de rótulos de falha.
 
 **Hipótese:** tendências e mudanças de regime em velocidade de vibração RMS,
 aceleração de vibração e temperatura conseguem indicar deterioração antes de
@@ -65,10 +65,13 @@ um limite crítico.
 - estabilidade diante de gaps e leituras duplicadas.
 
 **Resultado disponível:** o baseline robusto, o replay cronológico por ciclo e
-o challenger Isolation Forest foram validados por testes determinísticos. A
-medição local com fixture de 1.000 amostras ficou abaixo do gate de 100 ms, mas
-não representa resultado por ciclo do CSV real. O challenger nunca é promovido
-automaticamente.
+o challenger Isolation Forest foram validados por testes determinísticos. No
+CSV real, 7.183 linhas originaram 14.366 leituras canônicas, 204 ciclos e
+8.562 repetições consecutivas foram marcadas como sem nova informação, restando
+5.804 observações novas e 5.066 linhas com features válidas. O walk-forward executou 200 folds; os dois
+últimos ciclos ficaram congelados como holdout. A latência do score por fold
+em lote foi de 4,69 ms no p50, 7,47 ms no p95 e 126,78 ms no p99 neste computador. O
+challenger nunca é promovido automaticamente.
 
 **Correções de revisão independente:** os folds agora são derivados dos
 intervalos `event_at` de cada ciclo e rejeitam IDs fora da ordem cronológica,
@@ -135,9 +138,7 @@ substituir o acesso às fontes reais.
 
 ## EXP-006: reinterpretar a EDA com a semântica correta do sensor
 
-**Status:** notebook e pipeline reproduzíveis concluídos; EDA real não executada
-porque o CSV de 7.183 registros não foi encontrado. Nenhum resultado foi
-inferido do mock `readings_rows.csv` de 677 linhas.
+**Status:** pipeline reproduzível executado no CSV real de 7.183 registros.
 
 **Pergunta:** os eventos encontrados continuam investigáveis quando
 `Velocidade` é interpretada como velocidade de vibração RMS em `mm/s`?
@@ -161,8 +162,58 @@ ou inconclusivo.
 **Limitação conhecida:** o arquivo atual não contém RPM, setpoint, carga nem
 rótulo de falha confirmado.
 
-**Resultado atual:** somente o mecanismo foi validado com fixtures. Os eventos
-13:48:10 e 13:56:10 continuam sem classificação até a execução no CSV real.
+**Resultado atual:** o ranking encontrou dez ocorrências de score máximo em
+três janelas iniciais do histórico. Todas foram registradas como
+`candidate_not_ground_truth`; algumas aparecem duas vezes por ocorrerem no
+mesmo instante em S1 e S2. A saturação do score e a pouca maturidade dos
+primeiros folds impedem classificá-las como falhas. Os eventos anteriormente
+citados às 13:48:10 e 13:56:10 não foram promovidos a falha confirmada.
+
+## EXP-007: backtest cronológico no histórico Forzy
+
+**Status:** concluído em 13 de agosto de 2026.
+
+**Hipótese:** o histórico real é suficiente para validar o fluxo causal de
+features, treino, score e artefatos, ainda que não seja suficiente para medir
+previsão de falhas.
+
+**Dados e versões:** `data/raw/forzy-history-2026-05-19.csv`, SHA-256
+`f09a6613bf6ba3416555a15de6b381bd842474f5f3f33c20660416c7164f0be4`;
+modelo `robust-baseline` 1.0.1. O arquivo cobre 19 de maio de 2026, de 11:46:10
+a 15:43:14 no horário de São Paulo. O timezone é uma hipótese explícita porque
+o CSV não o informa.
+
+**Procedimento:** converter cada linha em leituras canônicas S1 e S2, preservar
+o payload original, segmentar ciclos por gaps de 15 segundos, calcular apenas
+features causais e executar walk-forward sem misturar eventos futuros no
+treino. Os dois ciclos finais ficaram congelados como holdout.
+
+**Resultado:** 14.366 leituras canônicas, 204 ciclos, 8.562 repetições
+consecutivas, 5.804 novas informações e 5.066 linhas válidas. Foram executados
+200 folds e 287 resultados por ciclo/regime. Latência do scoring em lote por
+fold: p50 4,69 ms, p95 7,47 ms e p99 126,78 ms. Dez ocorrências foram ranqueadas como candidatas; não
+existem rótulos para calcular precisão, recall, falso alerta ou antecedência de
+falha.
+
+Um benchmark separado da fronteira online, com cálculo de features e inferência
+sobre uma janela determinística de 1.000 leituras, mediu 48,84 ms no p50 e
+49,31 ms no p95 neste computador. Nenhuma dessas métricas inclui rede, banco ou
+renderização do navegador; a latência ponta a ponta ainda precisa ser medida.
+
+**Conclusão:** a hipótese foi aceita apenas para viabilidade técnica e baixa
+latência. O conjunto não sustenta a afirmação de que o modelo prevê falhas: ele
+representa menos de quatro horas de um único dia, sem falhas confirmadas,
+manutenções, carga, RPM ou contexto operacional rotulado. A próxima coleta deve
+ser longitudinal e sincronizada com eventos de operação e manutenção.
+
+**Artefatos:** `artifacts/ml/real-forzy/source-summary.json`,
+`backtest-report.json`, `model-card.md`, `feature-manifest.json` e o pipeline
+versionado. O CSV de features é derivado e pode ser regenerado. Para esta
+execução, os anchors externos são manifesto
+`sha256:3319936da354fe9bb1ec37755940688abacd57876a44bfeda3e1d78fef39aed5`
+e modelo
+`sha256:68d00121edbf8c4c01cf7cd231cd57c4c8eff25661135494e3c791ca78e562ba`.
+Em deploy, esses valores devem ser fixados no ambiente confiável.
 
 ## Template de novo experimento
 

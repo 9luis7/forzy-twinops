@@ -15,6 +15,7 @@ import { StatusBadge, RiskTag } from "./ui.jsx";
 import TimeChart from "./TimeChart.jsx";
 import Copilot from "./Copilot.jsx";
 import MotorMimic from "./MotorMimic.jsx";
+import Twin3D from "./Twin3D.jsx";
 import Gauge from "./Gauge.jsx";
 import { useLiveTwin } from "../LiveTwinContext.jsx";
 
@@ -82,8 +83,7 @@ function sensorValue(asset, sensorTag, reading) {
   return map[s.type] || null;
 }
 
-// Componentes (nível entre Motor e Sensor). Torna a recomendação física:
-// o sensor de vibração está montado NO rolamento sob suspeita.
+// Componentes do replay ilustrativo. A montagem física de S1/S2 ainda não foi confirmada.
 function Components({ asset, reading, comps, selected, onSelect }) {
   const current = comps.find((c) => c.tag === selected) || comps[0];
   return (
@@ -199,6 +199,22 @@ export default function AssetProfile({ asset, nav, selectedComponent }) {
     if (isLive && liveScenario) setActiveComp(liveScenario.component);
   }, [isLive, liveScenario]);
 
+  const twinSnapshot = twin.snapshot?.assetTag === tag ? twin.snapshot : null;
+  const canonicalChannels =
+    twin.dataMode === "live" ? twinSnapshot?.channels ?? [] : [];
+  const twinFallback = effComps.length > 0 ? (
+    <MotorMimic
+      asset={asset}
+      reading={effReading}
+      components={effComps}
+      status={effStatus}
+      activeComponent={activeComp}
+      onSelectComponent={setActiveComp}
+    />
+  ) : (
+    <MotorMimic asset={asset} reading={effReading} components={[]} status={effStatus} />
+  );
+
   return (
     <div>
       {/* Estilos locais (layout do perfil) — sem tocar styles.css. */}
@@ -277,7 +293,7 @@ export default function AssetProfile({ asset, nav, selectedComponent }) {
                 <span>Base: <b>{effAlert.bases.join(" + ")}</b></span>
               </div>
               <div style={{ display: "flex", gap: 24, flexWrap: "wrap", alignItems: "center", marginTop: 4 }}>
-                <div className="conf-wrap" style={{ marginTop: 8 }}>
+                {effAlert.confidence != null && <div className="conf-wrap" style={{ marginTop: 8 }}>
                   <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12 }}>
                     <span className="muted">Confiança</span>
                     <b>{effAlert.confidence}%</b>
@@ -285,7 +301,7 @@ export default function AssetProfile({ asset, nav, selectedComponent }) {
                   <div className="conf-track" style={{ marginTop: 5 }}>
                     <div className="conf-fill" style={{ width: `${effAlert.confidence}%` }} />
                   </div>
-                </div>
+                </div>}
                 <button className="btn primary" onClick={() => nav.goView("alertas")}>
                   Ver alerta completo →
                 </button>
@@ -299,18 +315,13 @@ export default function AssetProfile({ asset, nav, selectedComponent }) {
       {/* Gêmeo digital + ficha técnica lado a lado */}
       <div className="ap-twin-grid">
         {/* Desenho 2.5D do motor (sincronizado com a seleção de componente) */}
-        {comps.length > 0 ? (
-          <MotorMimic
-            asset={asset}
-            reading={effReading}
-            components={effComps}
-            status={effStatus}
-            activeComponent={activeComp}
-            onSelectComponent={setActiveComp}
-          />
-        ) : (
-          <MotorMimic asset={asset} reading={effReading} components={[]} status={effStatus} />
-        )}
+        <Twin3D
+          snapshot={twinSnapshot}
+          asset={asset}
+          activeComponent={activeComp}
+          onSelectComponent={setActiveComp}
+          fallback={twinFallback}
+        />
 
         {/* Ficha técnica — rótulos amigáveis, detalhe técnico em segundo plano */}
         <section className="card">
@@ -326,7 +337,9 @@ export default function AssetProfile({ asset, nav, selectedComponent }) {
             <Fact label="Instalado em">{fmtDate(asset.installDate)}</Fact>
             <Fact label="Risco de falha">
               <RiskTag level={effRisk.level} />{" "}
-              <span className="muted small">· score {effRisk.score}/100</span>
+              {effRisk.score != null && (
+                <span className="muted small">· score {effRisk.score}/100</span>
+              )}
             </Fact>
           </div>
           <details className="ap-tech">
@@ -360,7 +373,16 @@ export default function AssetProfile({ asset, nav, selectedComponent }) {
             {when}
           </span>
         </div>
-        {effReading ? (
+        {canonicalChannels.length ? (
+          <div className="gauge-row" style={{ marginTop: 12 }}>
+            {canonicalChannels.flatMap((channel) => [
+              <Gauge key={`${channel.sensorId}-velocity`} label={`${channel.sensorId.toUpperCase()} · Velocidade RMS`} value={channel.measurements.vibrationVelocityRms?.value} unit="mm/s"
+                min={0} max={128} warn={null} crit={null} size={168} />,
+              <Gauge key={`${channel.sensorId}-temperature`} label={`${channel.sensorId.toUpperCase()} · Temperatura`} value={channel.measurements.temperature?.value} unit="°C"
+                min={-40} max={85} warn={null} crit={null} size={168} />,
+            ])}
+          </div>
+        ) : effReading ? (
           <div className="gauge-row" style={{ marginTop: 12 }}>
             <Gauge label="Temperatura" value={effReading.temperature} unit="°C"
               min={20} max={100} warn={THRESHOLDS.temp.warn} crit={THRESHOLDS.temp.crit} size={168} />
@@ -376,7 +398,7 @@ export default function AssetProfile({ asset, nav, selectedComponent }) {
         )}
 
         {/* Limites operacionais — a parametrização que dispara o alerta (visão Forzy) */}
-        <div style={{ marginTop: 16 }}>
+        {twin.dataMode !== "live" && <div style={{ marginTop: 16 }}>
           <div
             className="section-title"
             style={{ marginBottom: 8, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, flexWrap: "wrap" }}
@@ -401,23 +423,29 @@ export default function AssetProfile({ asset, nav, selectedComponent }) {
             <LimitRow metric="Vibração" unit="m/s²" warn={THRESHOLDS.vib.warn} crit={THRESHOLDS.vib.crit} value={effReading?.vibration} />
             <LimitRow metric="Corrente" unit="A" warn={THRESHOLDS.current.warn} crit={THRESHOLDS.current.crit} value={effReading?.current} />
           </div>
-        </div>
+        </div>}
 
         {/* Sensores do ativo */}
         <div style={{ marginTop: 14 }}>
           <div className="section-title" style={{ marginBottom: 6 }}>Sensores conectados</div>
           <div className="toolbar">
-            {asset.sensors.map((s) => (
-              <span className="pill" key={s.tag} title={s.model}>
-                <span className="muted">{s.type}</span> · {s.tag}
-              </span>
-            ))}
+            {twin.dataMode === "live"
+              ? canonicalChannels.map((channel) => (
+                  <span className="pill" key={channel.sensorId}>
+                    <span className="muted">Sensor Forzy</span> · {channel.sensorId.toUpperCase()}
+                  </span>
+                ))
+              : asset.sensors.map((s) => (
+                  <span className="pill" key={s.tag} title={s.model}>
+                    <span className="muted">{s.type}</span> · {s.tag}
+                  </span>
+                ))}
           </div>
         </div>
       </section>
 
       {/* Componentes (nível entre Motor e Sensor) */}
-      {comps.length > 0 && (
+      {effComps.length > 0 && (
         <Components
           asset={asset}
           reading={effReading}
@@ -428,7 +456,18 @@ export default function AssetProfile({ asset, nav, selectedComponent }) {
       )}
 
       {/* Gráfico temporal (ao vivo na estrela) — compartilha o mesmo motor do painel */}
-      <TimeChart tag={tag} live={isLive ? twin.live : null} />
+      {twin.dataMode === "live" ? (
+        <section className="card">
+          <h3>Histórico canônico</h3>
+          <p className="muted small">
+            O snapshot real está ativo. A série do endpoint de histórico será
+            ligada ao gráfico em uma etapa separada; nenhum traçado sintético é
+            exibido neste modo.
+          </p>
+        </section>
+      ) : (
+        <TimeChart tag={tag} live={isLive ? twin.live : null} />
+      )}
 
       {/* Assistente técnico (copiloto) — remonta ao trocar de ativo */}
       <Copilot key={tag} tag={tag} />

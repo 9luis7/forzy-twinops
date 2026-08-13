@@ -30,7 +30,9 @@ export default function Twin3DCanvas({ snapshot, activeComponent }) {
   return (
     <section className="card" data-testid="twin3d-canvas" data-status={viewModel.status} data-highlight-count={viewModel.highlightedNodeNames.length} aria-label="Gêmeo 3D do conjunto motor-bomba">
       {viewModel.warning && <p role="status">{viewModel.warning}</p>}
-      <p className="muted small">Modelo 3D aprovado carregado.</p>
+      <p className="muted small">
+        Manifesto 3D validado; renderização do modelo físico ainda pendente.
+      </p>
     </section>
   );
 }

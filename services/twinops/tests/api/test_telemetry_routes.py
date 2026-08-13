@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+from pathlib import Path
 import warnings
 
 warnings.filterwarnings(
@@ -10,7 +11,7 @@ import httpx
 import pytest
 
 from twinops.config import Settings
-from twinops.contracts.models import DigitalTwinSnapshot
+from twinops.contracts.models import AssetConditionAssessment, DigitalTwinSnapshot
 from twinops.ingestion.collector import Collector
 from twinops.ingestion.live_adapter import adapt_live_payload
 from twinops.ingestion.upstream import UpstreamClient
@@ -81,6 +82,99 @@ def test_snapshot_is_contract_valid_with_missing_sensor_marked_unavailable(tmp_p
     assert missing.measurements.temperature is None
     assert missing.quality_flags == ["unavailable"]
     assert all("raw" not in channel.model_dump() for channel in snapshot.channels)
+
+
+def test_snapshot_freshness_respects_poll_age_and_collection_window(tmp_path):
+    repo, settings, samples = api_setup(tmp_path)
+    repo.insert_sample(samples[0])
+
+    delayed = TestClient(
+        create_app(
+            repo,
+            settings,
+            clock=lambda: datetime(2026, 8, 12, 15, 0, 30, tzinfo=timezone.utc),
+        )
+    ).get("/api/v1/twin/assets/MTR-BMB-042/snapshot")
+    expected_idle = TestClient(
+        create_app(
+            repo,
+            settings,
+            clock=lambda: datetime(2026, 8, 13, 15, 0, tzinfo=timezone.utc),
+        )
+    ).get("/api/v1/twin/assets/MTR-BMB-042/snapshot")
+
+    assert delayed.json()["freshness"] == "delayed"
+    assert expected_idle.json()["freshness"] == "expected_idle"
+
+
+def test_snapshot_exposes_worst_available_ml_assessment(tmp_path):
+    repo, settings, samples = api_setup(tmp_path)
+    for sample in samples:
+        repo.insert_sample(sample)
+
+    assessment = AssetConditionAssessment.model_validate(
+        __import__("json").loads(
+            Path(
+                "contracts/v1/fixtures/asset-condition-assessment-evidence.valid.json"
+            ).read_text(encoding="utf-8")
+        )
+    )
+
+    class StubScorer:
+        def __init__(self):
+            self.sensor_ids = []
+
+        def assess(self, readings, *, now):
+            self.sensor_ids.append(readings[-1].sensor_id)
+            return assessment.model_copy(
+                update={"sensor_id": readings[-1].sensor_id}
+            )
+
+    scorer = StubScorer()
+    response = TestClient(
+        create_app(repo, settings, assessment_scorer=scorer)
+    ).get("/api/v1/twin/assets/MTR-BMB-042/snapshot")
+
+    assert response.status_code == 200
+    body = DigitalTwinSnapshot.model_validate(response.json())
+    assert body.status == "watch"
+    assert body.assessment is not None
+    assert body.assessment.assessment.status == "watch"
+    assert body.capabilities.copilot is True
+    assert scorer.sensor_ids == ["s1", "s2"]
+
+
+def test_insufficient_sensor_takes_precedence_over_normal_assessment(tmp_path):
+    repo, settings, samples = api_setup(tmp_path)
+    for sample in samples:
+        repo.insert_sample(sample)
+    fixture = AssetConditionAssessment.model_validate(
+        __import__("json").loads(
+            Path(
+                "contracts/v1/fixtures/asset-condition-assessment-evidence.valid.json"
+            ).read_text(encoding="utf-8")
+        )
+    )
+
+    class MixedScorer:
+        def assess(self, readings, *, now):
+            sensor_id = readings[-1].sensor_id
+            status = "normal" if sensor_id == "s1" else "insufficient_data"
+            return fixture.model_copy(
+                update={
+                    "sensor_id": sensor_id,
+                    "assessment": fixture.assessment.model_copy(
+                        update={"status": status}
+                    ),
+                }
+            )
+
+    body = TestClient(
+        create_app(repo, settings, assessment_scorer=MixedScorer())
+    ).get("/api/v1/twin/assets/MTR-BMB-042/snapshot").json()
+
+    assert body["status"] == "insufficient_data"
+    assert body["assessment"]["sensorId"] == "s2"
 
 
 def test_invalid_limit_is_422_and_does_not_leak_upstream(tmp_path):

@@ -51,6 +51,7 @@ def curate_samples(
 
     rows.sort(key=lambda row: (row["event_at"], row["sensor_id"], row["reading_id"]))
     previous_payload_by_sensor: dict[str, str] = {}
+    previous_measurement_by_sensor: dict[str, tuple[float, float, float]] = {}
     sensor_state: dict[str, dict[str, object]] = {}
 
     for row in rows:
@@ -68,14 +69,25 @@ def curate_samples(
         if has_gap:
             state["cycle_id"] = int(state["cycle_id"]) + 1
             state["active"] = None
+            previous_payload_by_sensor.pop(sensor_id, None)
+            previous_measurement_by_sensor.pop(sensor_id, None)
 
         flags = list(row["quality_flags"])
         if has_gap and "gap_before" not in flags:
             flags.append("gap_before")
 
-        duplicate = previous_payload_by_sensor.get(sensor_id) == row["payload_hash"]
+        measurement = (
+            float(row["velocity_rms"]),
+            float(row["acceleration"]),
+            float(row["temperature"]),
+        )
+        duplicate = (
+            previous_payload_by_sensor.get(sensor_id) == row["payload_hash"]
+            or previous_measurement_by_sensor.get(sensor_id) == measurement
+        )
         if duplicate and "duplicate_payload" not in flags:
             flags.append("duplicate_payload")
+        previous_measurement_by_sensor[sensor_id] = measurement
         previous_payload_by_sensor[sensor_id] = str(row["payload_hash"])
 
         active = bool(row["velocity_rms"] > 0.05)

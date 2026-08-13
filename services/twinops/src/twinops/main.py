@@ -13,6 +13,7 @@ from twinops.api.copilot_routes import create_copilot_router
 from twinops.config import Settings
 from twinops.copilot.providers import build_configured_providers
 from twinops.copilot.service import CopilotService
+from twinops.ml.scorer import AssessmentScorer
 from twinops.storage.repository import TelemetryRepository
 
 
@@ -26,12 +27,14 @@ def create_app(
     collector=None,
     clock: Callable[[], datetime] = utc_now,
     copilot_service: CopilotService | None = None,
+    assessment_scorer: AssessmentScorer | None = None,
 ) -> FastAPI:
     app = FastAPI(title="Forzy TwinOps API", version="1.0.0")
     app.state.repository = repository
     app.state.settings = settings
     app.state.collector = collector
     app.state.clock = clock
+    app.state.assessment_scorer = assessment_scorer
     app.include_router(telemetry_router)
     app.include_router(health_router)
     app.include_router(

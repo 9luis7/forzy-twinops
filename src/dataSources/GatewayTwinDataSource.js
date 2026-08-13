@@ -79,7 +79,7 @@ export function createGatewayTwinDataSource({ baseUrl = "", fetchImpl = fetch, p
       replayControls: false,
       liveUpdates: true,
       copilot: false,
-      twin3d: true,
+      twin3d: false,
     }),
   });
 }

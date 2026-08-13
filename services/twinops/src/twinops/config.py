@@ -3,6 +3,7 @@
 from dataclasses import dataclass
 import math
 from pathlib import Path
+import re
 from typing import Mapping
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -15,6 +16,9 @@ class Settings:
     poll_interval_seconds: float = 5.0
     request_timeout_seconds: float = 2.0
     timezone_name: str = "America/Sao_Paulo"
+    ml_artifact_path: Path | None = None
+    ml_manifest_hash: str | None = None
+    ml_model_hash: str | None = None
 
     def __post_init__(self) -> None:
         try:
@@ -23,6 +27,21 @@ class Settings:
             raise ValueError(
                 f"unknown TWINOPS_TIMEZONE: {self.timezone_name}"
             ) from None
+        ml_values = (
+            self.ml_artifact_path,
+            self.ml_manifest_hash,
+            self.ml_model_hash,
+        )
+        if any(value is not None for value in ml_values) and not all(
+            value is not None for value in ml_values
+        ):
+            raise ValueError("ML artifact settings must be provided together")
+        for value in (self.ml_manifest_hash, self.ml_model_hash):
+            if (
+                value is not None
+                and re.fullmatch(r"sha256:[0-9a-f]{64}", value) is None
+            ):
+                raise ValueError("ML artifact hashes must be lowercase SHA-256 values")
 
     @classmethod
     def from_env(cls, env: Mapping[str, str]) -> "Settings":
@@ -47,4 +66,11 @@ class Settings:
             poll_interval_seconds=interval,
             request_timeout_seconds=timeout,
             timezone_name=env.get("TWINOPS_TIMEZONE", "America/Sao_Paulo"),
+            ml_artifact_path=(
+                Path(env["TWINOPS_ML_ARTIFACT_PATH"])
+                if env.get("TWINOPS_ML_ARTIFACT_PATH")
+                else None
+            ),
+            ml_manifest_hash=env.get("TWINOPS_ML_MANIFEST_HASH") or None,
+            ml_model_hash=env.get("TWINOPS_ML_MODEL_HASH") or None,
         )

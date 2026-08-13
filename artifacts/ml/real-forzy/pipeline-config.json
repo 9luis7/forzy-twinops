@@ -1,0 +1,33 @@
+{
+  "baseline": {
+    "alert_threshold": 70.0,
+    "ewma_alpha": 0.35,
+    "feature_columns": [
+      "velocity_ewma",
+      "velocity_slope",
+      "velocity_change_point",
+      "temperature_deviation"
+    ],
+    "minimum_scale": 1e-06,
+    "persistence_seconds": 30.0,
+    "robust_z_at_score_100": 6.0,
+    "watch_threshold": 40.0
+  },
+  "dataset": {
+    "cycleCount": 204,
+    "filename": "curated-features.csv",
+    "kind": "curated_feature_csv",
+    "rows": 14366,
+    "sha256": "sha256:23e7af06b522117535e4dade3f0fe33f2e562a4cb5c65d70c9b2ce89afca8034"
+  },
+  "features": {
+    "long_window_seconds": 60,
+    "min_points": 3,
+    "short_window_seconds": 10
+  },
+  "holdoutCount": 2,
+  "scorer": {
+    "gap_seconds": 15.0,
+    "max_freshness_seconds": 30
+  }
+}

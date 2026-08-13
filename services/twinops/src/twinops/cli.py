@@ -12,9 +12,11 @@ import uvicorn
 from twinops.config import Settings
 from twinops.ingestion.collector import Collector
 from twinops.ingestion.csv_importer import import_csv
+from twinops.ingestion.forzy_history import import_forzy_history
 from twinops.ingestion.schedule import CollectionWindow
 from twinops.ingestion.upstream import UpstreamClient
 from twinops.main import create_app
+from twinops.ml.runtime import load_assessment_scorer
 from twinops.storage.repository import TelemetryRepository
 from twinops.storage.sqlite_repository import SQLiteTelemetryRepository
 
@@ -44,6 +46,8 @@ def main() -> None:
     subcommands.add_parser("collect")
     csv_parser = subcommands.add_parser("import-csv")
     csv_parser.add_argument("path", type=Path)
+    forzy_parser = subcommands.add_parser("import-forzy-history")
+    forzy_parser.add_argument("path", type=Path)
     args = parser.parse_args()
 
     settings = Settings.from_env(os.environ)
@@ -51,8 +55,19 @@ def main() -> None:
     repository.initialize()
 
     if args.command == "serve":
+        scorer = None
+        if settings.ml_artifact_path is not None:
+            assert settings.ml_manifest_hash is not None
+            assert settings.ml_model_hash is not None
+            scorer = load_assessment_scorer(
+                settings.ml_artifact_path,
+                expected_manifest_hash=settings.ml_manifest_hash,
+                expected_model_hash=settings.ml_model_hash,
+            )
         uvicorn.run(
-            create_app(repository, settings), host="127.0.0.1", port=8000
+            create_app(repository, settings, assessment_scorer=scorer),
+            host="127.0.0.1",
+            port=8000,
         )
         return
     if args.command == "import-csv":
@@ -62,6 +77,17 @@ def main() -> None:
                 repository,
                 settings.asset_tag,
                 datetime.now(timezone.utc),
+            )
+        )
+        return
+    if args.command == "import-forzy-history":
+        print(
+            import_forzy_history(
+                args.path,
+                repository,
+                asset_tag=settings.asset_tag,
+                timezone_name=settings.timezone_name,
+                received_at=datetime.now(timezone.utc),
             )
         )
         return

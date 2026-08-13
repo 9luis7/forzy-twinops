@@ -78,6 +78,7 @@ def test_candidate_ranking_is_explicitly_not_ground_truth():
         event["classification"] == "candidate_not_ground_truth"
         for event in report.candidate_events
     )
+    assert all(event["sensor_id"] == "s1" for event in report.candidate_events)
 
 
 def test_curated_csv_entrypoint_writes_a_verified_bundle(tmp_path):
@@ -91,6 +92,21 @@ def test_curated_csv_entrypoint_writes_a_verified_bundle(tmp_path):
     assert (output_path / "pipeline.joblib").is_file()
     assert (output_path / "feature-manifest.json").is_file()
     assert (output_path / "backtest-report.json").is_file()
+
+
+def test_curated_csv_accepts_mixed_iso_fractional_seconds(tmp_path):
+    input_path = tmp_path / "curated-features.csv"
+    output_path = tmp_path / "artifacts"
+    frame = _six_cycle_features()
+    frame["event_at"] = [
+        value.isoformat(timespec="seconds" if index % 2 else "milliseconds")
+        for index, value in enumerate(frame["event_at"])
+    ]
+    frame.to_csv(input_path, index=False)
+
+    report = run_backtest_csv(input_path, output_path)
+
+    assert report.holdout_frozen
 
 
 def test_fold_builder_rejects_cycle_ids_that_contradict_event_chronology():
@@ -116,6 +132,20 @@ def test_backtest_rejects_manual_fold_whose_training_reaches_test_time():
         assert "event_at" in str(error)
     else:
         raise AssertionError("training timestamps must be strictly before test")
+
+
+def test_fold_builder_skips_early_cycles_without_per_sensor_calibration():
+    frame = _six_cycle_features()
+    second_sensor = frame.copy()
+    second_sensor["sensor_id"] = "s2"
+    frame = pd.concat([frame, second_sensor], ignore_index=True)
+    frame.loc[frame["cycle_id"].isin([0, 1]), "feature_valid"] = False
+
+    folds = build_walk_forward_folds(frame, holdout_count=2)
+
+    assert folds[0].train_cycle_ids == (0, 1, 2)
+    assert folds[0].test_cycle_ids == (3,)
+    assert folds[-1].frozen_holdout
 
 
 def test_steady_alert_seconds_only_sums_contiguous_alert_cadence():
