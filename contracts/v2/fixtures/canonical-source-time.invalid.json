@@ -1,0 +1,20 @@
+{
+  "schemaVersion": "2.0",
+  "readingId": "00000000-0000-4000-8000-000000000001",
+  "source": "forzy-live",
+  "assetId": "forzy-motor-01",
+  "sensorId": "s1",
+  "scheduledAt": "2026-08-12T15:00:00.000Z",
+  "observedAt": "2026-08-12T15:00:00.000Z",
+  "receivedAt": "2026-08-12T15:00:01.000Z",
+  "timestampQuality": "source",
+  "measurements": {
+    "vibrationVelocityRms": { "value": 0.04, "unit": "mm/s", "semanticConfidence": "inferred_from_datasheet" },
+    "vibrationAcceleration": { "value": 0, "unit": "g", "statistic": "unknown", "semanticConfidence": "unconfirmed" },
+    "temperature": { "value": 34, "unit": "degC", "semanticConfidence": "inferred_from_datasheet" }
+  },
+  "qualityFlags": [],
+  "payloadHash": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+  "raw": {},
+  "provenance": { "sourceSystem": "forzy-api", "ingestedAt": "2026-08-12T15:00:01.000Z", "sourceTimestampProvided": true }
+}

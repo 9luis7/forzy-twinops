@@ -1,0 +1,37 @@
+{
+  "schemaVersion": "2.0",
+  "asset": { "assetId": "forzy-motor-01", "displayName": "Conjunto motor-bomba monitorado", "officialTag": null },
+  "generatedAt": "2026-08-12T15:05:01.000Z",
+  "status": "insufficient_data",
+  "operationalState": "last_known",
+  "freshnessBasis": "last_received",
+  "channels": [
+    {
+      "schemaVersion": "2.0", "frameId": "00000000-0000-4000-8000-000000000001", "assetId": "forzy-motor-01", "sensorId": "s1",
+      "observedAt": "2026-08-12T15:00:01.000Z", "receivedAt": "2026-08-12T15:00:01.000Z", "timestampQuality": "assumed_from_retrieval",
+      "measurements": {
+        "vibrationVelocityRms": { "value": 0.04, "unit": "mm/s", "semanticConfidence": "inferred_from_datasheet" },
+        "vibrationAcceleration": { "value": 0, "unit": "g", "statistic": "unknown", "semanticConfidence": "unconfirmed" },
+        "temperature": { "value": 34, "unit": "degC", "semanticConfidence": "inferred_from_datasheet" }
+      }, "qualityFlags": ["last_known"]
+    },
+    {
+      "schemaVersion": "2.0", "frameId": "00000000-0000-4000-8000-000000000002", "assetId": "forzy-motor-01", "sensorId": "s2",
+      "observedAt": "2026-08-12T15:00:01.000Z", "receivedAt": "2026-08-12T15:00:01.000Z", "timestampQuality": "assumed_from_retrieval",
+      "measurements": {
+        "vibrationVelocityRms": { "value": 0.05, "unit": "mm/s", "semanticConfidence": "inferred_from_datasheet" },
+        "vibrationAcceleration": { "value": 0, "unit": "g", "statistic": "unknown", "semanticConfidence": "unconfirmed" },
+        "temperature": { "value": 35, "unit": "degC", "semanticConfidence": "inferred_from_datasheet" }
+      }, "qualityFlags": ["last_known"]
+    }
+  ],
+  "history": [],
+  "assessment": null,
+  "integration": {
+    "sensors": {
+      "s1": { "lastAttemptAt": "2026-08-12T15:05:01.000Z", "lastSuccessAt": "2026-08-12T15:00:01.000Z", "latencyMs": null, "error": "upstream_unavailable", "sampleCount": 1 },
+      "s2": { "lastAttemptAt": "2026-08-12T15:05:01.000Z", "lastSuccessAt": "2026-08-12T15:00:01.000Z", "latencyMs": null, "error": "upstream_unavailable", "sampleCount": 1 }
+    }
+  },
+  "capabilities": { "liveUpdates": true, "replayControls": false, "copilot": false, "twin3d": true }
+}
