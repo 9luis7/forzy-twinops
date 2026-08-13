@@ -173,3 +173,36 @@ async def test_tick_does_not_write_outside_collection_window(tmp_path):
 
     assert state == "expected_idle"
     assert calls == 0
+
+
+@pytest.mark.asyncio
+async def test_gigantic_s1_integer_becomes_invalid_payload_without_blocking_s2(tmp_path):
+    settings = Settings("https://upstream.invalid", tmp_path / "telemetry.db")
+    repo = SQLiteTelemetryRepository(settings.database_path)
+    repo.initialize()
+
+    def handler(request: httpx.Request):
+        sensor = request.url.path[-2:]
+        return httpx.Response(
+            200,
+            json={
+                f"dados{sensor[-1]}": {
+                    "Velocidade": 10**400 if sensor == "s1" else 0.05,
+                    "Aceleração": 0.0,
+                    "Temperatura": 35,
+                }
+            },
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        result = await Collector(
+            UpstreamClient(
+                http, settings.upstream_base_url, 2.0, sleep=_completed_sleep
+            ),
+            repo,
+            settings.asset_tag,
+        ).collect_slot(datetime(2026, 8, 12, 15, 0, tzinfo=timezone.utc))
+
+    assert result == {"s1": "failed", "s2": "stored"}
+    assert repo.health("s1").error_code == "invalid_payload"
+    assert [item.sensor_id for item in repo.latest(settings.asset_tag)] == ["s2"]

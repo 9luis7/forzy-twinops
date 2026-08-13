@@ -3,6 +3,12 @@ from pathlib import Path
 import subprocess
 import sys
 
+import httpx
+import pytest
+
+from twinops.cli import create_collector
+from twinops.config import Settings
+from twinops.storage.sqlite_repository import SQLiteTelemetryRepository
 
 FIXTURE = Path("services/twinops/tests/fixtures/telemetry.csv")
 
@@ -28,3 +34,18 @@ def test_import_csv_command_reports_counts_and_reimport_is_duplicate(tmp_path):
     assert "samples_inserted=0" in second.stdout
     assert "duplicates=2" in second.stdout
     assert "invalid.example" not in first.stdout + first.stderr
+
+
+@pytest.mark.asyncio
+async def test_runtime_collector_uses_configured_timezone(tmp_path):
+    settings = Settings(
+        "https://invalid.example",
+        tmp_path / "telemetry.db",
+        timezone_name="UTC",
+    )
+    repository = SQLiteTelemetryRepository(settings.database_path)
+
+    async with httpx.AsyncClient() as http:
+        collector = create_collector(http, repository, settings)
+
+        assert collector.window.timezone_name == "UTC"

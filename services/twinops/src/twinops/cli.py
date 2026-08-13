@@ -12,9 +12,29 @@ import uvicorn
 from twinops.config import Settings
 from twinops.ingestion.collector import Collector
 from twinops.ingestion.csv_importer import import_csv
+from twinops.ingestion.schedule import CollectionWindow
 from twinops.ingestion.upstream import UpstreamClient
 from twinops.main import create_app
+from twinops.storage.repository import TelemetryRepository
 from twinops.storage.sqlite_repository import SQLiteTelemetryRepository
+
+
+def create_collector(
+    http: httpx.AsyncClient,
+    repository: TelemetryRepository,
+    settings: Settings,
+) -> Collector:
+    return Collector(
+        UpstreamClient(
+            http,
+            settings.upstream_base_url,
+            settings.request_timeout_seconds,
+        ),
+        repository,
+        settings.asset_tag,
+        window=CollectionWindow(settings.timezone_name),
+        poll_interval_seconds=settings.poll_interval_seconds,
+    )
 
 
 def main() -> None:
@@ -49,17 +69,7 @@ def main() -> None:
     async def collect() -> None:
         stop = asyncio.Event()
         async with httpx.AsyncClient() as http:
-            client = UpstreamClient(
-                http,
-                settings.upstream_base_url,
-                settings.request_timeout_seconds,
-            )
-            collector = Collector(
-                client,
-                repository,
-                settings.asset_tag,
-                poll_interval_seconds=settings.poll_interval_seconds,
-            )
+            collector = create_collector(http, repository, settings)
             await collector.run(
                 stop=stop,
                 interval_seconds=settings.poll_interval_seconds,

@@ -7,6 +7,8 @@ import math
 from typing import Literal, Mapping
 import uuid
 
+from pydantic import ValidationError
+
 from twinops.contracts.models import CanonicalSensorReading
 
 
@@ -19,13 +21,17 @@ class InvalidSensorPayload(ValueError):
 
 def _number(data: Mapping[str, object], key: str, sensor_id: str) -> float:
     value = data.get(key)
-    if (
-        isinstance(value, bool)
-        or not isinstance(value, (int, float))
-        or not math.isfinite(value)
-    ):
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise InvalidSensorPayload(sensor_id, f"{key} must be a finite number")
-    return float(value)
+    try:
+        number = float(value)
+    except (OverflowError, ValueError):
+        raise InvalidSensorPayload(
+            sensor_id, f"{key} must be a finite number"
+        ) from None
+    if not math.isfinite(number):
+        raise InvalidSensorPayload(sensor_id, f"{key} must be a finite number")
+    return number
 
 
 def _utc(value: datetime, field: str) -> str:
@@ -48,12 +54,16 @@ def adapt_live_payload(
         raise InvalidSensorPayload(sensor_id, f"{root} must be an object")
     scheduled = _utc(scheduled_at, "scheduled_at")
     received = _utc(received_at, "received_at")
+    velocity = _number(values, "Velocidade", sensor_id)
+    acceleration = _number(values, "Aceleração", sensor_id)
+    temperature = _number(values, "Temperatura", sensor_id)
     raw = dict(payload)
     canonical_raw = json.dumps(
         raw, ensure_ascii=False, sort_keys=True, separators=(",", ":")
     ).encode("utf-8")
-    return CanonicalSensorReading.model_validate(
-        {
+    try:
+        return CanonicalSensorReading.model_validate(
+            {
             "schemaVersion": "1.0",
             "readingId": str(uuid.uuid4()),
             "source": "forzy-live",
@@ -64,18 +74,18 @@ def adapt_live_payload(
             "receivedAt": received,
             "measurements": {
                 "vibrationVelocityRms": {
-                    "value": _number(values, "Velocidade", sensor_id),
+                    "value": velocity,
                     "unit": "mm/s",
                     "semanticConfidence": "inferred_from_datasheet",
                 },
                 "vibrationAcceleration": {
-                    "value": _number(values, "Aceleração", sensor_id),
+                    "value": acceleration,
                     "unit": "g",
                     "statistic": "unknown",
                     "semanticConfidence": "unconfirmed",
                 },
                 "temperature": {
-                    "value": _number(values, "Temperatura", sensor_id),
+                    "value": temperature,
                     "unit": "degC",
                     "semanticConfidence": "inferred_from_datasheet",
                 },
@@ -84,5 +94,9 @@ def adapt_live_payload(
             "payloadHash": f"sha256:{hashlib.sha256(canonical_raw).hexdigest()}",
             "raw": raw,
             "provenance": {"sourceSystem": "forzy-api", "ingestedAt": received},
-        }
-    )
+            }
+        )
+    except ValidationError as exc:
+        raise InvalidSensorPayload(
+            sensor_id, "contract validation failed"
+        ) from exc

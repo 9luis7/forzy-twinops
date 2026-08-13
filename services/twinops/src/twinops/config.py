@@ -4,6 +4,7 @@ from dataclasses import dataclass
 import math
 from pathlib import Path
 from typing import Mapping
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 
 @dataclass(frozen=True)
@@ -14,6 +15,14 @@ class Settings:
     poll_interval_seconds: float = 5.0
     request_timeout_seconds: float = 2.0
     timezone_name: str = "America/Sao_Paulo"
+
+    def __post_init__(self) -> None:
+        try:
+            ZoneInfo(self.timezone_name)
+        except (ZoneInfoNotFoundError, ValueError):
+            raise ValueError(
+                f"unknown TWINOPS_TIMEZONE: {self.timezone_name}"
+            ) from None
 
     @classmethod
     def from_env(cls, env: Mapping[str, str]) -> "Settings":

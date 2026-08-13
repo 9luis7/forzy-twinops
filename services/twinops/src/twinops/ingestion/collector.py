@@ -4,6 +4,7 @@ import asyncio
 from datetime import datetime, timezone
 import hashlib
 import json
+import time
 import uuid
 
 from twinops.ingestion.live_adapter import InvalidSensorPayload, adapt_live_payload
@@ -102,7 +103,20 @@ class Collector:
         await self.collect_slot(slot)
         return "collected"
 
-    async def run(self, *, stop, interval_seconds, clock, sleep) -> None:
+    async def run(
+        self,
+        *,
+        stop,
+        interval_seconds,
+        clock,
+        sleep,
+        monotonic=time.monotonic,
+    ) -> None:
+        deadline = monotonic()
         while not stop.is_set():
             await self.tick(clock())
-            await sleep(interval_seconds)
+            deadline += interval_seconds
+            now = monotonic()
+            while deadline < now:
+                deadline += interval_seconds
+            await sleep(max(0.0, deadline - now))

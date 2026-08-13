@@ -85,3 +85,48 @@ def test_settings_reject_non_finite_intervals(invalid):
                 "TWINOPS_POLL_INTERVAL_SECONDS": invalid,
             }
         )
+
+
+def test_rejects_gigantic_integer_as_invalid_sensor_payload():
+    with pytest.raises(InvalidSensorPayload, match="Velocidade"):
+        adapt_live_payload(
+            sensor_id="s1",
+            payload={
+                "dados1": {
+                    "Velocidade": 10**400,
+                    "Aceleração": 0.0,
+                    "Temperatura": 35,
+                }
+            },
+            scheduled_at=SLOT,
+            received_at=RECEIVED,
+            asset_tag="MTR-BMB-042",
+        )
+
+
+def test_contract_validation_errors_are_translated_to_invalid_sensor_payload():
+    with pytest.raises(InvalidSensorPayload, match="contract validation failed"):
+        adapt_live_payload(
+            sensor_id="s1",
+            payload={
+                "dados1": {
+                    "Velocidade": 0.04,
+                    "Aceleração": 0.0,
+                    "Temperatura": 35,
+                }
+            },
+            scheduled_at=SLOT,
+            received_at=RECEIVED,
+            asset_tag="",
+        )
+
+
+@pytest.mark.parametrize("timezone_name", ["Invalid/Nowhere", ""])
+def test_settings_validate_timezone_during_startup(timezone_name):
+    with pytest.raises(ValueError, match="TIMEZONE"):
+        Settings.from_env(
+            {
+                "TWINOPS_UPSTREAM_BASE_URL": "https://example.invalid",
+                "TWINOPS_TIMEZONE": timezone_name,
+            }
+        )

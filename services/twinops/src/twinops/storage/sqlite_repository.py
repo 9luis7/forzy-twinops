@@ -1,5 +1,6 @@
 """Append-only SQLite repository using parameterized SQL and canonical JSON."""
 
+from contextlib import contextmanager
 from datetime import datetime, timezone
 import json
 from pathlib import Path
@@ -71,13 +72,22 @@ class SQLiteTelemetryRepository:
         conn.row_factory = sqlite3.Row
         return conn
 
+    @contextmanager
+    def _connection(self):
+        conn = self._connect()
+        try:
+            with conn:
+                yield conn
+        finally:
+            conn.close()
+
     def initialize(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        with self._connect() as conn:
+        with self._connection() as conn:
             conn.executescript(SCHEMA_SQL)
 
     def append_raw(self, reading: RawReading) -> None:
-        with self._connect() as conn:
+        with self._connection() as conn:
             conn.execute(
                 "INSERT INTO raw_readings "
                 "(raw_id,sensor_id,scheduled_at,received_at,payload_hash,payload_json) "
@@ -121,7 +131,7 @@ class SQLiteTelemetryRepository:
             json.dumps(body["raw"], ensure_ascii=False, sort_keys=True),
             json.dumps(body, ensure_ascii=False, sort_keys=True),
         )
-        with self._connect() as conn:
+        with self._connection() as conn:
             cursor = conn.execute(
                 "INSERT INTO telemetry_samples VALUES "
                 "(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
@@ -131,7 +141,7 @@ class SQLiteTelemetryRepository:
             return cursor.rowcount == 1
 
     def record_attempt(self, attempt: CollectionAttempt) -> None:
-        with self._connect() as conn:
+        with self._connection() as conn:
             conn.execute(
                 "INSERT INTO collection_attempts "
                 "(sensor_id,scheduled_at,attempted_at,succeeded,latency_ms,error_code) "
@@ -154,18 +164,25 @@ class SQLiteTelemetryRepository:
         optional = (
             (query.sensor_id, "sensor_id = ?"),
             (query.source, "source = ?"),
-            (_timestamp(query.from_at) if query.from_at else None, "received_at >= ?"),
-            (_timestamp(query.to_at) if query.to_at else None, "received_at <= ?"),
+            (
+                _timestamp(query.from_at) if query.from_at else None,
+                "COALESCE(observed_at, received_at) >= ?",
+            ),
+            (
+                _timestamp(query.to_at) if query.to_at else None,
+                "COALESCE(observed_at, received_at) <= ?",
+            ),
         )
         for value, clause in optional:
             if value is not None:
                 where.append(clause)
                 params.append(value)
-        with self._connect() as conn:
+        with self._connection() as conn:
             rows = conn.execute(
                 "SELECT canonical_json FROM telemetry_samples WHERE "
                 + " AND ".join(where)
-                + " ORDER BY received_at DESC LIMIT ?",
+                + " ORDER BY COALESCE(observed_at, received_at) DESC, "
+                "received_at DESC, reading_id DESC LIMIT ?",
                 (*params, query.limit),
             ).fetchall()
         return [
@@ -173,12 +190,15 @@ class SQLiteTelemetryRepository:
         ]
 
     def latest(self, asset_tag: str) -> list[CanonicalSensorReading]:
-        with self._connect() as conn:
+        with self._connection() as conn:
             rows = conn.execute(
-                "SELECT canonical_json FROM telemetry_samples t WHERE asset_tag=? "
-                "AND received_at=(SELECT MAX(received_at) FROM telemetry_samples "
-                "WHERE asset_tag=t.asset_tag AND sensor_id=t.sensor_id) "
-                "ORDER BY sensor_id",
+                "SELECT canonical_json FROM ("
+                "SELECT canonical_json, sensor_id, ROW_NUMBER() OVER ("
+                "PARTITION BY sensor_id ORDER BY "
+                "COALESCE(observed_at, received_at) DESC, "
+                "received_at DESC, reading_id DESC) AS position "
+                "FROM telemetry_samples WHERE asset_tag=?"
+                ") WHERE position=1 ORDER BY sensor_id",
                 (asset_tag,),
             ).fetchall()
         return [
@@ -186,7 +206,7 @@ class SQLiteTelemetryRepository:
         ]
 
     def health(self, sensor_id: str) -> SensorHealth | None:
-        with self._connect() as conn:
+        with self._connection() as conn:
             latest = conn.execute(
                 "SELECT attempted_at, latency_ms, error_code FROM collection_attempts "
                 "WHERE sensor_id=? ORDER BY attempted_at DESC, attempt_id DESC LIMIT 1",
