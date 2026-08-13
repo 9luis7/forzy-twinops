@@ -115,6 +115,16 @@ como fallback explícito. O comando `python -m twinops.ml.real_history` imprime
 os hashes de manifesto e modelo que devem ser copiados para as variáveis
 `TWINOPS_ML_*`; o CSV industrial bruto permanece ignorado pelo Git.
 
+O gate ponta a ponta cria uma base temporária a partir do CSV original, inicia
+API e frontend locais e navega pelo modo canônico no Chrome:
+
+```powershell
+npm.cmd run test:e2e
+```
+
+Ele espera o arquivo `docs/History_32026-05-19T11-46-10-920.csv` localmente e
+não acessa os endpoints externos da Forzy.
+
 ## As 4 cenas da demo
 
 1. **Visão da Planta** — KPIs + mapa macro das áreas (A Produção · B Utilidades · C Manutenção · D Expedição). Partimos do macro para o micro.

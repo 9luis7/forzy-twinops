@@ -215,6 +215,49 @@ e modelo
 `sha256:68d00121edbf8c4c01cf7cd231cd57c4c8eff25661135494e3c791ca78e562ba`.
 Em deploy, esses valores devem ser fixados no ambiente confiável.
 
+## EXP-008: fluxo ponta a ponta com o histórico real
+
+**Status:** concluído em 13 de agosto de 2026.
+
+**Pergunta:** o histórico original consegue atravessar importação, persistência,
+scoring, API canônica e interface live sem recorrer aos dados sintéticos do
+replay?
+
+**Hipótese:** uma base SQLite descartável construída a partir do CSV original
+deve produzir um snapshot canônico S1/S2 que a aplicação consiga apresentar no
+perfil do motor, preservando as limitações do modelo.
+
+**Dados e versões:** `docs/History_32026-05-19T11-46-10-920.csv`, SHA-256
+`f09a6613bf6ba3416555a15de6b381bd842474f5f3f33c20660416c7164f0be4`;
+artefatos `robust-baseline` 1.0.1 com os mesmos anchors do EXP-007; Chrome do
+sistema controlado por Playwright 1.47.2.
+
+**Procedimento:** apagar a base temporária, importar o arquivo original pelo
+adaptador Forzy, carregar o artefato de ML com verificação de hashes, iniciar a
+API e o Vite localmente, aguardar o snapshot usado pelo próprio navegador e
+navegar até `MTR-BMB-042`. Nenhum endpoint externo é chamado e nenhuma base de
+demonstração é alterada.
+
+**Resultado:** 7.183 linhas foram convertidas em 14.366 amostras canônicas, sem
+duplicatas de identidade. O teste confirmou 7.183 amostras em S1 e 7.183 em S2,
+canais históricos, score com semântica
+`relative_to_historical_baseline_not_failure_probability`, estado
+`Indeterminado`, gauges S1/S2 e ausência de traçado sintético no modo canônico.
+Três execuções limpas completas levaram 121,9 s, 107,6 s e 98,9 s; as etapas
+de navegador levaram 15,8 s, 17,4 s e 12,2 s. A maior parte do tempo está na
+importação SQLite linha a linha, não na inferência isolada.
+
+**Falha encontrada e corrigida:** o polling iniciava novas avaliações a cada
+cinco segundos mesmo quando a anterior ainda estava em andamento. Em cargas
+lentas isso cancelava respostas úteis e duplicava trabalho. Agora o próximo
+ciclo só é agendado depois que o atual termina, e uma assinatura cancelada no
+mesmo turno não inicia requisição.
+
+**Conclusão:** a hipótese foi aceita para o demonstrador. O fluxo técnico real
+está integrado de ponta a ponta, mas o resultado continua sendo um score de
+desvio relativo ao histórico, não previsão ou probabilidade de falha. A
+importação deve ser otimizada antes de ser tratada como rotina operacional.
+
 ## Template de novo experimento
 
 ### EXP-XXX: título

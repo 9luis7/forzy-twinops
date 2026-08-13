@@ -93,7 +93,48 @@ it("stops polling when the subscription is cancelled", async () => {
   expect(fetchImpl).toHaveBeenCalledTimes(1);
 });
 
-it("aborts an in-flight gateway request when the subscription is cancelled", () => {
+it("waits for a slow snapshot before scheduling the next poll", async () => {
+  vi.useFakeTimers();
+  let resolveRequest;
+  const fetchImpl = vi.fn(
+    () =>
+      new Promise((resolve) => {
+        resolveRequest = () => resolve({ ok: true, json: async () => snapshot });
+      })
+  );
+  const source = createGatewayTwinDataSource({ fetchImpl, pollMs: 5000 });
+  const listener = vi.fn();
+
+  const unsubscribe = source.subscribe("MTR-BMB-042", listener);
+  await vi.advanceTimersByTimeAsync(15_000);
+
+  expect(fetchImpl).toHaveBeenCalledTimes(1);
+  expect(fetchImpl.mock.calls[0][1].signal.aborted).toBe(false);
+
+  resolveRequest();
+  await vi.advanceTimersByTimeAsync(0);
+  expect(listener).toHaveBeenCalledWith(null, snapshot);
+
+  await vi.advanceTimersByTimeAsync(4_999);
+  expect(fetchImpl).toHaveBeenCalledTimes(1);
+  await vi.advanceTimersByTimeAsync(1);
+  expect(fetchImpl).toHaveBeenCalledTimes(2);
+  unsubscribe();
+});
+
+it("does not start a request for a subscription cancelled in the same turn", () => {
+  vi.useFakeTimers();
+  const fetchImpl = vi.fn();
+  const source = createGatewayTwinDataSource({ fetchImpl });
+
+  const unsubscribe = source.subscribe("MTR-BMB-042", vi.fn());
+  unsubscribe();
+
+  expect(fetchImpl).not.toHaveBeenCalled();
+});
+
+it("aborts an in-flight gateway request when the subscription is cancelled", async () => {
+  vi.useFakeTimers();
   let requestSignal;
   const fetchImpl = vi.fn((_, { signal }) => {
     requestSignal = signal;
@@ -102,6 +143,7 @@ it("aborts an in-flight gateway request when the subscription is cancelled", () 
   const source = createGatewayTwinDataSource({ fetchImpl });
 
   const unsubscribe = source.subscribe("MTR-BMB-042", vi.fn());
+  await vi.advanceTimersByTimeAsync(0);
   unsubscribe();
 
   expect(requestSignal.aborted).toBe(true);

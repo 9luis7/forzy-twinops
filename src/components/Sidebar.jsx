@@ -13,6 +13,10 @@ const ITEMS = [
 
 export default function Sidebar({ view, onNavigate }) {
   const twin = useLiveTwin();
+  const isCanonical = twin.dataMode === "live";
+  const hasLiveTelemetry = twin.snapshot?.channels?.some(
+    (channel) => channel.sourceMode === "live"
+  );
   // Badge de alertas críticos reflete o estado ao vivo (some quando tudo normaliza).
   const criticalCount = twin.alertsList().filter((a) => a.severity === "critico").length;
   return (
@@ -25,10 +29,25 @@ export default function Sidebar({ view, onNavigate }) {
         </div>
       </div>
 
-      <div className="sidebar-status" title="Telemetria recebendo dados ao vivo">
+      <div
+        className="sidebar-status"
+        title={
+          isCanonical
+            ? "Dados recebidos pela API canônica"
+            : "Dados locais de demonstração"
+        }
+      >
         <span className="led ok pulse" />
-        <span>Sistema ao vivo</span>
-        <span className="sidebar-status-sub mono">SCADA · OK</span>
+        <span>
+          {isCanonical
+            ? hasLiveTelemetry
+              ? "Telemetria canônica"
+              : "Histórico conectado"
+            : "Sistema demonstrativo"}
+        </span>
+        <span className="sidebar-status-sub mono">
+          {isCanonical ? (hasLiveTelemetry ? "API · LIVE" : "API · CSV") : "REPLAY"}
+        </span>
       </div>
 
       <nav className="sidebar-nav">
@@ -49,7 +68,7 @@ export default function Sidebar({ view, onNavigate }) {
       </nav>
 
       <div className="sidebar-foot">
-        Protótipo navegável · dados sintéticos
+        {isCanonical ? "Dados canônicos S1/S2" : "Protótipo navegável · dados sintéticos"}
         <br />
         Challenge FIAP × Forzy
       </div>

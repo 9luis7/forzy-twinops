@@ -18,6 +18,7 @@ function AssetCard({ asset, nav }) {
   const r = twin.readingOf(asset.tag);
   const risk = twin.riskOf(asset.tag);
   const status = twin.statusOf(asset.tag);
+  const isCanonical = r?.canonical === true;
   const ledCls = ["alerta", "critico"].includes(status) ? `${status} pulse` : status;
   const tempWarn = r?.temperature >= 90 ? "var(--critico)" : r?.temperature >= 70 ? "var(--alerta)" : "var(--texto)";
   const vibWarn = r?.vibration >= 7.5 ? "var(--critico)" : r?.vibration >= 4.5 ? "var(--alerta)" : "var(--texto)";
@@ -41,7 +42,7 @@ function AssetCard({ asset, nav }) {
       </div>
       <div className="area-meta ascard-meta" style={{ marginTop: 12 }}>
         <div>Temperatura<b className="readout" style={{ fontSize: 16, color: tempWarn }}>{r?.temperature ?? "—"} <small>°C</small></b></div>
-        <div>Vibração<b className="readout" style={{ fontSize: 16, color: vibWarn }}>{r?.vibration ?? "—"} <small>m/s²</small></b></div>
+        <div>{isCanonical ? "Velocidade RMS" : "Vibração"}<b className="readout" style={{ fontSize: 16, color: vibWarn }}>{r?.vibration ?? "—"} <small>{isCanonical ? "mm/s" : "m/s²"}</small></b></div>
         <div>Risco<b style={{ fontSize: 14, fontWeight: 700 }}><RiskTag level={risk.level} /></b></div>
       </div>
     </button>

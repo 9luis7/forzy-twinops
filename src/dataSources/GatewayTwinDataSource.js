@@ -52,25 +52,28 @@ export function createGatewayTwinDataSource({ baseUrl = "", fetchImpl = fetch, p
 
       let active = true;
       let controller = null;
+      let timer = null;
       const poll = async () => {
-        controller?.abort();
-        controller = new AbortController();
+        const requestController = new AbortController();
+        controller = requestController;
 
         try {
-          const value = await requestSnapshot(assetTag, controller.signal);
+          const value = await requestSnapshot(assetTag, requestController.signal);
           if (active) listener(null, value);
         } catch (error) {
           if (active && error?.name !== "AbortError") listener(error);
+        } finally {
+          if (controller === requestController) controller = null;
+          if (active) timer = setTimeout(poll, pollMs);
         }
       };
 
-      poll();
-      const timer = setInterval(poll, pollMs);
+      timer = setTimeout(poll, 0);
 
       return () => {
         if (!active) return;
         active = false;
-        clearInterval(timer);
+        if (timer !== null) clearTimeout(timer);
         controller?.abort();
       };
     },
