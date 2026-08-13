@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 import Ajv from "ajv";
+import addFormats from "ajv-formats";
 import { describe, expect, it } from "vitest";
 
 const json = (path) => JSON.parse(readFileSync(new URL(path, import.meta.url), "utf8"));
@@ -10,6 +11,7 @@ const validators = () => {
     json("../../contracts/v2/sensor-telemetry-frame.schema.json"),
     json("../../contracts/v2/asset-condition-assessment.schema.json"),
   ] });
+  addFormats(ajv);
 
   return {
     canonical: ajv.getSchema("forzy://contracts/v2/canonical-sensor-reading"),
@@ -31,5 +33,13 @@ describe("contracts/v2", () => {
 
     expect(canonical(json("../../contracts/v2/fixtures/canonical-live-s1.valid.json"))).toBe(true);
     expect(canonical(json("../../contracts/v2/fixtures/canonical-source-time.invalid.json"))).toBe(false);
+  });
+
+  it("rejects an impossible calendar timestamp", () => {
+    const { canonical } = validators();
+    const reading = json("../../contracts/v2/fixtures/canonical-live-s1.valid.json");
+
+    reading.receivedAt = "2026-99-99T29:77:88Z";
+    expect(canonical(reading)).toBe(false);
   });
 });
