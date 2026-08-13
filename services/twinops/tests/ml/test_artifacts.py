@@ -5,6 +5,7 @@ import pytest
 
 from twinops.ml.artifacts import (
     ArtifactIntegrityError,
+    compute_file_hash,
     load_artifact_bundle,
     save_artifact_bundle,
 )
@@ -35,7 +36,11 @@ def test_artifact_bundle_round_trips_with_verified_hashes(tmp_path):
     report = {"status": "fixture_validation", "cycleResults": []}
 
     manifest = save_artifact_bundle(tmp_path, pipeline, config, report)
-    loaded = load_artifact_bundle(tmp_path)
+    loaded = load_artifact_bundle(
+        tmp_path,
+        expected_manifest_hash=compute_file_hash(tmp_path / "feature-manifest.json"),
+        expected_model_hash=manifest["files"]["pipeline.joblib"],
+    )
 
     assert loaded.config == config
     assert loaded.report == report
@@ -63,5 +68,46 @@ def test_modified_artifact_is_rejected_before_deserialization(tmp_path):
     (tmp_path / "pipeline-config.json").write_text("{}", encoding="utf-8")
 
     with pytest.raises(ArtifactIntegrityError, match="pipeline-config.json"):
-        load_artifact_bundle(tmp_path)
+        load_artifact_bundle(
+            tmp_path,
+            expected_manifest_hash=compute_file_hash(tmp_path / "feature-manifest.json"),
+            expected_model_hash=compute_file_hash(tmp_path / "pipeline.joblib"),
+        )
 
+
+def test_replaced_manifest_and_pickle_are_rejected_before_deserialization(
+    tmp_path, monkeypatch
+):
+    manifest = save_artifact_bundle(
+        tmp_path,
+        _fitted_pipeline(),
+        {"dataset": {"kind": "test_fixture"}},
+        {"status": "fixture_validation"},
+    )
+    trusted_manifest_hash = compute_file_hash(tmp_path / "feature-manifest.json")
+    trusted_model_hash = manifest["files"]["pipeline.joblib"]
+    (tmp_path / "pipeline.joblib").write_bytes(b"attacker pickle")
+    replaced = dict(manifest)
+    replaced["files"] = dict(manifest["files"])
+    replaced["files"]["pipeline.joblib"] = compute_file_hash(
+        tmp_path / "pipeline.joblib"
+    )
+    (tmp_path / "feature-manifest.json").write_text(
+        __import__("json").dumps(replaced), encoding="utf-8"
+    )
+    deserialized = False
+
+    def forbidden_load(*args, **kwargs):
+        nonlocal deserialized
+        deserialized = True
+        raise AssertionError("joblib.load must not run before external anchors pass")
+
+    monkeypatch.setattr("twinops.ml.artifacts.joblib.load", forbidden_load)
+
+    with pytest.raises(ArtifactIntegrityError, match="trusted manifest"):
+        load_artifact_bundle(
+            tmp_path,
+            expected_manifest_hash=trusted_manifest_hash,
+            expected_model_hash=trusted_model_hash,
+        )
+    assert not deserialized

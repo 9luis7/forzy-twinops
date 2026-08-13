@@ -7,7 +7,7 @@ from dataclasses import asdict, dataclass
 from hashlib import sha256
 from pathlib import Path
 from time import perf_counter
-from typing import Iterable, Sequence
+from typing import Sequence
 
 import numpy as np
 import pandas as pd
@@ -37,9 +37,10 @@ class BacktestReport:
 
 
 def build_walk_forward_folds(
-    cycles: Iterable[int], *, holdout_count: int = 2
+    frame: pd.DataFrame, *, holdout_count: int = 2
 ) -> list[WalkForwardFold]:
-    cycle_ids = tuple(sorted({int(value) for value in cycles}))
+    timeline = _cycle_timeline(frame)
+    cycle_ids = tuple(int(value) for value in timeline.index)
     if holdout_count < 1:
         raise ValueError("holdout_count must be positive")
     if len(cycle_ids) < holdout_count + 3:
@@ -75,6 +76,7 @@ def run_backtest(
         raise ValueError(f"backtest frame is missing columns: {sorted(missing)}")
     if not folds:
         raise ValueError("at least one walk-forward fold is required")
+    _cycle_timeline(frame)
 
     cycle_results: list[dict[str, object]] = []
     candidate_events: list[dict[str, object]] = []
@@ -90,6 +92,12 @@ def run_backtest(
             raise ValueError("walk-forward training cycles must precede test cycles")
         train = frame.loc[frame["cycle_id"].isin(fold.train_cycle_ids)].copy()
         test = frame.loc[frame["cycle_id"].isin(fold.test_cycle_ids)].copy()
+        if train.empty or test.empty:
+            raise ValueError("fold references a cycle absent from the feature frame")
+        if train["event_at"].max() >= test["event_at"].min():
+            raise ValueError(
+                "training event_at values must be strictly before test event_at values"
+            )
         model = RobustBaseline(pipeline.config).fit(train)
         started = perf_counter()
         scored = model.score(test)
@@ -170,7 +178,7 @@ def run_backtest_csv(
             {"True": True, "False": False, "true": True, "false": False}
         )
     folds = build_walk_forward_folds(
-        frame["cycle_id"].unique(), holdout_count=holdout_count
+        frame, holdout_count=holdout_count
     )
     baseline_template = RobustBaseline()
     report = run_backtest(frame, baseline_template, folds)
@@ -208,6 +216,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--holdout-count", type=int, default=2)
     args = parser.parse_args(argv)
     run_backtest_csv(args.input, args.output, holdout_count=args.holdout_count)
+    from twinops.ml.artifacts import compute_file_hash
+
+    print(
+        "Pin these hashes outside the artifact directory before loading:\n"
+        f"expected_manifest_hash={compute_file_hash(args.output / 'feature-manifest.json')}\n"
+        f"expected_model_hash={compute_file_hash(args.output / 'pipeline.joblib')}"
+    )
     return 0
 
 
@@ -216,13 +231,60 @@ def _episode_count(group: pd.DataFrame, status: str) -> int:
 
 
 def _steady_alert_seconds(group: pd.DataFrame) -> float:
-    steady = group.loc[
-        group["operating_state"].eq("steady") & group["status"].eq("alert")
-    ].sort_values("event_at")
-    if len(steady) < 2:
+    ordered = group.sort_values("event_at").reset_index(drop=True)
+    if len(ordered) < 2:
         return 0.0
-    times = pd.to_datetime(steady["event_at"], utc=True).array.asi8 / 1_000_000_000
-    return float(np.diff(times).sum())
+    total = 0.0
+    for index in range(1, len(ordered)):
+        previous = ordered.iloc[index - 1]
+        current = ordered.iloc[index]
+        if not (
+            previous.operating_state == "steady"
+            and current.operating_state == "steady"
+            and previous.status == "alert"
+            and current.status == "alert"
+        ):
+            continue
+        flags = current.get("quality_flags", ())
+        if isinstance(flags, str):
+            flags = (flags,)
+        if any("gap" in str(flag).lower() for flag in flags):
+            continue
+        cadence = current.get("cadence_seconds")
+        if cadence is None or not np.isfinite(float(cadence)) or float(cadence) <= 0:
+            continue
+        actual_delta = (
+            pd.Timestamp(current.event_at) - pd.Timestamp(previous.event_at)
+        ).total_seconds()
+        cadence = float(cadence)
+        if 0.5 * cadence <= actual_delta <= 1.5 * cadence:
+            total += cadence
+    return total
+
+
+def _cycle_timeline(frame: pd.DataFrame) -> pd.DataFrame:
+    required = {"cycle_id", "event_at"}
+    missing = required.difference(frame.columns)
+    if missing:
+        raise ValueError(f"cycle frame is missing columns: {sorted(missing)}")
+    if frame.empty:
+        raise ValueError("cycle frame cannot be empty")
+    normalized = frame.loc[:, ["cycle_id", "event_at"]].copy()
+    normalized["event_at"] = pd.to_datetime(normalized["event_at"], utc=True)
+    if normalized["event_at"].isna().any():
+        raise ValueError("cycle event_at values must be valid timestamps")
+    timeline = normalized.groupby("cycle_id")["event_at"].agg(start="min", end="max")
+    timeline.index = timeline.index.map(int)
+    timeline = timeline.sort_values(["start", "end"], kind="stable")
+    chronological_ids = tuple(int(value) for value in timeline.index)
+    if chronological_ids != tuple(sorted(chronological_ids)):
+        raise ValueError("cycle IDs contradict event_at chronology")
+    previous_end: pd.Timestamp | None = None
+    for row in timeline.itertuples():
+        if previous_end is not None and previous_end >= row.start:
+            raise ValueError("cycle event_at ranges overlap or are not strictly chronological")
+        previous_end = row.end
+    return timeline
 
 
 if __name__ == "__main__":

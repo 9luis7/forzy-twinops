@@ -77,11 +77,14 @@ class AssessmentScorer:
         now = now.astimezone(timezone.utc)
 
         ordered = sorted(samples, key=_event_datetime)
+        sensor_ids = {sample.sensor_id for sample in ordered}
+        if len(sensor_ids) != 1:
+            raise ValueError(
+                "AssessmentScorer.assess requires readings from a single sensor"
+            )
         identity_flags: list[str] = []
         if len({sample.asset_tag for sample in ordered}) != 1:
             identity_flags.append("mixed_asset_tags")
-        if len({sample.sensor_id for sample in ordered}) != 1:
-            identity_flags.append("mixed_sensor_ids")
         relevant = _relevant_tail(
             ordered,
             seconds=max(
@@ -215,11 +218,12 @@ class AssessmentScorer:
             "temperature_deviation": "degC",
         }
         evidence: list[AssessmentEvidence] = []
+        sensor_id = str(row.sensor_id)
         for feature in self.baseline.config.feature_columns:
             value = float(row[feature])
             if not np.isfinite(value):
                 continue
-            baseline = self.baseline.centers_[feature]
+            baseline = self.baseline.centers_[sensor_id][feature]
             deviation = value - baseline
             direction = "stable" if abs(deviation) <= 1e-12 else ("up" if deviation > 0 else "down")
             evidence.append(
@@ -253,4 +257,3 @@ def _timestamp(value: datetime) -> str:
     return value.astimezone(timezone.utc).isoformat(timespec="milliseconds").replace(
         "+00:00", "Z"
     )
-

@@ -42,12 +42,12 @@ class RobustBaseline:
     """Median/MAD baseline fitted only from valid steady-regime rows."""
 
     model_name = "robust-baseline"
-    model_version = "1.0.0"
+    model_version = "1.0.1"
 
     def __init__(self, config: BaselineConfig | None = None) -> None:
         self.config = config or BaselineConfig()
-        self.centers_: dict[str, float] = {}
-        self.scales_: dict[str, float] = {}
+        self.centers_: dict[str, dict[str, float]] = {}
+        self.scales_: dict[str, dict[str, float]] = {}
         self.trained_until_: pd.Timestamp | None = None
 
     @property
@@ -68,21 +68,28 @@ class RobustBaseline:
         if calibration.empty:
             raise ValueError("baseline calibration requires valid steady rows")
 
-        centers: dict[str, float] = {}
-        scales: dict[str, float] = {}
-        for column in self.config.feature_columns:
-            values = calibration[column].to_numpy(dtype=float)
-            values = values[np.isfinite(values)]
-            if not len(values):
-                raise ValueError(f"baseline feature has no finite steady values: {column}")
-            center = float(np.median(values))
-            mad = float(np.median(np.abs(values - center)))
-            centers[column] = center
-            scales[column] = max(
-                1.4826 * mad,
-                abs(center) * 0.01,
-                self.config.minimum_scale,
-            )
+        centers: dict[str, dict[str, float]] = {}
+        scales: dict[str, dict[str, float]] = {}
+        for sensor_id, sensor_rows in calibration.groupby("sensor_id", sort=True):
+            sensor_centers: dict[str, float] = {}
+            sensor_scales: dict[str, float] = {}
+            for column in self.config.feature_columns:
+                values = sensor_rows[column].to_numpy(dtype=float)
+                values = values[np.isfinite(values)]
+                if not len(values):
+                    raise ValueError(
+                        f"baseline feature has no finite steady values for {sensor_id}: {column}"
+                    )
+                center = float(np.median(values))
+                mad = float(np.median(np.abs(values - center)))
+                sensor_centers[column] = center
+                sensor_scales[column] = max(
+                    1.4826 * mad,
+                    abs(center) * 0.01,
+                    self.config.minimum_scale,
+                )
+            centers[str(sensor_id)] = sensor_centers
+            scales[str(sensor_id)] = sensor_scales
         self.centers_ = centers
         self.scales_ = scales
         self.trained_until_ = pd.to_datetime(calibration["event_at"], utc=True).max()
@@ -93,13 +100,26 @@ class RobustBaseline:
             raise RuntimeError("baseline must be fitted before scoring")
         self._require_columns(features)
         result = features.copy()
-        signed_z = np.column_stack(
-            [
-                (result[column].to_numpy(dtype=float) - self.centers_[column])
-                / self.scales_[column]
-                for column in self.config.feature_columns
-            ]
-        )
+        requested_sensors = {str(value) for value in result["sensor_id"].unique()}
+        unknown_sensors = requested_sensors.difference(self.centers_)
+        if unknown_sensors:
+            raise ValueError(
+                f"no fitted sensor baseline for: {sorted(unknown_sensors)}"
+            )
+        signed_z = np.zeros((len(result), len(self.config.feature_columns)), dtype=float)
+        for sensor_id, positions in result.groupby("sensor_id", sort=False).indices.items():
+            sensor_key = str(sensor_id)
+            position_array = np.asarray(positions, dtype=int)
+            signed_z[position_array] = np.column_stack(
+                [
+                    (
+                        result.iloc[position_array][column].to_numpy(dtype=float)
+                        - self.centers_[sensor_key][column]
+                    )
+                    / self.scales_[sensor_key][column]
+                    for column in self.config.feature_columns
+                ]
+            )
         signed_z[~np.isfinite(signed_z)] = 0.0
         anomaly = np.clip(
             np.max(np.abs(signed_z), axis=1)
@@ -176,4 +196,3 @@ class RobustBaseline:
         missing = required.difference(features.columns)
         if missing:
             raise ValueError(f"feature frame is missing columns: {sorted(missing)}")
-

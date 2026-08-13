@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass, is_dataclass
 from hashlib import sha256
+from io import BytesIO
 import json
 from pathlib import Path
 from typing import Any
@@ -95,12 +96,24 @@ def save_artifact_bundle(
     return manifest
 
 
-def load_artifact_bundle(path: str | Path) -> ArtifactBundle:
-    """Verify every declared file before deserializing the pipeline."""
+def load_artifact_bundle(
+    path: str | Path,
+    *,
+    expected_manifest_hash: str,
+    expected_model_hash: str,
+) -> ArtifactBundle:
+    """Verify caller-pinned trust anchors before any model deserialization."""
 
     source = Path(path)
     manifest_path = source / "feature-manifest.json"
-    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    pipeline_path = source / "pipeline.joblib"
+    manifest_bytes = manifest_path.read_bytes()
+    model_bytes = pipeline_path.read_bytes()
+    if _bytes_hash(manifest_bytes) != expected_manifest_hash:
+        raise ArtifactIntegrityError("artifact does not match trusted manifest hash")
+    if _bytes_hash(model_bytes) != expected_model_hash:
+        raise ArtifactIntegrityError("artifact does not match trusted model hash")
+    manifest = json.loads(manifest_bytes.decode("utf-8"))
     if manifest.get("schemaVersion") != "1.0":
         raise ArtifactIntegrityError("unsupported feature manifest schema version")
     declared = manifest.get("files")
@@ -113,7 +126,9 @@ def load_artifact_bundle(path: str | Path) -> ArtifactBundle:
         if not file_path.is_file() or _file_hash(file_path) != expected_hash:
             raise ArtifactIntegrityError(f"artifact hash mismatch: {filename}")
 
-    pipeline = joblib.load(source / "pipeline.joblib")
+    if declared.get("pipeline.joblib") != expected_model_hash:
+        raise ArtifactIntegrityError("manifest model hash differs from trusted model hash")
+    pipeline = joblib.load(BytesIO(model_bytes))
     if not isinstance(pipeline, RobustBaseline):
         raise ArtifactIntegrityError("pipeline artifact has an unexpected type")
     config = json.loads((source / "pipeline-config.json").read_text(encoding="utf-8"))
@@ -145,8 +160,19 @@ def _write_json(path: Path, payload: dict[str, Any]) -> None:
     )
 
 
+def compute_file_hash(path: str | Path) -> str:
+    """Return the SHA-256 value that a trusted caller can pin externally."""
+
+    path = Path(path)
+    return _bytes_hash(path.read_bytes())
+
+
+def _bytes_hash(payload: bytes) -> str:
+    return f"sha256:{sha256(payload).hexdigest()}"
+
+
 def _file_hash(path: Path) -> str:
-    return f"sha256:{sha256(path.read_bytes()).hexdigest()}"
+    return compute_file_hash(path)
 
 
 def _model_card(
@@ -178,5 +204,11 @@ baseline. Scores are not failure probabilities and do not diagnose components.
 - Operating phases are estimated from vibration velocity RMS.
 - No deep learning, RUL, automatic online learning, or failure classification.
 - Human validation remains required before operational action.
-"""
 
+## Artifact integrity boundary
+
+The bundle is not self-authenticating. Before `joblib.load`, callers must pass
+both the manifest and model SHA-256 values pinned in a trusted deployment
+configuration outside the artifact directory. Hashes declared only by the
+co-located manifest are consistency checks, not authentication.
+"""

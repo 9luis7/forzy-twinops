@@ -1,4 +1,4 @@
-# Model card - robust-baseline 1.0.0
+# Model card - robust-baseline 1.0.1
 
 ## Intended use
 
@@ -19,3 +19,10 @@ baseline. Scores are not failure probabilities and do not diagnose components.
 - Operating phases are estimated from vibration velocity RMS.
 - No deep learning, RUL, automatic online learning, or failure classification.
 - Human validation remains required before operational action.
+
+## Artifact integrity boundary
+
+The bundle is not self-authenticating. Before `joblib.load`, callers must pass
+both the manifest and model SHA-256 values pinned in a trusted deployment
+configuration outside the artifact directory. Hashes declared only by the
+co-located manifest are consistency checks, not authentication.

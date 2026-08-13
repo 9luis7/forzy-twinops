@@ -58,7 +58,7 @@ def test_assessment_validates_shared_contract_and_versions_evidence(sample_facto
     )
 
     assert isinstance(result, AssetConditionAssessment)
-    assert result.model.version == "1.0.0"
+    assert result.model.version == "1.0.1"
     assert result.model.config_hash.startswith("sha256:")
     assert result.assessment.score_semantics == "relative_to_historical_baseline_not_failure_probability"
     assert result.human_validation_required
@@ -95,6 +95,20 @@ def test_stale_source_never_falls_back_to_mechanical_alert(sample_factory):
     assert result.assessment.status == "insufficient_data"
 
 
+def test_public_single_assessment_boundary_rejects_multisensor_input(sample_factory):
+    scorer = _scorer(sample_factory)
+    samples = [
+        sample_factory(second=0, sensor_id="s1"),
+        sample_factory(second=1, sensor_id="s2"),
+        sample_factory(second=2, sensor_id="s1"),
+    ]
+
+    with pytest.raises(ValueError, match="single sensor"):
+        scorer.assess(
+            samples, now=datetime(2026, 8, 12, 13, 0, 3, tzinfo=timezone.utc)
+        )
+
+
 @pytest.mark.performance
 def test_features_and_inference_p95_is_at_most_100_ms(sample_factory):
     scorer = _scorer(sample_factory)
@@ -112,4 +126,3 @@ def test_features_and_inference_p95_is_at_most_100_ms(sample_factory):
     p95 = sorted(durations)[-1]
     print(f"features+inference ms p50={sorted(durations)[3]:.2f} p95={p95:.2f} p99={p95:.2f}")
     assert p95 <= 100
-

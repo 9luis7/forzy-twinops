@@ -70,6 +70,22 @@ medição local com fixture de 1.000 amostras ficou abaixo do gate de 100 ms, ma
 não representa resultado por ciclo do CSV real. O challenger nunca é promovido
 automaticamente.
 
+**Correções de revisão independente:** os folds agora são derivados dos
+intervalos `event_at` de cada ciclo e rejeitam IDs fora da ordem cronológica,
+sobreposição e qualquer treino cujo último evento alcance o primeiro evento de
+teste. Baselines são ajustados separadamente por sensor; a fronteira de uma
+única avaliação rejeita entrada multissensor. Recorrência A→B→A é preservada e
+somente repetição consecutiva é marcada como duplicata. Tempo steady em alerta
+soma apenas pares consecutivos de alerta, sem atravessar normal, gap ou quebra
+de cadência.
+
+**Segurança dos artefatos:** o bundle não se autentica sozinho. A carga do
+`joblib` exige os hashes esperados do manifesto e do modelo, previamente
+ancorados pelo chamador em configuração confiável fora do diretório do bundle.
+Hashes declarados apenas pelo sidecar co-local servem para consistência, não
+para autenticação. Os hashes do artefato de demonstração devem ser capturados
+da saída do comando de build e fixados pelo ambiente de execução.
+
 **Critério de honestidade:** enquanto não houver falhas confirmadas, o sistema
 deve comunicar risco de anomalia ou deterioração, não previsão confirmada de
 falha.

@@ -3,6 +3,8 @@ from datetime import datetime, timedelta, timezone
 import pandas as pd
 
 from twinops.ml.backtest import (
+    WalkForwardFold,
+    _steady_alert_seconds,
     build_walk_forward_folds,
     run_backtest,
     run_backtest_csv,
@@ -26,13 +28,15 @@ def _six_cycle_features():
                     "velocity_slope": 0.001,
                     "velocity_change_point": 0.002,
                     "temperature_deviation": offset * 0.01,
+                    "cadence_seconds": 1.0 if offset else None,
+                    "quality_flags": (),
                 }
             )
     return pd.DataFrame(rows)
 
 
 def test_folds_never_split_cycles_or_use_future_training_rows():
-    folds = build_walk_forward_folds(range(6), holdout_count=2)
+    folds = build_walk_forward_folds(_six_cycle_features(), holdout_count=2)
 
     assert set(folds[-1].train_cycle_ids).isdisjoint(folds[-1].test_cycle_ids)
     assert max(folds[-1].train_cycle_ids) < min(folds[-1].test_cycle_ids)
@@ -46,7 +50,7 @@ def test_folds_never_split_cycles_or_use_future_training_rows():
 
 def test_backtest_reports_valid_cycle_metrics_without_label_metrics():
     frame = _six_cycle_features()
-    folds = build_walk_forward_folds(frame.cycle_id.unique(), holdout_count=2)
+    folds = build_walk_forward_folds(frame, holdout_count=2)
 
     report = run_backtest(frame, RobustBaseline(BaselineConfig()), folds)
     payload = report.to_dict()
@@ -65,7 +69,7 @@ def test_backtest_reports_valid_cycle_metrics_without_label_metrics():
 
 def test_candidate_ranking_is_explicitly_not_ground_truth():
     frame = _six_cycle_features()
-    folds = build_walk_forward_folds(frame.cycle_id.unique(), holdout_count=2)
+    folds = build_walk_forward_folds(frame, holdout_count=2)
 
     report = run_backtest(frame, RobustBaseline(BaselineConfig()), folds)
 
@@ -87,3 +91,58 @@ def test_curated_csv_entrypoint_writes_a_verified_bundle(tmp_path):
     assert (output_path / "pipeline.joblib").is_file()
     assert (output_path / "feature-manifest.json").is_file()
     assert (output_path / "backtest-report.json").is_file()
+
+
+def test_fold_builder_rejects_cycle_ids_that_contradict_event_chronology():
+    frame = _six_cycle_features()
+    frame.loc[frame["cycle_id"].eq(5), "event_at"] -= timedelta(minutes=10)
+
+    try:
+        build_walk_forward_folds(frame, holdout_count=2)
+    except ValueError as error:
+        assert "chronolog" in str(error).lower()
+    else:
+        raise AssertionError("cycle IDs must agree with event chronology")
+
+
+def test_backtest_rejects_manual_fold_whose_training_reaches_test_time():
+    frame = _six_cycle_features()
+    frame.loc[frame["cycle_id"].eq(1), "event_at"] += timedelta(minutes=10)
+    folds = [WalkForwardFold(train_cycle_ids=(0, 1), test_cycle_ids=(2,))]
+
+    try:
+        run_backtest(frame, RobustBaseline(BaselineConfig()), folds)
+    except ValueError as error:
+        assert "event_at" in str(error)
+    else:
+        raise AssertionError("training timestamps must be strictly before test")
+
+
+def test_steady_alert_seconds_only_sums_contiguous_alert_cadence():
+    start = datetime(2026, 8, 12, 13, 0, tzinfo=timezone.utc)
+    group = pd.DataFrame(
+        {
+            "event_at": [start + timedelta(seconds=i) for i in (0, 2, 4, 6, 8)],
+            "operating_state": ["steady"] * 5,
+            "status": ["alert", "alert", "normal", "alert", "alert"],
+            "cadence_seconds": [None, 2.0, 2.0, 2.0, 2.0],
+            "quality_flags": [(), (), (), (), ("gap_before",)],
+        }
+    )
+
+    assert _steady_alert_seconds(group) == 2.0
+
+
+def test_steady_alert_seconds_rejects_timestamp_jump_that_breaks_cadence():
+    start = datetime(2026, 8, 12, 13, 0, tzinfo=timezone.utc)
+    group = pd.DataFrame(
+        {
+            "event_at": [start, start + timedelta(seconds=100)],
+            "operating_state": ["steady", "steady"],
+            "status": ["alert", "alert"],
+            "cadence_seconds": [None, 2.0],
+            "quality_flags": [(), ()],
+        }
+    )
+
+    assert _steady_alert_seconds(group) == 0.0

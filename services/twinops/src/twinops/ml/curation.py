@@ -50,7 +50,7 @@ def curate_samples(
         return pd.DataFrame(columns=_COLUMNS)
 
     rows.sort(key=lambda row: (row["event_at"], row["sensor_id"], row["reading_id"]))
-    seen_payloads: set[tuple[str, str]] = set()
+    previous_payload_by_sensor: dict[str, str] = {}
     sensor_state: dict[str, dict[str, object]] = {}
 
     for row in rows:
@@ -73,11 +73,10 @@ def curate_samples(
         if has_gap and "gap_before" not in flags:
             flags.append("gap_before")
 
-        payload_key = (sensor_id, row["payload_hash"])
-        duplicate = payload_key in seen_payloads
+        duplicate = previous_payload_by_sensor.get(sensor_id) == row["payload_hash"]
         if duplicate and "duplicate_payload" not in flags:
             flags.append("duplicate_payload")
-        seen_payloads.add(payload_key)
+        previous_payload_by_sensor[sensor_id] = str(row["payload_hash"])
 
         active = bool(row["velocity_rms"] > 0.05)
         row.update(
@@ -123,4 +122,3 @@ def _operating_state(previous_active: object, active: bool) -> str:
     if not bool(previous_active) and active:
         return "startup"
     return "stopped"
-

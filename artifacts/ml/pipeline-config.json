@@ -1,4 +1,5 @@
 {
+  "artifactTrustPolicy": "caller_pins_manifest_and_model_hashes_outside_bundle",
   "assessmentConfigHash": "sha256:9e9b0a68c95711cc918593a8319ae00704034c7f3fe1ec83e7b898f0c4d265a1",
   "baseline": {
     "alert_threshold": 70.0,
@@ -28,5 +29,6 @@
   "scorer": {
     "gap_seconds": 15.0,
     "max_freshness_seconds": 30.0
-  }
+  },
+  "sensorBaselinePolicy": "independent_per_sensor"
 }

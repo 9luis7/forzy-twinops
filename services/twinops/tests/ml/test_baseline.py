@@ -54,3 +54,30 @@ def test_fit_rejects_transition_only_calibration():
     else:
         raise AssertionError("transition rows must not calibrate the baseline")
 
+
+def test_multisensor_baseline_uses_each_sensors_own_history():
+    s1 = _feature_frame([0.1, 0.1, 0.1])
+    s2 = _feature_frame([10.0, 10.0, 10.0])
+    s2["sensor_id"] = "s2"
+    calibration = pd.concat([s1, s2], ignore_index=True)
+    baseline = RobustBaseline(BaselineConfig()).fit(calibration)
+
+    scored = baseline.score(calibration)
+
+    assert scored.groupby("sensor_id")["anomaly_score"].max().to_dict() == {
+        "s1": 0.0,
+        "s2": 0.0,
+    }
+
+
+def test_score_rejects_sensor_without_its_own_baseline():
+    baseline = RobustBaseline(BaselineConfig()).fit(_feature_frame([0.1, 0.1]))
+    unseen = _feature_frame([0.1])
+    unseen["sensor_id"] = "s2"
+
+    try:
+        baseline.score(unseen)
+    except ValueError as error:
+        assert "s2" in str(error)
+    else:
+        raise AssertionError("an unseen sensor must not borrow another sensor baseline")
