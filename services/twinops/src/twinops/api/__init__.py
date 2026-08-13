@@ -1,1 +1,1 @@
-"""HTTP API for the TwinOps demonstrator."""
+"""Consumer-safe telemetry and copilot APIs for the TwinOps demonstrator."""
