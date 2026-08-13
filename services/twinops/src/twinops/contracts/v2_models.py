@@ -1,0 +1,242 @@
+"""Strict Pydantic representations of the version 2 TwinOps contracts."""
+
+from typing import Annotated, Literal, Self
+
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
+
+
+Timestamp = Annotated[
+    str,
+    StringConstraints(
+        pattern=r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]+)?Z$"
+    ),
+]
+Uuid = Annotated[
+    str,
+    StringConstraints(
+        pattern=r"^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    ),
+]
+Sha256 = Annotated[str, StringConstraints(pattern=r"^sha256:[0-9a-f]{64}$")]
+NonEmptyString = Annotated[str, StringConstraints(min_length=1)]
+
+
+class ContractModelV2(BaseModel):
+    """Shared validation and serialization settings for version 2 contracts."""
+
+    model_config = ConfigDict(
+        extra="forbid", strict=True, populate_by_name=True, allow_inf_nan=False
+    )
+
+
+class EmptyObjectV2(ContractModelV2):
+    """An object intentionally specified with no properties."""
+
+
+class MeasurementV2(ContractModelV2):
+    value: float
+    unit: str
+    semantic_confidence: Literal[
+        "confirmed", "inferred_from_datasheet", "unconfirmed"
+    ] = Field(alias="semanticConfidence")
+
+
+class VelocityMeasurementV2(MeasurementV2):
+    unit: Literal["mm/s"]
+
+
+class AccelerationMeasurementV2(MeasurementV2):
+    unit: Literal["g"]
+    statistic: Literal["unknown"]
+
+
+class TemperatureMeasurementV2(MeasurementV2):
+    unit: Literal["degC"]
+
+
+class MeasurementsV2(ContractModelV2):
+    vibration_velocity_rms: VelocityMeasurementV2 = Field(alias="vibrationVelocityRms")
+    vibration_acceleration: AccelerationMeasurementV2 = Field(
+        alias="vibrationAcceleration"
+    )
+    temperature: TemperatureMeasurementV2
+
+
+class CanonicalProvenanceV2(ContractModelV2):
+    source_system: Literal["forzy-api"] = Field(alias="sourceSystem")
+    ingested_at: Timestamp = Field(alias="ingestedAt")
+    source_timestamp_provided: Literal[False] = Field(alias="sourceTimestampProvided")
+
+
+class CanonicalSensorReadingV2(ContractModelV2):
+    schema_version: Literal["2.0"] = Field(alias="schemaVersion")
+    reading_id: Uuid = Field(alias="readingId")
+    source: Literal["forzy-live"]
+    asset_id: Literal["forzy-motor-01"] = Field(alias="assetId")
+    sensor_id: Literal["s1", "s2"] = Field(alias="sensorId")
+    scheduled_at: Timestamp = Field(alias="scheduledAt")
+    observed_at: Timestamp = Field(alias="observedAt")
+    received_at: Timestamp = Field(alias="receivedAt")
+    timestamp_quality: Literal["assumed_from_retrieval"] = Field(
+        alias="timestampQuality"
+    )
+    measurements: MeasurementsV2
+    quality_flags: list[str] = Field(alias="qualityFlags")
+    payload_hash: Sha256 = Field(alias="payloadHash")
+    raw: EmptyObjectV2
+    provenance: CanonicalProvenanceV2
+
+    @model_validator(mode="after")
+    def live_time_is_explicitly_assumed(self) -> Self:
+        if self.source == "forzy-live":
+            if self.observed_at != self.received_at:
+                raise ValueError("Forzy live observedAt must equal receivedAt")
+            if self.timestamp_quality != "assumed_from_retrieval":
+                raise ValueError(
+                    "Forzy live timestampQuality must be assumed_from_retrieval"
+                )
+            if self.provenance.source_timestamp_provided:
+                raise ValueError("Forzy live source timestamp was not provided")
+        return self
+
+
+class FrameMeasurementsV2(ContractModelV2):
+    vibration_velocity_rms: VelocityMeasurementV2 | None = Field(
+        alias="vibrationVelocityRms"
+    )
+    vibration_acceleration: AccelerationMeasurementV2 | None = Field(
+        alias="vibrationAcceleration"
+    )
+    temperature: TemperatureMeasurementV2 | None
+
+
+class SensorTelemetryFrameV2(ContractModelV2):
+    schema_version: Literal["2.0"] = Field(alias="schemaVersion")
+    frame_id: Uuid = Field(alias="frameId")
+    asset_id: Literal["forzy-motor-01"] = Field(alias="assetId")
+    sensor_id: Literal["s1", "s2"] = Field(alias="sensorId")
+    observed_at: Timestamp | None = Field(alias="observedAt")
+    received_at: Timestamp | None = Field(alias="receivedAt")
+    timestamp_quality: Literal["assumed_from_retrieval", "unavailable"] = Field(
+        alias="timestampQuality"
+    )
+    measurements: FrameMeasurementsV2
+    quality_flags: list[str] = Field(alias="qualityFlags")
+
+
+class AssessmentWindowV2(ContractModelV2):
+    start: Timestamp
+    end: Timestamp
+    received_at: Timestamp = Field(alias="receivedAt")
+    freshness_ms: float = Field(alias="freshnessMs", ge=0)
+
+
+class AssessmentQualityV2(ContractModelV2):
+    status: Literal["ok", "degraded", "insufficient_data"]
+    flags: list[str]
+
+
+class OperatingContextV2(ContractModelV2):
+    state: Literal["steady", "startup", "shutdown", "stopped", "unknown"]
+    estimated: bool
+
+
+class AssessmentDetailV2(ContractModelV2):
+    status: Literal["normal", "watch", "alert", "insufficient_data"]
+    anomaly_score: float = Field(alias="anomalyScore")
+    deterioration_score: float = Field(alias="deteriorationScore")
+    score_semantics: Literal[
+        "relative_to_historical_baseline_not_failure_probability"
+    ] = Field(alias="scoreSemantics")
+    episode_id: str | None = Field(alias="episodeId")
+    persistence_seconds: float = Field(alias="persistenceSeconds", ge=0)
+
+
+class AssessmentEvidenceV2(ContractModelV2):
+    id: NonEmptyString
+    feature: NonEmptyString
+    value: float
+    unit: NonEmptyString
+    baseline: float | None = None
+    deviation: float | None = None
+    direction: Literal["up", "down", "stable", "unknown"] | None = None
+    window_seconds: float | None = Field(default=None, alias="windowSeconds", ge=0)
+
+
+class ModelMetadataV2(ContractModelV2):
+    name: NonEmptyString
+    version: NonEmptyString
+    config_hash: Sha256 = Field(alias="configHash")
+    trained_until: Timestamp = Field(alias="trainedUntil")
+
+
+class AssetConditionAssessmentV2(ContractModelV2):
+    schema_version: Literal["2.0"] = Field(alias="schemaVersion")
+    assessment_id: Uuid = Field(alias="assessmentId")
+    asset_id: Literal["forzy-motor-01"] = Field(alias="assetId")
+    sensor_id: Literal["s1", "s2"] = Field(alias="sensorId")
+    window: AssessmentWindowV2
+    quality: AssessmentQualityV2
+    operating_context: OperatingContextV2 = Field(alias="operatingContext")
+    assessment: AssessmentDetailV2
+    component_tag: None = Field(alias="componentTag")
+    recommendation: str | None
+    human_validation_required: bool = Field(alias="humanValidationRequired")
+    evidence: list[AssessmentEvidenceV2]
+    model: ModelMetadataV2
+    limitations: list[str]
+
+
+class AssetIdentityV2(ContractModelV2):
+    asset_id: Literal["forzy-motor-01"] = Field(alias="assetId")
+    display_name: Literal["Conjunto motor-bomba monitorado"] = Field(alias="displayName")
+    official_tag: None = Field(alias="officialTag")
+
+
+class SensorHealthV2(ContractModelV2):
+    last_attempt_at: Timestamp | None = Field(alias="lastAttemptAt")
+    last_success_at: Timestamp | None = Field(alias="lastSuccessAt")
+    latency_ms: float | None = Field(alias="latencyMs", ge=0)
+    error: Literal["upstream_unavailable", "invalid_payload"] | None
+    sample_count: int = Field(alias="sampleCount", ge=0)
+
+
+class IntegrationSensorsV2(ContractModelV2):
+    s1: SensorHealthV2
+    s2: SensorHealthV2
+
+
+class IntegrationV2(ContractModelV2):
+    sensors: IntegrationSensorsV2
+
+
+class CapabilitiesV2(ContractModelV2):
+    live_updates: Literal[True] = Field(alias="liveUpdates")
+    replay_controls: Literal[False] = Field(alias="replayControls")
+    copilot: Literal[False]
+    twin_3d: bool = Field(alias="twin3d")
+
+
+class DigitalTwinSnapshotV2(ContractModelV2):
+    schema_version: Literal["2.0"] = Field(alias="schemaVersion")
+    asset: AssetIdentityV2
+    generated_at: Timestamp = Field(alias="generatedAt")
+    status: Literal["normal", "watch", "alert", "unknown", "insufficient_data"]
+    operational_state: Literal[
+        "received_now", "last_known", "expected_idle", "unavailable"
+    ] = Field(alias="operationalState")
+    freshness_basis: Literal["retrieval_time", "last_received", "schedule", "none"] = Field(
+        alias="freshnessBasis"
+    )
+    channels: list[SensorTelemetryFrameV2]
+    history: list[SensorTelemetryFrameV2]
+    assessment: AssetConditionAssessmentV2 | None
+    integration: IntegrationV2
+    capabilities: CapabilitiesV2
+
+    @model_validator(mode="after")
+    def has_exactly_one_channel_per_live_sensor(self) -> Self:
+        sensor_ids = [channel.sensor_id for channel in self.channels]
+        if len(sensor_ids) != 2 or set(sensor_ids) != {"s1", "s2"}:
+            raise ValueError("snapshots require exactly one s1 and one s2 channel")
+        return self
