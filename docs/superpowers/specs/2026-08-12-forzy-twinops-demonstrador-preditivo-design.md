@@ -1,5 +1,10 @@
 # TDD — Forzy TwinOps: demonstrador preditivo com dados reais
 
+> **Status histórico:** este desenho foi sucedido, para o produto publicável,
+> por `2026-08-13-forzy-twinops-real-vercel-zero-cost-design.md`. Ele permanece
+> versionado como registro da jornada técnica e não deve orientar novas
+> implementações sem consultar a especificação sucessora.
+
 | Campo | Valor |
 | --- | --- |
 | Responsável de produto | Luis |
