@@ -68,14 +68,18 @@ As semânticas adotadas são:
 - `Velocidade`: velocidade de vibração RMS em `mm/s`, inferida da ficha técnica;
 - `Aceleração`: valor em `g`, com estatística ainda não confirmada pela API;
 - `Temperatura`: valor em `°C`, inferido da ficha técnica;
-- `observedAt`: sempre nulo enquanto a fonte não fornecer horário de aquisição;
-- `receivedAt`: horário em que o TwinOps recebeu a resposta, nunca chamado de
-  horário de medição.
+- `receivedAt`: horário UTC em que o TwinOps recebeu a resposta;
+- `observedAt`: igual a `receivedAt` como proxy operacional aprovado;
+- `timestampQuality`: `assumed_from_retrieval`, pois o horário não veio no
+  payload da origem.
 
 O endpoint estava acessível fora da janela informada de segunda a quarta, das
 12h às 14h. Portanto, a janela será tratada como expectativa de atualização,
 não como garantia de disponibilidade. Repetir uma requisição não prova que uma
-nova medição foi produzida.
+nova medição foi produzida. A igualdade `observedAt = receivedAt` é uma hipótese
+de produto para o demonstrador, não uma garantia do fornecedor. Payloads
+consecutivos idênticos preservam suas tentativas de coleta, mas não contam como
+novas observações para tendência ou ML.
 
 ## 3. Objetivos
 
@@ -94,6 +98,8 @@ nova medição foi produzida.
    de custo zero dentro dos limites dos planos gratuitos.
 8. Manter decisões, limitações e resultados rastreáveis para o storytelling do
    pitch.
+9. Avaliar, em trilha experimental separada, quanto datasets públicos de falhas
+   podem generalizar para as grandezas disponíveis na Forzy.
 
 ## 4. Fora do escopo
 
@@ -107,6 +113,9 @@ nova medição foi produzida.
 - Histórico completo do CSV na interface operacional.
 - Marcadores de S1/S2 no 3D antes da confirmação física.
 - Integração em runtime com o protótipo ESP/MQTT/Supabase anterior.
+- Mistura direta de linhas da Forzy com janelas de datasets públicos.
+- Substituição do baseline publicado por um classificador público sem validação
+  entre bancadas e compatibilidade de features.
 
 ## 5. Arquitetura alvo
 
@@ -157,23 +166,27 @@ fictícia altera a identidade do domínio. `assetTag` será substituído por:
 }
 ```
 
-O contrato v2 terá dois horários distintos por canal:
+O contrato v2 distinguirá origem e qualidade temporal por canal:
 
-- `observedAt`: nulo para a fonte Forzy atual;
 - `receivedAt`: horário UTC registrado pelo gateway.
+- `observedAt`: cópia de `receivedAt`, usada como horário efetivo assumido.
+- `timestampQuality`: `assumed_from_retrieval`.
+- `provenance.sourceTimestampProvided`: `false`.
 
-O estado temporal também será explícito:
+O estado operacional também será explícito:
 
 - `received_now`: o gateway acabou de receber uma resposta válida;
 - `last_known`: a resposta exibida veio do banco após falha ou ausência de
   atualização;
 - `expected_idle`: fora da janela declarada pela Forzy;
-- `unavailable`: não há leitura real persistida;
-- `source_freshness_unknown`: a origem não permite provar a idade da medição.
+- `unavailable`: não há leitura real persistida.
 
-`received_now` não significa que o sensor acabou de medir. Por isso o snapshot
-sempre carregará `source_freshness_unknown` enquanto não houver timestamp na
-origem.
+Quando o estado for `received_now`, `freshnessBasis: retrieval_time` autoriza
+tratar o valor como leitura daquele ciclo no demonstrador. Para auditoria e
+evolução industrial, o contrato preserva que o horário foi inferido: ele não
+prova a latência entre a aquisição física e a exposição do valor no endpoint.
+A interface exibirá “capturado pelo TwinOps às”, não “timestamp fornecido pelo
+sensor”.
 
 ## 7. API e fluxo sob demanda
 
@@ -259,6 +272,48 @@ Não poderá mostrar “falha prevista”, percentual de chance de falha ou temp
 restante. O modelo não será executado continuamente: cada refresh bem-sucedido
 gera ou atualiza a avaliação usando a janela real persistida.
 
+### 9.1 Laboratório público de falhas
+
+Datasets públicos serão usados em um experimento paralelo, sem entrar
+automaticamente no artefato operacional. A ordem inicial será:
+
+1. **PRONOSTIA/FEMTO-ST:** degradação até a falha, vibração em dois eixos e
+   temperatura;
+2. **XJTU-SY:** quinze rolamentos até a falha, três regimes e diferentes
+   elementos danificados;
+3. **NASA IMS:** validação externa de trajetória até a falha;
+4. **Paderborn:** diagnóstico com danos reais e artificiais, carga, rotação,
+   temperatura e vibração, restrito a pesquisa não comercial enquanto não
+   houver autorização adicional;
+5. **CWRU:** somente sanity check, pois as falhas são inseridas artificialmente.
+
+Serão consumidas as fontes numéricas originais, com licença, proveniência e
+hash registrados. Conversões em imagens ou datasets derivados não substituem o
+sinal original.
+
+O experimento terá três níveis comparáveis:
+
+- **sinal completo:** waveform, espectro, envelope e contexto operacional;
+- **sensor agregado:** RMS, temperatura, tendências e outras features que
+  possam ser produzidas de forma semanticamente compatível;
+- **API Forzy:** somente o subconjunto realmente disponível em S1/S2.
+
+Essa ablação medirá quanto de diagnóstico e antecedência se perde quando o
+sinal é reduzido à API atual. O split será sempre por rolamento ou ensaio
+completo; janelas do mesmo rolamento não podem aparecer em treino e teste. A
+validação incluirá transferência entre datasets, não apenas teste dentro da
+mesma bancada.
+
+O modelo público não poderá substituir o baseline operacional enquanto não:
+
+- superar um baseline simples em rolamentos nunca vistos;
+- manter desempenho em uma segunda bancada pública;
+- demonstrar que as features usadas existem com a mesma semântica na Forzy;
+- receber calibração ou validação com eventos rotulados da própria Forzy.
+
+Enquanto o último item não existir, o resultado será evidência de pesquisa e
+do impacto da qualidade da aquisição, não prova de previsão no ativo Forzy.
+
 ## 10. Interface operacional
 
 A primeira tela publicável terá somente:
@@ -319,8 +374,9 @@ de manifesto verificável. O DWG não é necessário para esta primeira entrega.
 - Validar fixtures v2 válidas e inválidas.
 - Garantir que zero continue sendo medição válida.
 - Rejeitar string, nulo indevido, booleano, NaN e infinito.
-- Garantir `officialTag: null`, `observedAt: null` e separação de
-  `received_now`/`source_freshness_unknown`.
+- Garantir `officialTag: null`, `observedAt = receivedAt`,
+  `timestampQuality: assumed_from_retrieval` e
+  `sourceTimestampProvided: false`.
 - Confirmar que payload repetido não vira nova informação para tendência.
 
 ### 13.2 Integração
@@ -330,6 +386,8 @@ de manifesto verificável. O DWG não é necessário para esta primeira entrega.
 - Refresh idempotente por ciclo e sensores isolados.
 - Carregamento do artefato com hashes fixados.
 - Avaliação insuficiente quando a janela não satisfizer cobertura/qualidade.
+- Experimentos públicos divididos por rolamento, sem vazamento entre janelas.
+- Ablação completa/agregada/Forzy e validação entre pelo menos duas bancadas.
 
 ### 13.3 Frontend
 
@@ -363,7 +421,9 @@ de manifesto verificável. O DWG não é necessário para esta primeira entrega.
 7. Frontend, backend e banco funcionam dentro da arquitetura gratuita durante a
    apresentação.
 8. Documentação e interface declaram que a fonte atual não permite comprovar
-   frescor, antecedência de falha ou SLA.
+   frescor físico na origem, antecedência de falha ou SLA.
+9. O relatório público quantifica a diferença entre sinal completo e agregado,
+   sem alterar automaticamente o modelo operacional.
 
 ## 15. Evolução posterior
 
@@ -386,6 +446,7 @@ nunca decidir o estado do ativo.
 - Neon Postgres no deploy; SQLite somente local/teste.
 - CSV somente para treino, backtest e auditoria.
 - Baseline clássico atual como primeiro artefato publicado.
+- Datasets públicos como laboratório paralelo, nunca como concatenação direta.
 - Sem mock ou replay no runtime publicável.
 - Sem LLM/SLM nesta entrega.
 - 3D derivado do STEP, sem posição inventada de sensores.
@@ -410,9 +471,19 @@ Os pacotes 2 e 4 podem avançar em paralelo depois do contrato v2. O pacote 3
 depende do contrato e pode usar fixtures reais controladas até o backend estar
 integrado. O deploy final só começa após os gates de contrato, dados, UI e 3D.
 
+Uma sexta frente não bloqueante, **laboratório público de falhas**, poderá
+avançar em paralelo após congelar o contrato de features experimentais. Ela
+entrega adapters, matriz de compatibilidade, ablação e relatório; não modifica
+o artefato publicado sem passar pelos gates da seção 9.1.
+
 ## 18. Referências externas verificadas
 
 - [FastAPI na Vercel](https://vercel.com/docs/frameworks/backend/fastapi)
 - [Limites e preços de Cron Jobs](https://vercel.com/docs/cron-jobs/usage-and-pricing)
 - [Plano Vercel Hobby](https://vercel.com/docs/plans/hobby)
 - [Neon Free e evolução para produção](https://neon.com/faqs/postgres-services-free-to-production)
+- [PRONOSTIA/FEMTO-ST](https://publiweb.femto-st.fr/tntnet/entries/1528/documents/author/data)
+- [Paderborn Bearing DataCenter](https://mb.uni-paderborn.de/en/kat/research/bearing-datacenter/data-sets-and-download)
+- [XJTU-SY Bearing Datasets](https://biaowang.tech/xjtu-sy-bearing-datasets/)
+- [NASA IMS Bearings](https://data.nasa.gov/dataset/ims-bearings)
+- [CWRU Bearing Data Center](https://engineering.case.edu/bearingdatacenter/welcome)
