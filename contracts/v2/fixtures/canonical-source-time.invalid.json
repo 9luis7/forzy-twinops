@@ -5,7 +5,7 @@
   "assetId": "forzy-motor-01",
   "sensorId": "s1",
   "scheduledAt": "2026-08-12T15:00:00.000Z",
-  "observedAt": "2026-08-12T15:00:00.000Z",
+  "observedAt": "2026-08-12T15:00:01.000Z",
   "receivedAt": "2026-08-12T15:00:01.000Z",
   "timestampQuality": "source",
   "measurements": {
@@ -16,5 +16,5 @@
   "qualityFlags": [],
   "payloadHash": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
   "raw": {},
-  "provenance": { "sourceSystem": "forzy-api", "ingestedAt": "2026-08-12T15:00:01.000Z", "sourceTimestampProvided": true }
+  "provenance": { "sourceSystem": "forzy-api", "ingestedAt": "2026-08-12T15:00:01.000Z", "sourceTimestampProvided": false }
 }

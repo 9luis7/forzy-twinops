@@ -38,6 +38,13 @@ const validAssessment = (timestamp) => ({
   limitations: [],
 });
 
+const validEvidence = () => ({
+  id: "ev-1",
+  feature: "temperature",
+  value: 0,
+  unit: "degC",
+});
+
 describe("DigitalTwinSnapshot v2 runtime contract", () => {
   it("accepts both valid fixtures that the JSON schema accepts", () => {
     expect(SCHEMA_VERSION_V2).toBe("2.0");
@@ -61,14 +68,41 @@ describe("DigitalTwinSnapshot v2 runtime contract", () => {
     expect(() => assertDigitalTwinSnapshotV2(value)).toThrow(/value/);
   });
 
+  it("rejects a numeric string measurement", () => {
+    const value = fixture();
+    value.channels[0].measurements.vibrationAcceleration.value = "0";
+
+    expect(() => assertDigitalTwinSnapshotV2(value)).toThrow(/value/);
+  });
+
   it("rejects invalid calendar timestamps and incoherent frame timestamps", () => {
     const impossible = fixture();
     impossible.generatedAt = "2026-99-99T29:77:88Z";
     expect(() => assertDigitalTwinSnapshotV2(impossible)).toThrow(/generatedAt/);
 
+    const nonLeapDay = fixture();
+    nonLeapDay.generatedAt = "2023-02-29T12:34:56Z";
+    expect(() => assertDigitalTwinSnapshotV2(nonLeapDay)).toThrow(/generatedAt/);
+
     const incoherent = fixture();
     incoherent.channels[0].receivedAt = "2026-08-12T15:00:02.000Z";
     expect(() => assertDigitalTwinSnapshotV2(incoherent)).toThrow(/observedAt/);
+  });
+
+  it("enforces timestamp nullability from frame timestampQuality", () => {
+    const assumedWithNull = fixture();
+    assumedWithNull.channels[0].observedAt = null;
+    expect(() => assertDigitalTwinSnapshotV2(assumedWithNull)).toThrow(/observedAt/);
+
+    const unavailableWithTimestamps = fixture();
+    unavailableWithTimestamps.channels[0].timestampQuality = "unavailable";
+    expect(() => assertDigitalTwinSnapshotV2(unavailableWithTimestamps)).toThrow(/timestampQuality/);
+
+    const unavailable = fixture();
+    unavailable.channels[0].timestampQuality = "unavailable";
+    unavailable.channels[0].observedAt = null;
+    unavailable.channels[0].receivedAt = null;
+    expect(() => assertDigitalTwinSnapshotV2(unavailable)).not.toThrow();
   });
 
   it("accepts the leap-second and year-zero timestamp boundaries accepted by the schema", () => {
@@ -79,6 +113,10 @@ describe("DigitalTwinSnapshot v2 runtime contract", () => {
     const yearZero = fixture();
     yearZero.generatedAt = "0000-01-01T00:00:00Z";
     expect(() => assertDigitalTwinSnapshotV2(yearZero)).not.toThrow();
+
+    const gregorianLeapDay = fixture();
+    gregorianLeapDay.generatedAt = "2000-02-29T12:34:56Z";
+    expect(() => assertDigitalTwinSnapshotV2(gregorianLeapDay)).not.toThrow();
   });
 
   it("rejects a leap second outside 23:59 UTC", () => {
@@ -106,6 +144,10 @@ describe("DigitalTwinSnapshot v2 runtime contract", () => {
     expect(() => assertDigitalTwinSnapshotV2(capability)).toThrow(/replayControls/);
   });
 
+  it("rejects the shared assetTag fixture", () => {
+    expect(() => assertDigitalTwinSnapshotV2(fixture("snapshot-asset-tag.invalid.json"))).toThrow();
+  });
+
   it("requires assessment and validates its object form", () => {
     const missing = fixture();
     delete missing.assessment;
@@ -118,5 +160,21 @@ describe("DigitalTwinSnapshot v2 runtime contract", () => {
     const valid = fixture();
     valid.assessment = validAssessment(valid.generatedAt);
     expect(() => assertDigitalTwinSnapshotV2(valid)).not.toThrow();
+  });
+
+  it("rejects an invalid nested assessment evidence value", () => {
+    const value = fixture();
+    value.assessment = validAssessment(value.generatedAt);
+    value.assessment.evidence = [{ ...validEvidence(), value: "0" }];
+
+    expect(() => assertDigitalTwinSnapshotV2(value)).toThrow(/evidence.*value/);
+  });
+
+  it("rejects an invalid optional assessment evidence value", () => {
+    const value = fixture();
+    value.assessment = validAssessment(value.generatedAt);
+    value.assessment.evidence = [{ ...validEvidence(), baseline: "0" }];
+
+    expect(() => assertDigitalTwinSnapshotV2(value)).toThrow(/baseline/);
   });
 });

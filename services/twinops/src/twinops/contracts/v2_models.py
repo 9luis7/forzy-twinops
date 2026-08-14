@@ -1,6 +1,6 @@
 """Strict Pydantic representations of the version 2 TwinOps contracts."""
 
-from datetime import datetime
+import re
 from typing import Annotated, Literal, Self
 
 from pydantic import (
@@ -13,23 +13,59 @@ from pydantic import (
 )
 
 
+_RFC3339_UTC_PATTERN = (
+    r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]+)?Z$"
+)
+_RFC3339_UTC = re.compile(_RFC3339_UTC_PATTERN)
+
+
 def _validate_rfc3339_utc_timestamp(value: object) -> object:
     """Reject impossible UTC calendar values without normalizing the input string."""
 
     if isinstance(value, str):
-        try:
-            datetime.fromisoformat(f"{value[:-1]}+00:00")
-        except ValueError as error:
-            raise ValueError("must be a valid RFC 3339 UTC timestamp") from error
+        match = _RFC3339_UTC.fullmatch(value)
+        if match is None:
+            raise ValueError("must be a valid RFC 3339 UTC timestamp")
+
+        date, time = value.split("T")
+        year, month, day = (int(part) for part in date.split("-"))
+        hour, minute, second_text = time[:-1].split(":")
+        hour_value = int(hour)
+        minute_value = int(minute)
+        second = int(second_text.split(".", 1)[0])
+        leap_year = year % 4 == 0 and (year % 100 != 0 or year % 400 == 0)
+        month_days = [
+            31,
+            29 if leap_year else 28,
+            31,
+            30,
+            31,
+            30,
+            31,
+            31,
+            30,
+            31,
+            30,
+            31,
+        ]
+
+        valid_calendar = (
+            1 <= month <= 12
+            and 1 <= day <= month_days[month - 1]
+            and hour_value <= 23
+            and minute_value <= 59
+            and second <= 60
+            and (second < 60 or (hour_value == 23 and minute_value == 59))
+        )
+        if not valid_calendar:
+            raise ValueError("must be a valid RFC 3339 UTC timestamp")
     return value
 
 
 Timestamp = Annotated[
     str,
     BeforeValidator(_validate_rfc3339_utc_timestamp),
-    StringConstraints(
-        pattern=r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]+)?Z$"
-    ),
+    StringConstraints(pattern=_RFC3339_UTC_PATTERN),
 ]
 Uuid = Annotated[
     str,
@@ -47,6 +83,11 @@ class ContractModelV2(BaseModel):
     model_config = ConfigDict(
         extra="forbid", strict=True, populate_by_name=True, allow_inf_nan=False
     )
+
+    def to_public_dict(self) -> dict[str, object]:
+        """Serialize aliases while preserving omitted fields versus explicit nulls."""
+
+        return self.model_dump(mode="json", by_alias=True, exclude_unset=True)
 
 
 class EmptyObjectV2(ContractModelV2):
@@ -142,6 +183,21 @@ class SensorTelemetryFrameV2(ContractModelV2):
     )
     measurements: FrameMeasurementsV2
     quality_flags: list[str] = Field(alias="qualityFlags")
+
+    @model_validator(mode="after")
+    def timestamps_match_quality(self) -> Self:
+        if self.timestamp_quality == "assumed_from_retrieval":
+            if self.observed_at is None or self.received_at is None:
+                raise ValueError(
+                    "assumed_from_retrieval requires observedAt and receivedAt"
+                )
+            if self.observed_at != self.received_at:
+                raise ValueError(
+                    "assumed_from_retrieval requires observedAt equal receivedAt"
+                )
+        elif self.observed_at is not None or self.received_at is not None:
+            raise ValueError("unavailable requires null observedAt and receivedAt")
+        return self
 
 
 class AssessmentWindowV2(ContractModelV2):

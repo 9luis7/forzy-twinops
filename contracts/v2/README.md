@@ -29,6 +29,27 @@ Assim, `receivedAt` representa o instante de recuperação/recebimento e
 marcada por `assumed_from_retrieval`. Não interpretar esse valor como horário
 real da observação. A proveniência declara `sourceTimestampProvided: false`.
 
+Todos os timestamps v2 usam a forma canônica RFC 3339 UTC terminada em `Z`.
+O calendário Gregoriano é validado inclusive para o ano `0000`; o segundo
+intercalar `60` somente é aceito em `23:59:60Z`.
+
+No `sensor-telemetry-frame`, `timestampQuality: "assumed_from_retrieval"`
+exige `observedAt` e `receivedAt` como timestamps, enquanto
+`timestampQuality: "unavailable"` exige ambos como `null`. O JSON Schema
+draft-07 expressa essa nulabilidade condicional, mas não consegue expressar a
+igualdade entre dois campos. Essa limitação vale tanto para a leitura canônica
+quanto para o frame. Por isso, Pydantic (em ambos os contratos) e o validator
+runtime JS (no frame público) também exigem igualdade textual entre
+`observedAt` e `receivedAt` no estado `assumed_from_retrieval`.
+
+## Serialização pública
+
+Campos opcionais de `assessment.evidence` preservam a diferença semântica
+entre ausência e `null`. Produtores Python devem usar `to_public_dict()`, que
+aplica aliases JSON e `exclude_unset=True`: um campo omitido na entrada segue
+omitido, enquanto um campo informado explicitamente como `null` continua
+presente. O comportamento global de `model_dump()` não foi alterado.
+
 ## Convivência de versões
 
 Os contratos `contracts/v1/` permanecem preservados durante a migração. Novos

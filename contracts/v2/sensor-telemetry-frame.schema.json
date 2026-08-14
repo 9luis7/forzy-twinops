@@ -9,6 +9,23 @@
     "observedAt": { "$ref": "#/$defs/timestampOrNull" }, "receivedAt": { "$ref": "#/$defs/timestampOrNull" }, "timestampQuality": { "enum": ["assumed_from_retrieval", "unavailable"] },
     "measurements": { "$ref": "#/$defs/measurements" }, "qualityFlags": { "type": "array", "items": { "type": "string" } }
   },
+  "allOf": [
+    {
+      "if": { "properties": { "timestampQuality": { "const": "assumed_from_retrieval" } } },
+      "then": {
+        "properties": {
+          "observedAt": { "$ref": "#/$defs/timestamp" },
+          "receivedAt": { "$ref": "#/$defs/timestamp" }
+        }
+      },
+      "else": {
+        "properties": {
+          "observedAt": { "const": null },
+          "receivedAt": { "const": null }
+        }
+      }
+    }
+  ],
   "$defs": {
     "uuid": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$" },
     "timestamp": { "type": "string", "format": "date-time", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\\.[0-9]+)?Z$" },
