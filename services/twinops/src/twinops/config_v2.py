@@ -67,7 +67,7 @@ class SettingsV2:
 
         return cls(
             upstream_base_url=upstream_base_url,
-            database_url=env.get("TWINOPS_DATABASE_URL") or None,
+            database_url=env.get("DATABASE_URL") or None,
             database_path=Path(env.get("TWINOPS_DATABASE_PATH", "var/twinops.sqlite3")),
             asset_id=env.get("TWINOPS_ASSET_ID", "forzy-motor-01"),
             poll_interval_seconds=poll_interval_seconds,
@@ -84,5 +84,5 @@ class SettingsV2:
 
     def for_deploy(self) -> Self:
         if self.database_url is None:
-            raise ValueError("TWINOPS_DATABASE_URL is required for deployment")
+            raise ValueError("DATABASE_URL is required for deployment")
         return self

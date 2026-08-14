@@ -79,7 +79,7 @@ def test_local_settings_allow_no_database_url_but_deploy_requires_one():
     assert settings.database_url is None
     assert settings.database_path.name == "twinops.sqlite3"
     assert settings.asset_id == "forzy-motor-01"
-    with pytest.raises(ValueError, match="TWINOPS_DATABASE_URL"):
+    with pytest.raises(ValueError, match="DATABASE_URL"):
         settings.for_deploy()
 
 
@@ -87,7 +87,7 @@ def test_deploy_settings_keep_complete_ml_trust_anchors():
     settings = SettingsV2.from_env(
         {
             "TWINOPS_UPSTREAM_BASE_URL": "https://example.invalid",
-            "TWINOPS_DATABASE_URL": "postgresql://twinops:secret@example.invalid/twinops",
+            "DATABASE_URL": "postgresql://twinops:secret@example.invalid/twinops",
             "TWINOPS_ML_ARTIFACT_PATH": "artifacts/ml/real-forzy",
             "TWINOPS_ML_MANIFEST_HASH": f"sha256:{'1' * 64}",
             "TWINOPS_ML_MODEL_HASH": f"sha256:{'2' * 64}",
