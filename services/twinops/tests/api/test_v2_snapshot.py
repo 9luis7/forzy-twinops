@@ -1,0 +1,283 @@
+from datetime import datetime, timezone
+
+from twinops.api.v2_snapshot import build_snapshot_v2
+from twinops.contracts.models import AssetConditionAssessment
+from twinops.contracts.v2_models import CanonicalSensorReadingV2
+from twinops.storage.v2_repository import RepositorySensorHealthV2
+
+
+NOW = datetime(2026, 8, 12, 15, 0, 1, tzinfo=timezone.utc)
+
+
+def _reading(sensor_id: str) -> CanonicalSensorReadingV2:
+    suffix = "1" if sensor_id == "s1" else "2"
+    return CanonicalSensorReadingV2.model_validate(
+        {
+            "schemaVersion": "2.0",
+            "readingId": f"00000000-0000-4000-8000-00000000000{suffix}",
+            "source": "forzy-live",
+            "assetId": "forzy-motor-01",
+            "sensorId": sensor_id,
+            "scheduledAt": "2026-08-12T15:00:00.000Z",
+            "observedAt": "2026-08-12T15:00:01.000Z",
+            "receivedAt": "2026-08-12T15:00:01.000Z",
+            "timestampQuality": "assumed_from_retrieval",
+            "measurements": {
+                "vibrationVelocityRms": {
+                    "value": 0.04,
+                    "unit": "mm/s",
+                    "semanticConfidence": "inferred_from_datasheet",
+                },
+                "vibrationAcceleration": {
+                    "value": 0.0,
+                    "unit": "g",
+                    "statistic": "unknown",
+                    "semanticConfidence": "unconfirmed",
+                },
+                "temperature": {
+                    "value": 34.0,
+                    "unit": "degC",
+                    "semanticConfidence": "inferred_from_datasheet",
+                },
+            },
+            "qualityFlags": [],
+            "payloadHash": f"sha256:{suffix * 64}",
+            "raw": {},
+            "provenance": {
+                "sourceSystem": "forzy-api",
+                "ingestedAt": "2026-08-12T15:00:01.000Z",
+                "sourceTimestampProvided": False,
+            },
+        }
+    )
+
+
+class _Repository:
+    def __init__(self, available: tuple[str, ...]):
+        self.available = available
+        self.queries = []
+
+    def history(self, query):
+        self.queries.append(query)
+        return [_reading(query.sensor_id)] if query.sensor_id in self.available else []
+
+    def health(self, sensor_id):
+        return None
+
+
+class _Scorer:
+    def __init__(self, statuses=None):
+        self.statuses = statuses or {}
+
+    def assess(self, samples, *, now):
+        sensor_id = samples[0].sensor_id
+        status = self.statuses.get(sensor_id)
+        if status is None:
+            raise AssertionError("unexpected assessment")
+        return _assessment(sensor_id, status)
+
+
+class _MissingAssessmentScorer:
+    def assess(self, samples, *, now):
+        sensor_id = samples[0].sensor_id
+        return None if sensor_id == "s2" else _assessment(sensor_id, "alert")
+
+
+class _CountingScorer(_Scorer):
+    def __init__(self):
+        super().__init__({"s1": "normal", "s2": "normal"})
+        self.sample_counts = []
+
+    def assess(self, samples, *, now):
+        self.sample_counts.append(len(samples))
+        return super().assess(samples, now=now)
+
+
+class _LimitRepository(_Repository):
+    def history(self, query):
+        self.queries.append(query)
+        return [_reading(query.sensor_id)] * query.limit
+
+
+class _HealthRepository(_Repository):
+    def health(self, sensor_id):
+        if sensor_id == "s2":
+            return None
+        return RepositorySensorHealthV2(
+            sensor_id="s1",
+            last_attempt_at=NOW,
+            last_success_at=NOW,
+            latency_ms=125,
+            error_code="upstream_unavailable",
+            sample_count=7,
+        )
+
+
+def _assessment(sensor_id: str, status: str) -> AssetConditionAssessment:
+    return AssetConditionAssessment.model_validate(
+        {
+            "schemaVersion": "1.0",
+            "assessmentId": f"00000000-0000-4000-8000-00000000001{1 if sensor_id == 's1' else 2}",
+            "assetTag": "forzy-motor-01",
+            "sensorId": sensor_id,
+            "window": {
+                "start": "2026-08-12T15:00:00.000Z",
+                "end": "2026-08-12T15:00:01.000Z",
+                "receivedAt": "2026-08-12T15:00:01.000Z",
+                "freshnessMs": 0.0,
+            },
+            "quality": {"status": "ok", "flags": []},
+            "operatingContext": {"state": "steady", "estimated": True},
+            "assessment": {
+                "status": status,
+                "anomalyScore": 0.5,
+                "deteriorationScore": 0.25,
+                "scoreSemantics": "relative_to_historical_baseline_not_failure_probability",
+                "episodeId": None,
+                "persistenceSeconds": 0.0,
+            },
+            "componentTag": None,
+            "recommendation": None,
+            "humanValidationRequired": True,
+            "evidence": [],
+            "model": {
+                "name": "robust-baseline",
+                "version": "1.0.1",
+                "configHash": f"sha256:{'0' * 64}",
+                "trainedUntil": "2026-08-12T14:59:00.000Z",
+            },
+            "limitations": [],
+        }
+    )
+
+
+def test_partial_channels_never_report_normal():
+    snapshot = build_snapshot_v2(
+        repository=_Repository(("s2",)),
+        scorer=_Scorer(),
+        now=NOW,
+        operational_state="received_now",
+        freshness_basis="retrieval_time",
+        twin3d_enabled=True,
+    )
+
+    assert snapshot.status == "insufficient_data"
+    assert snapshot.channels[0].sensor_id == "s1"
+    assert "unavailable" in snapshot.channels[0].quality_flags
+
+
+def test_total_absence_returns_two_unavailable_channels_and_no_assessment():
+    snapshot = build_snapshot_v2(
+        repository=_Repository(()),
+        scorer=_Scorer(),
+        now=NOW,
+        operational_state="unavailable",
+        freshness_basis="none",
+        twin3d_enabled=False,
+    )
+
+    assert snapshot.status == "insufficient_data"
+    assert [channel.sensor_id for channel in snapshot.channels] == ["s1", "s2"]
+    assert all(channel.timestamp_quality == "unavailable" for channel in snapshot.channels)
+    assert snapshot.assessment is None
+    assert snapshot.capabilities.twin_3d is False
+
+
+def test_assessment_semantics_remain_relative():
+    snapshot = build_snapshot_v2(
+        repository=_Repository(("s1", "s2")),
+        scorer=_Scorer({"s1": "normal", "s2": "watch"}),
+        now=NOW,
+        operational_state="received_now",
+        freshness_basis="retrieval_time",
+        twin3d_enabled=True,
+    )
+
+    assert snapshot.status == "watch"
+    assert snapshot.assessment is not None
+    assert (
+        snapshot.assessment.assessment.score_semantics
+        == "relative_to_historical_baseline_not_failure_probability"
+    )
+
+
+def test_missing_sensor_assessment_dominates_an_alert():
+    snapshot = build_snapshot_v2(
+        repository=_Repository(("s1", "s2")),
+        scorer=_MissingAssessmentScorer(),
+        now=NOW,
+        operational_state="received_now",
+        freshness_basis="retrieval_time",
+        twin3d_enabled=True,
+    )
+
+    assert snapshot.status == "insufficient_data"
+    assert snapshot.assessment is None
+
+
+def test_worst_real_severity_is_published():
+    snapshot = build_snapshot_v2(
+        repository=_Repository(("s1", "s2")),
+        scorer=_Scorer({"s1": "alert", "s2": "watch"}),
+        now=NOW,
+        operational_state="received_now",
+        freshness_basis="retrieval_time",
+        twin3d_enabled=True,
+    )
+
+    assert snapshot.status == "alert"
+    assert snapshot.assessment is not None
+    assert snapshot.assessment.sensor_id == "s1"
+
+
+def test_scorer_insufficient_data_dominates_an_alert():
+    snapshot = build_snapshot_v2(
+        repository=_Repository(("s1", "s2")),
+        scorer=_Scorer({"s1": "alert", "s2": "insufficient_data"}),
+        now=NOW,
+        operational_state="received_now",
+        freshness_basis="retrieval_time",
+        twin3d_enabled=True,
+    )
+
+    assert snapshot.status == "insufficient_data"
+    assert snapshot.assessment is not None
+    assert snapshot.assessment.sensor_id == "s2"
+
+
+def test_history_and_scoring_are_bounded_to_1000_points_per_sensor():
+    repository = _LimitRepository(("s1", "s2"))
+    scorer = _CountingScorer()
+
+    build_snapshot_v2(
+        repository=repository,
+        scorer=scorer,
+        now=NOW,
+        operational_state="received_now",
+        freshness_basis="retrieval_time",
+        twin3d_enabled=True,
+    )
+
+    assert [(query.sensor_id, query.limit) for query in repository.queries] == [
+        ("s1", 1000),
+        ("s2", 1000),
+    ]
+    assert scorer.sample_counts == [1000, 1000]
+
+
+def test_integration_health_comes_from_repository_with_honest_empty_default():
+    snapshot = build_snapshot_v2(
+        repository=_HealthRepository(()),
+        scorer=_Scorer(),
+        now=NOW,
+        operational_state="unavailable",
+        freshness_basis="none",
+        twin3d_enabled=True,
+    )
+
+    assert snapshot.integration.sensors.s1.sample_count == 7
+    assert snapshot.integration.sensors.s1.latency_ms == 125
+    assert snapshot.integration.sensors.s1.error == "upstream_unavailable"
+    assert snapshot.integration.sensors.s1.last_attempt_at == "2026-08-12T15:00:01.000Z"
+    assert snapshot.integration.sensors.s2.sample_count == 0
+    assert snapshot.integration.sensors.s2.last_attempt_at is None
