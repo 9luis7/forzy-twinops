@@ -1,0 +1,480 @@
+from datetime import datetime, timezone
+import os
+import subprocess
+import sys
+from unittest.mock import AsyncMock, Mock
+
+import pytest
+from fastapi.testclient import TestClient
+
+from twinops import main_v2
+from twinops.config_v2 import SettingsV2
+from twinops.contracts.v2_models import CanonicalSensorReadingV2
+from twinops.ingestion.refresh_service import RefreshResult
+from twinops.main_v2 import create_app_v2
+from twinops.storage.v2_repository import RepositorySensorHealthV2
+
+
+NOW_IN_WINDOW = datetime(2026, 8, 12, 15, 0, 1, tzinfo=timezone.utc)
+NOW_OUTSIDE_WINDOW = datetime(2026, 8, 13, 16, 0, 1, tzinfo=timezone.utc)
+
+
+class _FakeAsyncClient:
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, traceback):
+        return False
+
+
+class _Repository:
+    def __init__(self):
+        self.initialized = False
+        self.history_queries = []
+        self.samples = []
+        self.health_by_sensor = {}
+
+    def initialize(self):
+        self.initialized = True
+
+    def latest(self, asset_id):
+        return list(self.samples)
+
+    def history(self, query):
+        self.history_queries.append(query)
+        return [
+            sample
+            for sample in self.samples
+            if query.sensor_id is None or sample.sensor_id == query.sensor_id
+        ][: query.limit]
+
+    def health(self, sensor_id):
+        return self.health_by_sensor.get(sensor_id)
+
+
+@pytest.fixture
+def repository():
+    return _Repository()
+
+
+@pytest.fixture
+def refresh_service():
+    return Mock(refresh=AsyncMock())
+
+
+@pytest.fixture
+def settings(tmp_path):
+    return SettingsV2(
+        upstream_base_url="https://upstream.invalid",
+        database_path=tmp_path / "twinops-v2.sqlite3",
+    )
+
+
+@pytest.fixture
+def client(repository, refresh_service, settings):
+    app = create_app_v2(
+        repository=repository,
+        settings=settings,
+        refresh_service=refresh_service,
+        assessment_scorer=None,
+        clock=lambda: NOW_IN_WINDOW,
+    )
+    return TestClient(app)
+
+
+def test_get_snapshot_never_refreshes(client, refresh_service, repository):
+    response = client.get("/api/v2/assets/forzy-motor-01/snapshot")
+
+    assert response.status_code == 200
+    assert response.json()["operationalState"] == "unavailable"
+    refresh_service.refresh.assert_not_called()
+    assert repository.initialized is False
+
+
+def test_post_refresh_returns_schedule_skip(
+    repository, refresh_service, settings
+):
+    refresh_service.refresh.return_value = RefreshResult(False, {})
+    app = create_app_v2(
+        repository=repository,
+        settings=settings,
+        refresh_service=refresh_service,
+        assessment_scorer=None,
+        clock=lambda: NOW_OUTSIDE_WINDOW,
+    )
+
+    response = TestClient(app).post(
+        "/api/v2/assets/forzy-motor-01/refresh"
+    )
+
+    assert response.status_code == 200
+    assert response.json()["refreshAttempted"] is False
+    assert response.json()["outcomes"] == {}
+    assert response.json()["snapshot"]["operationalState"] == "expected_idle"
+    refresh_service.refresh.assert_awaited_once_with(NOW_OUTSIDE_WINDOW)
+
+
+def test_post_refresh_inside_window_returns_received_now(
+    client, refresh_service
+):
+    refresh_service.refresh.return_value = RefreshResult(
+        True, {"s1": "stored", "s2": "failed"}
+    )
+
+    response = client.post("/api/v2/assets/forzy-motor-01/refresh")
+
+    assert response.status_code == 200
+    assert response.json()["refreshAttempted"] is True
+    assert response.json()["outcomes"] == {"s1": "stored", "s2": "failed"}
+    assert response.json()["snapshot"]["operationalState"] == "received_now"
+    assert response.json()["snapshot"]["freshnessBasis"] == "retrieval_time"
+
+
+def test_post_refresh_failures_return_last_known_when_samples_exist(
+    client, repository, refresh_service
+):
+    repository.samples = [_reading("s1"), _reading("s2")]
+    refresh_service.refresh.return_value = RefreshResult(
+        True, {"s1": "failed", "s2": "failed"}
+    )
+
+    response = client.post("/api/v2/assets/forzy-motor-01/refresh")
+
+    assert response.status_code == 200
+    assert response.json()["snapshot"]["operationalState"] == "last_known"
+    assert response.json()["snapshot"]["freshnessBasis"] == "last_received"
+
+
+def test_history_returns_only_public_sensor_frames(
+    client, repository
+):
+    repository.samples = [_reading("s1")]
+
+    response = client.get(
+        "/api/v2/assets/forzy-motor-01/history?sensorId=s1&limit=1"
+    )
+
+    assert response.status_code == 200
+    assert response.json()["limit"] == 1
+    assert response.json()["items"][0]["sensorId"] == "s1"
+    assert "raw" not in response.json()["items"][0]
+    assert "payloadHash" not in response.json()["items"][0]
+    query = repository.history_queries[-1]
+    assert (query.asset_id, query.sensor_id, query.limit) == (
+        "forzy-motor-01",
+        "s1",
+        1,
+    )
+
+
+@pytest.mark.parametrize(
+    "query",
+    ["sensorId=s3", "limit=0", "limit=501"],
+)
+def test_history_rejects_unknown_sensors_and_out_of_range_limits(
+    client, repository, query
+):
+    response = client.get(
+        f"/api/v2/assets/forzy-motor-01/history?{query}"
+    )
+
+    assert response.status_code == 422
+    assert repository.history_queries == []
+
+
+def test_history_accepts_the_500_item_boundary(client, repository):
+    response = client.get(
+        "/api/v2/assets/forzy-motor-01/history?sensorId=s2&limit=500"
+    )
+
+    assert response.status_code == 200
+    assert repository.history_queries[-1].limit == 500
+
+
+def test_integration_health_sanitizes_repository_errors(client, repository):
+    repository.health_by_sensor["s1"] = RepositorySensorHealthV2(
+        sensor_id="s1",
+        last_attempt_at=NOW_IN_WINDOW,
+        last_success_at=None,
+        latency_ms=19,
+        error_code="db.internal.example\nTraceback: secret",
+        sample_count=3,
+    )
+
+    response = client.get("/api/v2/integration/health")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "ok"
+    assert body["integration"]["state"] == "active"
+    assert body["integration"]["sensors"]["s1"]["error"] == "upstream_unavailable"
+    assert body["integration"]["sensors"]["s2"]["sampleCount"] == 0
+    assert "internal.example" not in response.text
+    assert "Traceback" not in response.text
+
+
+@pytest.mark.parametrize(
+    ("method", "path"),
+    [
+        ("get", "/api/v2/assets/fake/snapshot"),
+        ("post", "/api/v2/assets/fake/refresh"),
+        ("get", "/api/v2/assets/fake/history"),
+    ],
+)
+def test_unknown_asset_is_404_before_any_effect(
+    method, path, repository, refresh_service, settings
+):
+    clock = Mock(return_value=NOW_IN_WINDOW)
+    app = create_app_v2(
+        repository=repository,
+        settings=settings,
+        refresh_service=refresh_service,
+        assessment_scorer=None,
+        clock=clock,
+    )
+
+    response = getattr(TestClient(app), method)(path)
+
+    assert response.status_code == 404
+    assert response.json() == {"detail": "asset_not_found"}
+    clock.assert_not_called()
+    refresh_service.refresh.assert_not_called()
+    assert repository.history_queries == []
+
+
+def test_database_failure_returns_only_a_sanitized_error(
+    client, repository
+):
+    repository.latest = Mock(
+        side_effect=RuntimeError(
+            "postgresql://secret@db.internal.example/twinops\nTraceback: secret"
+        )
+    )
+
+    response = TestClient(
+        client.app, raise_server_exceptions=False
+    ).get("/api/v2/assets/forzy-motor-01/snapshot")
+
+    assert response.status_code == 500
+    assert response.json() == {"detail": "internal_error"}
+    assert "secret" not in response.text
+    assert "internal.example" not in response.text
+    assert "Traceback" not in response.text
+
+
+def test_model_failure_degrades_without_exposing_details(
+    repository, refresh_service, settings
+):
+    repository.samples = [_reading("s1"), _reading("s2")]
+    scorer = Mock()
+    scorer.assess.side_effect = RuntimeError(
+        "model host ml.internal.example\nTraceback: secret"
+    )
+    app = create_app_v2(
+        repository=repository,
+        settings=settings,
+        refresh_service=refresh_service,
+        assessment_scorer=scorer,
+        clock=lambda: NOW_IN_WINDOW,
+    )
+
+    response = TestClient(app).get(
+        "/api/v2/assets/forzy-motor-01/snapshot"
+    )
+
+    assert response.status_code == 200
+    assert response.json()["assessment"] is None
+    assert response.json()["status"] == "insufficient_data"
+    assert "secret" not in response.text
+    assert "internal.example" not in response.text
+    assert "Traceback" not in response.text
+
+
+def test_importing_main_v2_has_no_environment_or_database_side_effects(tmp_path):
+    database_path = tmp_path / "must-not-exist.sqlite3"
+    env = os.environ.copy()
+    env.pop("TWINOPS_UPSTREAM_BASE_URL", None)
+    env.pop("DATABASE_URL", None)
+    env["TWINOPS_DATABASE_PATH"] = str(database_path)
+
+    completed = subprocess.run(
+        [sys.executable, "-c", "import twinops.main_v2; print('imported')"],
+        capture_output=True,
+        text=True,
+        timeout=10,
+        env=env,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert completed.stdout.strip() == "imported"
+    assert database_path.exists() is False
+
+
+def test_environment_factory_selects_sqlite_and_initializes_in_lifespan(
+    monkeypatch, tmp_path
+):
+    repository = _Repository()
+    sqlite_factory = Mock(return_value=repository)
+    postgres_factory = Mock()
+    async_client_factory = Mock(return_value=_FakeAsyncClient())
+    monkeypatch.setattr(
+        main_v2, "SQLiteTelemetryRepositoryV2", sqlite_factory, raising=False
+    )
+    monkeypatch.setattr(
+        main_v2, "PostgresTelemetryRepository", postgres_factory, raising=False
+    )
+    monkeypatch.setattr(
+        main_v2,
+        "httpx",
+        Mock(AsyncClient=async_client_factory),
+        raising=False,
+    )
+    database_path = tmp_path / "runtime.sqlite3"
+
+    app = getattr(main_v2, "create_app_v2_from_env")(
+        {
+            "TWINOPS_UPSTREAM_BASE_URL": "https://upstream.invalid",
+            "TWINOPS_DATABASE_PATH": str(database_path),
+        },
+        clock=lambda: NOW_IN_WINDOW,
+    )
+
+    assert repository.initialized is False
+    async_client_factory.assert_not_called()
+    sqlite_factory.assert_called_once_with(database_path)
+    postgres_factory.assert_not_called()
+    with TestClient(app):
+        assert repository.initialized is True
+        async_client_factory.assert_called_once_with()
+
+
+def test_environment_factory_selects_postgres_when_database_url_exists(
+    monkeypatch,
+):
+    repository = _Repository()
+    sqlite_factory = Mock()
+    postgres_factory = Mock(return_value=repository)
+    monkeypatch.setattr(
+        main_v2, "SQLiteTelemetryRepositoryV2", sqlite_factory
+    )
+    monkeypatch.setattr(
+        main_v2, "PostgresTelemetryRepository", postgres_factory
+    )
+
+    app = main_v2.create_app_v2_from_env(
+        {
+            "TWINOPS_UPSTREAM_BASE_URL": "https://upstream.invalid",
+            "DATABASE_URL": "postgresql://runtime.invalid/twinops",
+        }
+    )
+
+    assert app.state.repository is repository
+    assert repository.initialized is False
+    postgres_factory.assert_called_once_with(
+        "postgresql://runtime.invalid/twinops"
+    )
+    sqlite_factory.assert_not_called()
+
+
+def test_runtime_loads_scorer_only_with_all_three_anchors(
+    monkeypatch, tmp_path
+):
+    repository = _Repository()
+    scorer = Mock()
+    scorer_loader = Mock(return_value=scorer)
+    monkeypatch.setattr(
+        main_v2,
+        "SQLiteTelemetryRepositoryV2",
+        Mock(return_value=repository),
+    )
+    monkeypatch.setattr(
+        main_v2,
+        "httpx",
+        Mock(AsyncClient=Mock(return_value=_FakeAsyncClient())),
+    )
+    monkeypatch.setattr(main_v2, "load_assessment_scorer", scorer_loader)
+    artifact_path = tmp_path / "model"
+    manifest_hash = f"sha256:{'1' * 64}"
+    model_hash = f"sha256:{'2' * 64}"
+    app = main_v2.create_app_v2_from_env(
+        {
+            "TWINOPS_UPSTREAM_BASE_URL": "https://upstream.invalid",
+            "TWINOPS_ML_ARTIFACT_PATH": str(artifact_path),
+            "TWINOPS_ML_MANIFEST_HASH": manifest_hash,
+            "TWINOPS_ML_MODEL_HASH": model_hash,
+        }
+    )
+
+    scorer_loader.assert_not_called()
+    with TestClient(app):
+        scorer_loader.assert_called_once_with(
+            artifact_path,
+            expected_manifest_hash=manifest_hash,
+            expected_model_hash=model_hash,
+        )
+        assert app.state.assessment_scorer is scorer
+
+
+def test_runtime_does_not_load_scorer_without_anchors(monkeypatch):
+    repository = _Repository()
+    scorer_loader = Mock()
+    monkeypatch.setattr(
+        main_v2,
+        "SQLiteTelemetryRepositoryV2",
+        Mock(return_value=repository),
+    )
+    monkeypatch.setattr(
+        main_v2,
+        "httpx",
+        Mock(AsyncClient=Mock(return_value=_FakeAsyncClient())),
+    )
+    monkeypatch.setattr(main_v2, "load_assessment_scorer", scorer_loader)
+    app = main_v2.create_app_v2_from_env(
+        {"TWINOPS_UPSTREAM_BASE_URL": "https://upstream.invalid"}
+    )
+
+    with TestClient(app):
+        scorer_loader.assert_not_called()
+
+
+def _reading(sensor_id: str) -> CanonicalSensorReadingV2:
+    suffix = "1" if sensor_id == "s1" else "2"
+    return CanonicalSensorReadingV2.model_validate(
+        {
+            "schemaVersion": "2.0",
+            "readingId": f"00000000-0000-4000-8000-00000000000{suffix}",
+            "source": "forzy-live",
+            "assetId": "forzy-motor-01",
+            "sensorId": sensor_id,
+            "scheduledAt": "2026-08-12T15:00:00.000Z",
+            "observedAt": "2026-08-12T15:00:01.000Z",
+            "receivedAt": "2026-08-12T15:00:01.000Z",
+            "timestampQuality": "assumed_from_retrieval",
+            "measurements": {
+                "vibrationVelocityRms": {
+                    "value": 0.04,
+                    "unit": "mm/s",
+                    "semanticConfidence": "inferred_from_datasheet",
+                },
+                "vibrationAcceleration": {
+                    "value": 0.0,
+                    "unit": "g",
+                    "statistic": "unknown",
+                    "semanticConfidence": "unconfirmed",
+                },
+                "temperature": {
+                    "value": 34.0,
+                    "unit": "degC",
+                    "semanticConfidence": "inferred_from_datasheet",
+                },
+            },
+            "qualityFlags": [],
+            "payloadHash": f"sha256:{suffix * 64}",
+            "raw": {},
+            "provenance": {
+                "sourceSystem": "forzy-api",
+                "ingestedAt": "2026-08-12T15:00:01.000Z",
+                "sourceTimestampProvided": False,
+            },
+        }
+    )
