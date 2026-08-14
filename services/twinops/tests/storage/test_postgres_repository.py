@@ -1,5 +1,7 @@
+import json
 import os
 
+import psycopg
 import pytest
 
 from test_sqlite_v2_repository import repository_contract as assert_repository_contract
@@ -17,7 +19,6 @@ def postgres_repo():
         pytest.skip("TEST_DATABASE_URL not configured")
 
     from twinops.storage.postgres_repository import PostgresTelemetryRepository
-    import psycopg
 
     repository = PostgresTelemetryRepository(database_url)
     repository.initialize()
@@ -41,3 +42,21 @@ def test_postgres_repository_satisfies_shared_contract(
     postgres_repo, repository_contract
 ):
     repository_contract(postgres_repo)
+
+    with psycopg.connect(postgres_repo.database_url) as connection:
+        rows = connection.execute(
+            "SELECT payload_json FROM raw_readings_v2 ORDER BY scheduled_at"
+        ).fetchall()
+
+    expected_payload = {
+        "dados1": {
+            "Velocidade": 0.12,
+            "Aceleração": 0.0,
+            "Temperatura": 34,
+        }
+    }
+    assert len(rows) == 2
+    assert [json.loads(row[0]) for row in rows] == [
+        expected_payload,
+        expected_payload,
+    ]
