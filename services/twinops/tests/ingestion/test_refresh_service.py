@@ -129,6 +129,7 @@ async def test_repeated_payload_is_unchanged_but_keeps_raw_and_attempt_audit(
     assert len(latest) == 2
     assert all(item.scheduled_at == "2026-08-12T15:00:00Z" for item in latest)
     assert all(item.observed_at == item.received_at for item in latest)
+    assert all(item.received_at != item.scheduled_at for item in latest)
     with sqlite3.connect(repo.path) as connection:
         assert connection.execute(
             "SELECT COUNT(*) FROM raw_readings_v2"
