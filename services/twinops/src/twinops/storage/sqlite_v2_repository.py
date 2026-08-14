@@ -20,10 +20,16 @@ from twinops.storage.v2_repository import (
 _MIGRATION_PATH = Path(__file__).parents[3] / "migrations" / "002_real_twin_v2.sql"
 
 
-def _timestamp(value: datetime) -> str:
+def _timestamp(value: datetime | str) -> str:
+    if isinstance(value, str):
+        value = datetime.fromisoformat(value.replace("Z", "+00:00"))
     if value.tzinfo is None:
         raise ValueError("timestamp must be timezone-aware")
-    return value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+    return (
+        value.astimezone(timezone.utc)
+        .isoformat(timespec="microseconds")
+        .replace("+00:00", "Z")
+    )
 
 
 def _parse_timestamp(value: str | None) -> datetime | None:
@@ -86,8 +92,8 @@ class SQLiteTelemetryRepositoryV2:
                     sample.reading_id,
                     sample.asset_id,
                     sample.sensor_id,
-                    sample.observed_at,
-                    sample.received_at,
+                    _timestamp(sample.observed_at),
+                    _timestamp(sample.received_at),
                     sample.payload_hash,
                     canonical_json,
                 ),
