@@ -1,5 +1,18 @@
 # Índice de execução paralela — Forzy TwinOps
 
+## Contrato canônico v2
+
+A fronteira de migração para o contrato canônico está em
+[`contracts/v2/README.md`](../../../contracts/v2/README.md). Os JSON Schemas
+em `contracts/v2/` são a autoridade do contrato: a documentação orienta a
+migração, mas não altera nem flexibiliza a validação definida pelos schemas.
+
+Durante a migração, `contracts/v1/` permanece preservado. Integrações que
+ainda produzem v1 devem converter na fronteira antes de entregar v2. Para
+Forzy live, a equivalência `observedAt = receivedAt` tem semântica assumida de
+recuperação, nunca de horário real da medição, e exige
+`timestampQuality: "assumed_from_retrieval"`.
+
 ## Base congelada
 
 - Repositório: `https://github.com/9luis7/forzy-twinops`
