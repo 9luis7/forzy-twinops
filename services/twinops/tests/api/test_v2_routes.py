@@ -12,7 +12,7 @@ from twinops.config_v2 import SettingsV2
 from twinops.contracts.v2_models import CanonicalSensorReadingV2
 from twinops.ingestion.refresh_service import RefreshResult
 from twinops.main_v2 import create_app_v2
-from twinops.storage.v2_repository import RepositorySensorHealthV2
+from twinops.storage.v2_repository import InsertResult, RepositorySensorHealthV2
 
 
 NOW_IN_WINDOW = datetime(2026, 8, 12, 15, 0, 1, tzinfo=timezone.utc)
@@ -27,12 +27,40 @@ class _FakeAsyncClient:
         return False
 
 
+class _FakeResponse:
+    def __init__(self, payload):
+        self.payload = payload
+
+    def raise_for_status(self):
+        return None
+
+    def json(self):
+        return self.payload
+
+
+class _SuccessfulFakeAsyncClient(_FakeAsyncClient):
+    async def get(self, url, **kwargs):
+        sensor_id = url.rsplit("_", 1)[-1]
+        suffix = sensor_id[-1]
+        return _FakeResponse(
+            {
+                f"dados{suffix}": {
+                    "Velocidade": 0.04,
+                    "Aceleração": 0.0,
+                    "Temperatura": 34.0,
+                }
+            }
+        )
+
+
 class _Repository:
     def __init__(self):
         self.initialized = False
         self.history_queries = []
         self.samples = []
         self.health_by_sensor = {}
+        self.raw_readings = []
+        self.attempts = []
 
     def initialize(self):
         self.initialized = True
@@ -50,6 +78,16 @@ class _Repository:
 
     def health(self, sensor_id):
         return self.health_by_sensor.get(sensor_id)
+
+    def append_raw(self, reading):
+        self.raw_readings.append(reading)
+
+    def insert_distinct_sample(self, sample):
+        self.samples.append(sample)
+        return InsertResult(stored=True, duplicate_of=None)
+
+    def record_attempt(self, attempt):
+        self.attempts.append(attempt)
 
 
 @pytest.fixture
@@ -242,6 +280,32 @@ def test_unknown_asset_is_404_before_any_effect(
     assert repository.history_queries == []
 
 
+def test_mutated_asset_setting_cannot_expand_the_public_boundary(
+    repository, refresh_service, tmp_path
+):
+    clock = Mock(return_value=NOW_IN_WINDOW)
+    settings = SettingsV2(
+        upstream_base_url="https://upstream.invalid",
+        database_path=tmp_path / "mutated.sqlite3",
+        asset_id="fake",
+    )
+    app = create_app_v2(
+        repository=repository,
+        settings=settings,
+        refresh_service=refresh_service,
+        assessment_scorer=None,
+        clock=clock,
+    )
+
+    response = TestClient(app).post("/api/v2/assets/fake/refresh")
+
+    assert response.status_code == 404
+    assert response.json() == {"detail": "asset_not_found"}
+    clock.assert_not_called()
+    refresh_service.refresh.assert_not_called()
+    assert repository.history_queries == []
+
+
 def test_database_failure_returns_only_a_sanitized_error(
     client, repository
 ):
@@ -365,6 +429,7 @@ def test_environment_factory_selects_postgres_when_database_url_exists(
         {
             "TWINOPS_UPSTREAM_BASE_URL": "https://upstream.invalid",
             "DATABASE_URL": "postgresql://runtime.invalid/twinops",
+            "VERCEL": "1",
         }
     )
 
@@ -374,6 +439,56 @@ def test_environment_factory_selects_postgres_when_database_url_exists(
         "postgresql://runtime.invalid/twinops"
     )
     sqlite_factory.assert_not_called()
+
+
+def test_vercel_environment_requires_database_url():
+    with pytest.raises(ValueError, match="DATABASE_URL is required for deployment"):
+        main_v2.create_app_v2_from_env(
+            {
+                "TWINOPS_UPSTREAM_BASE_URL": "https://upstream.invalid",
+                "VERCEL": "1",
+            }
+        )
+
+
+def test_environment_factory_refreshes_only_the_canonical_asset(
+    monkeypatch,
+):
+    repository = _Repository()
+    monkeypatch.setattr(
+        main_v2,
+        "SQLiteTelemetryRepositoryV2",
+        Mock(return_value=repository),
+    )
+    monkeypatch.setattr(
+        main_v2,
+        "httpx",
+        Mock(
+            AsyncClient=Mock(return_value=_SuccessfulFakeAsyncClient())
+        ),
+    )
+    app = main_v2.create_app_v2_from_env(
+        {
+            "TWINOPS_UPSTREAM_BASE_URL": "https://upstream.invalid",
+            "TWINOPS_ASSET_ID": "fake",
+        },
+        clock=lambda: NOW_IN_WINDOW,
+    )
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/v2/assets/forzy-motor-01/refresh"
+        )
+        history = client.get(
+            "/api/v2/assets/forzy-motor-01/history?limit=2"
+        )
+
+    assert response.status_code == 200
+    assert response.json()["outcomes"] == {"s1": "stored", "s2": "stored"}
+    assert history.status_code == 200
+    assert {item["assetId"] for item in history.json()["items"]} == {
+        "forzy-motor-01"
+    }
 
 
 def test_runtime_loads_scorer_only_with_all_three_anchors(
@@ -413,6 +528,56 @@ def test_runtime_loads_scorer_only_with_all_three_anchors(
             expected_model_hash=model_hash,
         )
         assert app.state.assessment_scorer is scorer
+
+
+def test_runtime_keeps_telemetry_available_when_scorer_loader_fails(
+    monkeypatch, tmp_path, caplog
+):
+    caplog.set_level("WARNING", logger="twinops.api")
+    repository = _Repository()
+    scorer_loader = Mock(
+        side_effect=RuntimeError(
+            "artifact host ml.internal.example\nTraceback: secret"
+        )
+    )
+    monkeypatch.setattr(
+        main_v2,
+        "SQLiteTelemetryRepositoryV2",
+        Mock(return_value=repository),
+    )
+    monkeypatch.setattr(
+        main_v2,
+        "httpx",
+        Mock(AsyncClient=Mock(return_value=_FakeAsyncClient())),
+    )
+    monkeypatch.setattr(main_v2, "load_assessment_scorer", scorer_loader)
+    app = main_v2.create_app_v2_from_env(
+        {
+            "TWINOPS_UPSTREAM_BASE_URL": "https://upstream.invalid",
+            "TWINOPS_ML_ARTIFACT_PATH": str(tmp_path / "model"),
+            "TWINOPS_ML_MANIFEST_HASH": f"sha256:{'1' * 64}",
+            "TWINOPS_ML_MODEL_HASH": f"sha256:{'2' * 64}",
+        },
+        clock=lambda: NOW_IN_WINDOW,
+    )
+
+    with TestClient(app) as client:
+        snapshot = client.get(
+            "/api/v2/assets/forzy-motor-01/snapshot"
+        )
+        health = client.get("/api/v2/integration/health")
+
+    assert snapshot.status_code == 200
+    assert snapshot.json()["assessment"] is None
+    assert health.status_code == 200
+    assert health.json()["status"] == "ok"
+    assert "internal.example" not in snapshot.text + health.text
+    assert "Traceback" not in snapshot.text + health.text
+    assert "secret" not in snapshot.text + health.text
+    assert "assessment_scorer_unavailable error_type=RuntimeError" in caplog.text
+    assert "internal.example" not in caplog.text
+    assert "Traceback" not in caplog.text
+    assert "secret" not in caplog.text
 
 
 def test_runtime_does_not_load_scorer_without_anchors(monkeypatch):

@@ -10,7 +10,7 @@ import httpx
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
-from twinops.api.v2_routes import create_v2_router
+from twinops.api.v2_routes import PUBLIC_ASSET_ID, create_v2_router
 from twinops.config_v2 import SettingsV2
 from twinops.ingestion.refresh_service import RefreshService
 from twinops.ingestion.schedule import CollectionWindow
@@ -71,7 +71,10 @@ def create_app_v2_from_env(
 ) -> FastAPI:
     """Build the deployable app without opening files, sockets, or models."""
 
-    settings = SettingsV2.from_env(os.environ if env is None else env)
+    source_env = os.environ if env is None else env
+    settings = SettingsV2.from_env(source_env)
+    if source_env.get("VERCEL") == "1":
+        settings = settings.for_deploy()
     repository: TelemetryRepositoryV2
     if settings.database_url is not None:
         repository = PostgresTelemetryRepository(settings.database_url)
@@ -102,7 +105,7 @@ def _runtime_lifespan(settings: SettingsV2, repository: TelemetryRepositoryV2):
                     settings.request_timeout_seconds,
                 ),
                 repository,
-                asset_id=settings.asset_id,
+                asset_id=PUBLIC_ASSET_ID,
                 window=CollectionWindow(settings.timezone_name),
                 poll_interval_seconds=settings.poll_interval_seconds,
             )
@@ -127,8 +130,15 @@ def _load_configured_scorer(settings: SettingsV2) -> AssessmentScorer | None:
     assert settings.ml_artifact_path is not None
     assert settings.ml_manifest_hash is not None
     assert settings.ml_model_hash is not None
-    return load_assessment_scorer(
-        settings.ml_artifact_path,
-        expected_manifest_hash=settings.ml_manifest_hash,
-        expected_model_hash=settings.ml_model_hash,
-    )
+    try:
+        return load_assessment_scorer(
+            settings.ml_artifact_path,
+            expected_manifest_hash=settings.ml_manifest_hash,
+            expected_model_hash=settings.ml_model_hash,
+        )
+    except Exception as exc:
+        logging.getLogger("twinops.api").warning(
+            "assessment_scorer_unavailable error_type=%s",
+            type(exc).__name__,
+        )
+        return None

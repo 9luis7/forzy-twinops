@@ -11,6 +11,9 @@ from twinops.ingestion.schedule import CollectionWindow
 from twinops.storage.v2_repository import HistoryQueryV2
 
 
+PUBLIC_ASSET_ID = "forzy-motor-01"
+
+
 def create_v2_router() -> APIRouter:
     router = APIRouter(prefix="/api/v2", tags=["real-twin"])
 
@@ -97,7 +100,7 @@ def create_v2_router() -> APIRouter:
 
 
 def _require_asset(request: Request, asset_id: str) -> None:
-    if asset_id != request.app.state.settings.asset_id:
+    if asset_id != PUBLIC_ASSET_ID:
         raise HTTPException(status_code=404, detail="asset_not_found")
 
 
@@ -105,7 +108,7 @@ def _persisted_state(request: Request, now):
     settings = request.app.state.settings
     if not CollectionWindow(settings.timezone_name).is_open(now):
         return "expected_idle", "schedule"
-    if request.app.state.repository.latest(settings.asset_id):
+    if request.app.state.repository.latest(PUBLIC_ASSET_ID):
         return "last_known", "last_received"
     return "unavailable", "none"
 
@@ -115,8 +118,7 @@ def _refresh_state(request: Request, result):
         return "expected_idle", "schedule"
     if any(outcome != "failed" for outcome in result.outcomes.values()):
         return "received_now", "retrieval_time"
-    settings = request.app.state.settings
-    if request.app.state.repository.latest(settings.asset_id):
+    if request.app.state.repository.latest(PUBLIC_ASSET_ID):
         return "last_known", "last_received"
     return "unavailable", "none"
 
