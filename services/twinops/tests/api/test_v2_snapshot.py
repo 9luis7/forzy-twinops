@@ -1,5 +1,7 @@
 from datetime import datetime, timezone
 
+import pytest
+
 from twinops.api.v2_snapshot import build_snapshot_v2
 from twinops.contracts.models import AssetConditionAssessment
 from twinops.contracts.v2_models import CanonicalSensorReadingV2
@@ -81,6 +83,17 @@ class _MissingAssessmentScorer:
     def assess(self, samples, *, now):
         sensor_id = samples[0].sensor_id
         return None if sensor_id == "s2" else _assessment(sensor_id, "alert")
+
+
+class _FailingScorer:
+    def __init__(self, error_type):
+        self.error_type = error_type
+
+    def assess(self, samples, *, now):
+        sensor_id = samples[0].sensor_id
+        if sensor_id == "s2":
+            raise self.error_type("secret scorer internals")
+        return _assessment(sensor_id, "alert")
 
 
 class _CountingScorer(_Scorer):
@@ -213,6 +226,24 @@ def test_missing_sensor_assessment_dominates_an_alert():
 
     assert snapshot.status == "insufficient_data"
     assert snapshot.assessment is None
+
+
+@pytest.mark.parametrize("error_type", [ValueError, RuntimeError])
+def test_expected_scorer_failure_is_an_absent_assessment(error_type):
+    snapshot = build_snapshot_v2(
+        repository=_HealthRepository(("s1", "s2")),
+        scorer=_FailingScorer(error_type),
+        now=NOW,
+        operational_state="received_now",
+        freshness_basis="retrieval_time",
+        twin3d_enabled=True,
+    )
+
+    assert snapshot.status == "insufficient_data"
+    assert snapshot.assessment is None
+    assert [channel.sensor_id for channel in snapshot.channels] == ["s1", "s2"]
+    assert snapshot.integration.sensors.s1.sample_count == 7
+    assert "secret scorer internals" not in snapshot.model_dump_json()
 
 
 def test_worst_real_severity_is_published():

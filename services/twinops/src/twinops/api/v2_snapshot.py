@@ -126,17 +126,20 @@ def _score_sensor(
     *,
     now: datetime,
 ) -> AssetConditionAssessmentV2 | None:
-    assessment = scorer.assess(
-        [_to_scorer_reading(reading) for reading in readings],
-        now=now,
-    )
-    if assessment is None:
+    try:
+        assessment = scorer.assess(
+            [_to_scorer_reading(reading) for reading in readings],
+            now=now,
+        )
+        if assessment is None:
+            return None
+        body = assessment.model_dump(mode="json", by_alias=True)
+        body["schemaVersion"] = "2.0"
+        body["assetId"] = _ASSET_ID
+        body.pop("assetTag", None)
+        return AssetConditionAssessmentV2.model_validate(body)
+    except (ValueError, RuntimeError):
         return None
-    body = assessment.model_dump(mode="json", by_alias=True)
-    body["schemaVersion"] = "2.0"
-    body["assetId"] = _ASSET_ID
-    body.pop("assetTag", None)
-    return AssetConditionAssessmentV2.model_validate(body)
 
 
 def _to_scorer_reading(reading: CanonicalSensorReadingV2) -> CanonicalSensorReading:
