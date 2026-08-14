@@ -24,16 +24,16 @@ def postgres_repo():
     repository.initialize()
     with psycopg.connect(database_url) as connection:
         connection.execute(
-            "TRUNCATE TABLE collection_attempts_v2, raw_readings_v2, "
-            "telemetry_samples_v2"
+            "TRUNCATE TABLE refresh_cycles_v2, collection_attempts_v2, "
+            "raw_readings_v2, latest_readings_v2, telemetry_samples_v2"
         )
     try:
         yield repository
     finally:
         with psycopg.connect(database_url) as connection:
             connection.execute(
-                "TRUNCATE TABLE collection_attempts_v2, raw_readings_v2, "
-                "telemetry_samples_v2"
+                "TRUNCATE TABLE refresh_cycles_v2, collection_attempts_v2, "
+                "raw_readings_v2, latest_readings_v2, telemetry_samples_v2"
             )
 
 

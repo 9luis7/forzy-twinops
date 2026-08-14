@@ -108,6 +108,7 @@ def _runtime_lifespan(settings: SettingsV2, repository: TelemetryRepositoryV2):
                 asset_id=PUBLIC_ASSET_ID,
                 window=CollectionWindow(settings.timezone_name),
                 poll_interval_seconds=settings.poll_interval_seconds,
+                clock=app.state.clock,
             )
             app.state.assessment_scorer = scorer or _UnavailableAssessmentScorer()
             try:

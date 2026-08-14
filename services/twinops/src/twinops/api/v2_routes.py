@@ -35,12 +35,13 @@ def create_v2_router() -> APIRouter:
         now = request.app.state.clock()
         result = await request.app.state.refresh_service.refresh(now)
         operational_state, freshness_basis = _refresh_state(request, result)
+        completion = result.completed_at or request.app.state.clock()
         return {
             "refreshAttempted": result.refresh_attempted,
             "outcomes": result.outcomes,
             "snapshot": _build_snapshot(
                 request,
-                now=now,
+                now=max(now, completion),
                 operational_state=operational_state,
                 freshness_basis=freshness_basis,
             ),
@@ -56,6 +57,7 @@ def create_v2_router() -> APIRouter:
         limit: int = Query(200, ge=1, le=500),
     ):
         _require_asset(request, asset_id)
+        _validate_history_range(from_at, to_at)
         items = request.app.state.repository.history(
             HistoryQueryV2(
                 asset_id=asset_id,
@@ -102,6 +104,18 @@ def create_v2_router() -> APIRouter:
 def _require_asset(request: Request, asset_id: str) -> None:
     if asset_id != PUBLIC_ASSET_ID:
         raise HTTPException(status_code=404, detail="asset_not_found")
+
+
+def _validate_history_range(
+    from_at: datetime | None, to_at: datetime | None
+) -> None:
+    for value in (from_at, to_at):
+        if value is not None and (
+            value.tzinfo is None or value.utcoffset() is None
+        ):
+            raise HTTPException(status_code=422, detail="timezone_required")
+    if from_at is not None and to_at is not None and from_at > to_at:
+        raise HTTPException(status_code=422, detail="invalid_time_range")
 
 
 def _persisted_state(request: Request, now):

@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import os
 import subprocess
 import sys
@@ -12,7 +12,12 @@ from twinops.config_v2 import SettingsV2
 from twinops.contracts.v2_models import CanonicalSensorReadingV2
 from twinops.ingestion.refresh_service import RefreshResult
 from twinops.main_v2 import create_app_v2
-from twinops.storage.v2_repository import InsertResult, RepositorySensorHealthV2
+from twinops.storage.v2_repository import (
+    InsertResult,
+    RefreshCycleClaimV2,
+    RefreshCycleV2,
+    RepositorySensorHealthV2,
+)
 
 
 NOW_IN_WINDOW = datetime(2026, 8, 12, 15, 0, 1, tzinfo=timezone.utc)
@@ -61,6 +66,7 @@ class _Repository:
         self.health_by_sensor = {}
         self.raw_readings = []
         self.attempts = []
+        self.cycles = {}
 
     def initialize(self):
         self.initialized = True
@@ -88,6 +94,69 @@ class _Repository:
 
     def record_attempt(self, attempt):
         self.attempts.append(attempt)
+
+    def persist_sensor_result(self, write):
+        if write.raw is not None:
+            self.raw_readings.append(write.raw)
+        result = None
+        if write.sample is not None:
+            self.samples = [
+                item for item in self.samples if item.sensor_id != write.sample.sensor_id
+            ]
+            self.samples.append(write.sample)
+            result = InsertResult(stored=True, duplicate_of=None)
+        self.attempts.append(write.attempt)
+        return result
+
+    def claim_refresh_cycle(
+        self,
+        *,
+        asset_id,
+        scheduled_at,
+        owner_token,
+        claimed_at,
+        stale_before,
+    ):
+        key = (asset_id, scheduled_at)
+        cycle = self.cycles.get(key)
+        if cycle is None or (
+            cycle.completed_at is None and cycle.claimed_at <= stale_before
+        ):
+            cycle = RefreshCycleV2(
+                asset_id=asset_id,
+                scheduled_at=scheduled_at,
+                owner_token=owner_token,
+                claimed_at=claimed_at,
+                completed_at=None,
+                outcomes=None,
+            )
+            self.cycles[key] = cycle
+            return RefreshCycleClaimV2(owned=True, cycle=cycle)
+        return RefreshCycleClaimV2(owned=False, cycle=cycle)
+
+    def complete_refresh_cycle(
+        self,
+        *,
+        asset_id,
+        scheduled_at,
+        owner_token,
+        completed_at,
+        outcomes,
+    ):
+        key = (asset_id, scheduled_at)
+        cycle = RefreshCycleV2(
+            asset_id=asset_id,
+            scheduled_at=scheduled_at,
+            owner_token=owner_token,
+            claimed_at=self.cycles[key].claimed_at,
+            completed_at=completed_at,
+            outcomes=outcomes,
+        )
+        self.cycles[key] = cycle
+        return cycle
+
+    def get_refresh_cycle(self, asset_id, scheduled_at):
+        return self.cycles.get((asset_id, scheduled_at))
 
 
 @pytest.fixture
@@ -168,6 +237,22 @@ def test_post_refresh_inside_window_returns_received_now(
     assert response.json()["snapshot"]["freshnessBasis"] == "retrieval_time"
 
 
+def test_post_refresh_uses_service_completion_time_for_snapshot(
+    client, refresh_service
+):
+    completion = NOW_IN_WINDOW + timedelta(seconds=4)
+    refresh_service.refresh.return_value = Mock(
+        refresh_attempted=True,
+        outcomes={"s1": "stored", "s2": "stored"},
+        completed_at=completion,
+    )
+
+    response = client.post("/api/v2/assets/forzy-motor-01/refresh")
+
+    assert response.status_code == 200
+    assert response.json()["snapshot"]["generatedAt"] == "2026-08-12T15:00:05.000Z"
+
+
 def test_post_refresh_failures_return_last_known_when_samples_exist(
     client, repository, refresh_service
 ):
@@ -227,6 +312,23 @@ def test_history_accepts_the_500_item_boundary(client, repository):
 
     assert response.status_code == 200
     assert repository.history_queries[-1].limit == 500
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        "from=2026-08-12T15:00:00",
+        "to=2026-08-12T15:00:05",
+        "from=2026-08-12T15:00:05Z&to=2026-08-12T15:00:00Z",
+    ],
+)
+def test_history_rejects_naive_or_reversed_ranges(client, repository, query):
+    response = client.get(
+        f"/api/v2/assets/forzy-motor-01/history?{query}"
+    )
+
+    assert response.status_code == 422
+    assert repository.history_queries == []
 
 
 def test_integration_health_sanitizes_repository_errors(client, repository):

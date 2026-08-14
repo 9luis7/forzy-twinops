@@ -11,6 +11,7 @@ from twinops.storage.v2_repository import (
     CollectionAttemptV2,
     HistoryQueryV2,
     RawReadingV2,
+    SensorRefreshWriteV2,
 )
 
 
@@ -69,6 +70,7 @@ def repository_contract(repo):
     assert len(
         repo.history(HistoryQueryV2(asset_id="forzy-motor-01", sensor_id="s1"))
     ) == 1
+    assert repo.latest("forzy-motor-01")[0].reading_id == duplicate.reading_id
 
     changed = _make_sample(
         reading_id="33333333-3333-4333-8333-333333333333",
@@ -149,6 +151,57 @@ def repository_contract(repo):
     assert health.last_success_at == _BASE_INSTANT
     assert health.latency_ms == 17
     assert health.error_code == "invalid_payload"
+
+    claim_slot = _BASE_INSTANT + timedelta(seconds=90)
+    first_claim = repo.claim_refresh_cycle(
+        asset_id="forzy-motor-01",
+        scheduled_at=claim_slot,
+        owner_token="owner-1",
+        claimed_at=claim_slot,
+        stale_before=claim_slot - timedelta(seconds=30),
+    )
+    competing_claim = repo.claim_refresh_cycle(
+        asset_id="forzy-motor-01",
+        scheduled_at=claim_slot,
+        owner_token="owner-2",
+        claimed_at=claim_slot + timedelta(seconds=5),
+        stale_before=claim_slot - timedelta(seconds=25),
+    )
+
+    assert first_claim.owned is True
+    assert competing_claim.owned is False
+    assert competing_claim.cycle.owner_token == "owner-1"
+    assert competing_claim.cycle.outcomes is None
+
+    reclaimed = repo.claim_refresh_cycle(
+        asset_id="forzy-motor-01",
+        scheduled_at=claim_slot,
+        owner_token="owner-2",
+        claimed_at=claim_slot + timedelta(seconds=31),
+        stale_before=claim_slot + timedelta(seconds=1),
+    )
+    assert reclaimed.owned is True
+    assert reclaimed.cycle.owner_token == "owner-2"
+
+    completed = repo.complete_refresh_cycle(
+        asset_id="forzy-motor-01",
+        scheduled_at=claim_slot,
+        owner_token="owner-2",
+        completed_at=claim_slot + timedelta(seconds=32),
+        outcomes={"s1": "failed", "s2": "stored"},
+    )
+    replay = repo.claim_refresh_cycle(
+        asset_id="forzy-motor-01",
+        scheduled_at=claim_slot,
+        owner_token="owner-3",
+        claimed_at=claim_slot + timedelta(seconds=40),
+        stale_before=claim_slot + timedelta(seconds=10),
+    )
+
+    assert completed.outcomes == {"s1": "failed", "s2": "stored"}
+    assert replay.owned is False
+    assert replay.cycle.completed_at == claim_slot + timedelta(seconds=32)
+    assert replay.cycle.outcomes == {"s1": "failed", "s2": "stored"}
     assert health.sample_count == 4
     assert repo.health("s2") is None
 
@@ -399,8 +452,131 @@ def test_initialize_creates_wal_v2_schema_and_history_index(repo):
 
     assert {
         "telemetry_samples_v2",
+        "latest_readings_v2",
         "raw_readings_v2",
         "collection_attempts_v2",
+        "refresh_cycles_v2",
     } <= tables
     assert "ix_telemetry_samples_v2_history" in indexes
     assert journal_mode == "wal"
+
+
+def test_initialize_backfills_latest_from_newer_existing_trend_row(repo):
+    first = _make_sample(
+        reading_id="11111111-aaaa-4111-8111-111111111111",
+        seconds=90,
+        velocity=0.40,
+    )
+    newer = _make_sample(
+        reading_id="22222222-bbbb-4222-8222-222222222222",
+        seconds=95,
+        velocity=0.80,
+    )
+    repo.insert_distinct_sample(first)
+    canonical_json = json.dumps(
+        newer.model_dump(mode="json", by_alias=True),
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    with sqlite3.connect(repo.path) as connection:
+        connection.execute(
+            "INSERT INTO telemetry_samples_v2 "
+            "(reading_id,asset_id,sensor_id,observed_at,received_at,"
+            "payload_hash,canonical_json) VALUES (?,?,?,?,?,?,?)",
+            (
+                newer.reading_id,
+                newer.asset_id,
+                newer.sensor_id,
+                newer.observed_at,
+                newer.received_at,
+                newer.payload_hash,
+                canonical_json,
+            ),
+        )
+
+    repo.initialize()
+
+    assert repo.latest("forzy-motor-01")[0].reading_id == newer.reading_id
+
+
+def test_sensor_result_rolls_back_raw_latest_history_and_attempt_together(repo):
+    first = _make_sample(
+        reading_id="11111111-aaaa-4111-8111-111111111111",
+        seconds=100,
+        velocity=0.40,
+    )
+    second = _make_sample(
+        reading_id="22222222-bbbb-4222-8222-222222222222",
+        seconds=105,
+        velocity=0.80,
+    )
+    attempt_id = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+
+    stored = repo.persist_sensor_result(
+        SensorRefreshWriteV2(
+            raw=RawReadingV2(
+                raw_id="raw-first",
+                sensor_id="s1",
+                scheduled_at=_BASE_INSTANT + timedelta(seconds=100),
+                received_at=_BASE_INSTANT + timedelta(seconds=100),
+                payload_hash=first.payload_hash,
+                payload={"dados1": {"Velocidade": 0.40}},
+            ),
+            sample=first,
+            attempt=CollectionAttemptV2(
+                "s1",
+                _BASE_INSTANT + timedelta(seconds=100),
+                _BASE_INSTANT + timedelta(seconds=100),
+                True,
+                10,
+                None,
+                attempt_id,
+            ),
+        )
+    )
+
+    assert stored is not None and stored.stored is True
+
+    with pytest.raises(Exception):
+        repo.persist_sensor_result(
+            SensorRefreshWriteV2(
+                raw=RawReadingV2(
+                    raw_id="raw-second",
+                    sensor_id="s1",
+                    scheduled_at=_BASE_INSTANT + timedelta(seconds=105),
+                    received_at=_BASE_INSTANT + timedelta(seconds=105),
+                    payload_hash=second.payload_hash,
+                    payload={"dados1": {"Velocidade": 0.80}},
+                ),
+                sample=second,
+                attempt=CollectionAttemptV2(
+                    "s1",
+                    _BASE_INSTANT + timedelta(seconds=105),
+                    _BASE_INSTANT + timedelta(seconds=105),
+                    True,
+                    11,
+                    None,
+                    attempt_id,
+                ),
+            )
+        )
+
+    assert repo.latest("forzy-motor-01")[0].reading_id == first.reading_id
+    assert [
+        item.reading_id
+        for item in repo.history(
+            HistoryQueryV2(asset_id="forzy-motor-01", sensor_id="s1")
+        )
+    ] == [first.reading_id]
+    health = repo.health("s1")
+    assert health is not None
+    assert health.latency_ms == 10
+
+    with sqlite3.connect(repo.path) as connection:
+        assert connection.execute(
+            "SELECT raw_id FROM raw_readings_v2 ORDER BY raw_id"
+        ).fetchall() == [("raw-first",)]
+        assert connection.execute(
+            "SELECT attempt_id FROM collection_attempts_v2"
+        ).fetchall() == [(attempt_id,)]

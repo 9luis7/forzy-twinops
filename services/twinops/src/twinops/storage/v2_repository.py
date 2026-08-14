@@ -1,8 +1,9 @@
 """Version 2 persistence boundary for real TwinOps telemetry."""
 
-from dataclasses import dataclass
+import uuid
+from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Protocol
+from typing import Literal, Protocol
 
 from twinops.contracts.v2_models import CanonicalSensorReadingV2
 
@@ -40,6 +41,33 @@ class CollectionAttemptV2:
     succeeded: bool
     latency_ms: int | None
     error_code: str | None
+    attempt_id: str = field(default_factory=lambda: str(uuid.uuid4()))
+
+
+SensorRefreshOutcomeV2 = Literal["stored", "unchanged", "failed"]
+
+
+@dataclass(frozen=True)
+class SensorRefreshWriteV2:
+    raw: RawReadingV2 | None
+    sample: CanonicalSensorReadingV2 | None
+    attempt: CollectionAttemptV2
+
+
+@dataclass(frozen=True)
+class RefreshCycleV2:
+    asset_id: str
+    scheduled_at: datetime
+    owner_token: str
+    claimed_at: datetime
+    completed_at: datetime | None
+    outcomes: dict[str, SensorRefreshOutcomeV2] | None
+
+
+@dataclass(frozen=True)
+class RefreshCycleClaimV2:
+    owned: bool
+    cycle: RefreshCycleV2
 
 
 @dataclass(frozen=True)
@@ -62,6 +90,34 @@ class TelemetryRepositoryV2(Protocol):
     ) -> InsertResult: ...
 
     def record_attempt(self, attempt: CollectionAttemptV2) -> None: ...
+
+    def persist_sensor_result(
+        self, write: SensorRefreshWriteV2
+    ) -> InsertResult | None: ...
+
+    def claim_refresh_cycle(
+        self,
+        *,
+        asset_id: str,
+        scheduled_at: datetime,
+        owner_token: str,
+        claimed_at: datetime,
+        stale_before: datetime,
+    ) -> RefreshCycleClaimV2: ...
+
+    def get_refresh_cycle(
+        self, asset_id: str, scheduled_at: datetime
+    ) -> RefreshCycleV2 | None: ...
+
+    def complete_refresh_cycle(
+        self,
+        *,
+        asset_id: str,
+        scheduled_at: datetime,
+        owner_token: str,
+        completed_at: datetime,
+        outcomes: dict[str, SensorRefreshOutcomeV2],
+    ) -> RefreshCycleV2: ...
 
     def latest(self, asset_id: str) -> list[CanonicalSensorReadingV2]: ...
 

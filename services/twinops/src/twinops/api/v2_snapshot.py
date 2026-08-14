@@ -1,5 +1,6 @@
 """Pure assembly of contract-valid TwinOps v2 snapshots."""
 
+import logging
 import uuid
 from datetime import datetime, timezone
 from typing import Literal
@@ -22,6 +23,7 @@ from twinops.storage.v2_repository import (
 
 _ASSET_ID = "forzy-motor-01"
 _SENSOR_IDS = ("s1", "s2")
+_LOGGER = logging.getLogger("twinops.api")
 
 
 def build_snapshot_v2(
@@ -39,7 +41,9 @@ def build_snapshot_v2(
 ) -> DigitalTwinSnapshotV2:
     """Read current telemetry and return a snapshot without mutating dependencies."""
 
-    generated_at = _timestamp(now)
+    latest_by_sensor = {
+        reading.sensor_id: reading for reading in repository.latest(_ASSET_ID)
+    }
     readings_by_sensor = {
         sensor_id: repository.history(
             HistoryQueryV2(
@@ -50,26 +54,52 @@ def build_snapshot_v2(
         )
         for sensor_id in _SENSOR_IDS
     }
+    time_candidates = [_as_datetime(now)]
+    time_candidates.extend(
+        _as_datetime(reading.received_at)
+        for reading in (
+            list(latest_by_sensor.values())
+            + [
+                item
+                for sensor_readings in readings_by_sensor.values()
+                for item in sensor_readings
+            ]
+        )
+    )
+    effective_now = max(time_candidates)
+    generated_at = _timestamp(effective_now)
     channels = [
         (
-            to_sensor_telemetry_frame_v2(readings_by_sensor[sensor_id][0])
-            if readings_by_sensor[sensor_id]
+            to_sensor_telemetry_frame_v2(latest_by_sensor[sensor_id])
+            if sensor_id in latest_by_sensor
             else _unavailable_frame(sensor_id, generated_at)
         )
         for sensor_id in _SENSOR_IDS
     ]
     history = [
         to_sensor_telemetry_frame_v2(reading)
-        for sensor_id in _SENSOR_IDS
-        for reading in readings_by_sensor[sensor_id][1:]
+        for reading in sorted(
+            (
+                reading
+                for sensor_id in _SENSOR_IDS
+                for reading in readings_by_sensor[sensor_id]
+            ),
+            key=lambda item: (
+                _as_datetime(item.observed_at),
+                _as_datetime(item.received_at),
+                item.reading_id,
+            ),
+            reverse=True,
+        )
     ]
-    complete = all(readings_by_sensor[sensor_id] for sensor_id in _SENSOR_IDS)
+    complete = all(sensor_id in latest_by_sensor for sensor_id in _SENSOR_IDS)
     assessments = (
         [
             _score_sensor(
                 scorer,
                 readings_by_sensor[sensor_id],
-                now=now,
+                sensor_id=sensor_id,
+                now=effective_now,
             )
             for sensor_id in _SENSOR_IDS
         ]
@@ -124,6 +154,7 @@ def _score_sensor(
     scorer: AssessmentScorer,
     readings: list[CanonicalSensorReadingV2],
     *,
+    sensor_id: str,
     now: datetime,
 ) -> AssetConditionAssessmentV2 | None:
     try:
@@ -138,7 +169,12 @@ def _score_sensor(
         body["assetId"] = _ASSET_ID
         body.pop("assetTag", None)
         return AssetConditionAssessmentV2.model_validate(body)
-    except (ValueError, RuntimeError):
+    except Exception as exc:
+        _LOGGER.warning(
+            "assessment_unavailable error_type=%s sensor=%s",
+            type(exc).__name__,
+            sensor_id,
+        )
         return None
 
 
@@ -168,9 +204,9 @@ def _to_scorer_reading(reading: CanonicalSensorReadingV2) -> CanonicalSensorRead
 def _status_rank(status: str) -> int:
     return {
         "normal": 0,
-        "watch": 1,
-        "alert": 2,
-        "insufficient_data": 3,
+        "insufficient_data": 1,
+        "watch": 2,
+        "alert": 3,
     }[status]
 
 
@@ -229,3 +265,11 @@ def _timestamp(value: datetime) -> str:
         .isoformat(timespec="milliseconds")
         .replace("+00:00", "Z")
     )
+
+
+def _as_datetime(value: datetime | str) -> datetime:
+    if isinstance(value, str):
+        value = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if value.tzinfo is None or value.utcoffset() is None:
+        raise ValueError("snapshot timestamps must be timezone-aware")
+    return value.astimezone(timezone.utc)
