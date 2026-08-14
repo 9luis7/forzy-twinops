@@ -71,6 +71,16 @@ describe("DigitalTwinSnapshot v2 runtime contract", () => {
     expect(() => assertDigitalTwinSnapshotV2(incoherent)).toThrow(/observedAt/);
   });
 
+  it("accepts the leap-second and year-zero timestamp boundaries accepted by the schema", () => {
+    const leapSecond = fixture();
+    leapSecond.generatedAt = "2024-12-31T23:59:60Z";
+    expect(() => assertDigitalTwinSnapshotV2(leapSecond)).not.toThrow();
+
+    const yearZero = fixture();
+    yearZero.generatedAt = "0000-01-01T00:00:00Z";
+    expect(() => assertDigitalTwinSnapshotV2(yearZero)).not.toThrow();
+  });
+
   it("rejects extra fields, duplicate channels, incomplete health, and altered capabilities", () => {
     const extra = fixture();
     extra.asset.assetTag = "invented";
