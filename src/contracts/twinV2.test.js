@@ -1,0 +1,105 @@
+import { readFileSync } from "node:fs";
+import { describe, expect, it } from "vitest";
+import {
+  SCHEMA_VERSION_V2,
+  assertDigitalTwinSnapshotV2,
+  isDigitalTwinSnapshotV2,
+} from "./twinV2.js";
+
+const fixture = (name = "snapshot-received-now.valid.json") =>
+  JSON.parse(readFileSync(new URL(`../../contracts/v2/fixtures/${name}`, import.meta.url), "utf8"));
+
+const validAssessment = (timestamp) => ({
+  schemaVersion: "2.0",
+  assessmentId: "00000000-0000-4000-8000-000000000003",
+  assetId: "forzy-motor-01",
+  sensorId: "s1",
+  window: { start: timestamp, end: timestamp, receivedAt: timestamp, freshnessMs: 0 },
+  quality: { status: "ok", flags: [] },
+  operatingContext: { state: "steady", estimated: true },
+  assessment: {
+    status: "normal",
+    anomalyScore: 0,
+    deteriorationScore: 0,
+    scoreSemantics: "relative_to_historical_baseline_not_failure_probability",
+    episodeId: null,
+    persistenceSeconds: 0,
+  },
+  componentTag: null,
+  recommendation: null,
+  humanValidationRequired: true,
+  evidence: [],
+  model: {
+    name: "robust-baseline",
+    version: "1.0.0",
+    configHash: `sha256:${"0".repeat(64)}`,
+    trainedUntil: timestamp,
+  },
+  limitations: [],
+});
+
+describe("DigitalTwinSnapshot v2 runtime contract", () => {
+  it("accepts both valid fixtures that the JSON schema accepts", () => {
+    expect(SCHEMA_VERSION_V2).toBe("2.0");
+    expect(isDigitalTwinSnapshotV2(fixture())).toBe(true);
+    expect(isDigitalTwinSnapshotV2(fixture("snapshot-last-known.valid.json"))).toBe(true);
+  });
+
+  it("rejects a plausible snapshot with a source timestamp claim", () => {
+    const value = fixture();
+    value.channels[0].timestampQuality = "source";
+
+    expect(() => assertDigitalTwinSnapshotV2(value)).toThrow(/timestampQuality/);
+  });
+
+  it("rejects a non-finite measurement while preserving zero as valid", () => {
+    const zero = fixture();
+    expect(() => assertDigitalTwinSnapshotV2(zero)).not.toThrow();
+
+    const value = fixture();
+    value.channels[0].measurements.vibrationAcceleration.value = Number.NaN;
+    expect(() => assertDigitalTwinSnapshotV2(value)).toThrow(/value/);
+  });
+
+  it("rejects invalid calendar timestamps and incoherent frame timestamps", () => {
+    const impossible = fixture();
+    impossible.generatedAt = "2026-99-99T29:77:88Z";
+    expect(() => assertDigitalTwinSnapshotV2(impossible)).toThrow(/generatedAt/);
+
+    const incoherent = fixture();
+    incoherent.channels[0].receivedAt = "2026-08-12T15:00:02.000Z";
+    expect(() => assertDigitalTwinSnapshotV2(incoherent)).toThrow(/observedAt/);
+  });
+
+  it("rejects extra fields, duplicate channels, incomplete health, and altered capabilities", () => {
+    const extra = fixture();
+    extra.asset.assetTag = "invented";
+    expect(() => assertDigitalTwinSnapshotV2(extra)).toThrow(/asset/);
+
+    const duplicate = fixture();
+    duplicate.channels[1].sensorId = "s1";
+    expect(() => assertDigitalTwinSnapshotV2(duplicate)).toThrow(/channels/);
+
+    const health = fixture();
+    delete health.integration.sensors.s2;
+    expect(() => assertDigitalTwinSnapshotV2(health)).toThrow(/sensors/);
+
+    const capability = fixture();
+    capability.capabilities.replayControls = true;
+    expect(() => assertDigitalTwinSnapshotV2(capability)).toThrow(/replayControls/);
+  });
+
+  it("requires assessment and validates its object form", () => {
+    const missing = fixture();
+    delete missing.assessment;
+    expect(() => assertDigitalTwinSnapshotV2(missing)).toThrow(/assessment/);
+
+    const invalid = fixture();
+    invalid.assessment = {};
+    expect(() => assertDigitalTwinSnapshotV2(invalid)).toThrow(/assessment/);
+
+    const valid = fixture();
+    valid.assessment = validAssessment(valid.generatedAt);
+    expect(() => assertDigitalTwinSnapshotV2(valid)).not.toThrow();
+  });
+});
