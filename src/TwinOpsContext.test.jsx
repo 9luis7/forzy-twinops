@@ -281,6 +281,49 @@ describe("TwinOpsProvider polling", () => {
     expect(capturedSignal.aborted).toBe(true);
   });
 
+  it("does not start a second automatic cycle when refreshNow() is called before the initial GET resolves (regression)", async () => {
+    // refreshNow() races the mount's own initial readSnapshot(): it aborts
+    // that in-flight GET and starts its own cycle (POST, since the window is
+    // open). When the aborted GET's promise later settles, mountCycle must
+    // notice a cycle is already running (timer and/or abort controller in
+    // use) instead of unconditionally scheduling a second one — otherwise
+    // two automatic cycles run concurrently and the orphaned timer can no
+    // longer be cancelled by clearTimer()/abortInFlight().
+    vi.useFakeTimers();
+    let resolveInitialGet;
+    const source = {
+      getSnapshot: vi.fn(
+        () =>
+          new Promise((resolve) => {
+            resolveInitialGet = resolve;
+          })
+      ),
+      refresh: vi.fn(() => Promise.resolve({ refreshAttempted: true, outcomes: {}, snapshot: makeSnapshot("refreshed") })),
+    };
+    render(
+      <TwinOpsProvider dataSource={source} clock={WEDNESDAY_1230_BRT}>
+        <Probe />
+      </TwinOpsProvider>
+    );
+    expect(source.getSnapshot).toHaveBeenCalledTimes(1);
+
+    // Manual refresh fires before the initial GET has resolved.
+    await act(async () => {
+      await captured.refreshNow();
+    });
+    expect(source.refresh).toHaveBeenCalledTimes(1);
+
+    // Now let the aborted initial GET settle, and flush any timer it might
+    // (incorrectly) have scheduled at delay 0.
+    await act(async () => {
+      resolveInitialGet(makeSnapshot("stale-initial"));
+      await Promise.resolve();
+      await vi.advanceTimersByTimeAsync(0);
+    });
+
+    expect(source.refresh).toHaveBeenCalledTimes(1);
+  });
+
   it("refreshNow respects the window: inside it POSTs, outside it only re-reads the snapshot", async () => {
     vi.useFakeTimers();
     const insideSource = sourceStub();

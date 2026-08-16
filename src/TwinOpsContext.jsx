@@ -159,7 +159,13 @@ export function TwinOpsProvider({
 
     async function mountCycle() {
       await readSnapshot();
-      if (!mounted || !isVisible()) return;
+      // If a manual refreshNow() (or a visibilitychange resume) already took
+      // over while the initial GET was in flight, it has its own timer
+      // and/or in-flight request running. Scheduling another cycle here
+      // would start a second, unguarded automatic cycle racing the one
+      // refreshNow()/handleVisibilityChange already started — the same
+      // overlap this guard prevents in handleVisibilityChange (below).
+      if (!mounted || !isVisible() || timerId !== null || abortController !== null) return;
       // Start the heartbeat immediately if the window is already open (first
       // cycle fires right away, as before); otherwise start it on the normal
       // pollMs cadence so it keeps checking until the window opens.
