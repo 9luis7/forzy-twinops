@@ -46,10 +46,21 @@ export function isForzyWindowOpen(date) {
 
 const TwinOpsCtx = createContext(null);
 
+// Module-level (not an inline default-parameter literal) so its reference
+// stays stable across every re-render where the caller omits `clock`. An
+// inline `() => new Date()` default is re-evaluated by the JS engine on
+// every call to TwinOpsProvider, which would hand the effect below a brand
+// new function identity each time — and because that effect's own
+// `setSnapshot`/`setError`/`setRefreshing`/`setLastRefreshAttemptAt` calls
+// trigger exactly those re-renders, the effect would tear down and remount
+// itself after every state update, forever: an unbounded GET/POST loop
+// instead of the pollMs-cadenced schedule.
+const DEFAULT_CLOCK = () => new Date();
+
 export function TwinOpsProvider({
   children,
   dataSource,
-  clock = () => new Date(),
+  clock = DEFAULT_CLOCK,
   pollMs = 5000,
   documentRef = document,
 }) {
@@ -87,12 +98,24 @@ export function TwinOpsProvider({
     // single timer indirection, so there is always at most one pending
     // timer representing "the next tick", scheduled fresh only once the
     // previous cycle's `finally` has run (never overlapping).
+    //
+    // The timer itself is a plain visibility-gated heartbeat: it keeps
+    // ticking every `pollMs` regardless of whether the Forzy window is open,
+    // and only the POST call is gated on `isForzyWindowOpen`. If the window
+    // is closed when the heartbeat fires, it simply reschedules itself
+    // instead of stopping — otherwise a provider that mounts (or resumes
+    // visibility) while the window is closed and then stays visible across
+    // the window opening (no `visibilitychange` event fires) would never
+    // pick the polling back up.
     const scheduleCycle = (delay) => {
       if (!mounted || !isVisible()) return;
       timerId = setTimeout(() => {
         timerId = null;
-        if (isForzyWindowOpen(clock()) && isVisible()) {
+        if (!isVisible()) return;
+        if (isForzyWindowOpen(clock())) {
           runRefreshCycle();
+        } else {
+          scheduleCycle(pollMs);
         }
       }, delay);
     };
@@ -136,9 +159,11 @@ export function TwinOpsProvider({
 
     async function mountCycle() {
       await readSnapshot();
-      if (mounted && isForzyWindowOpen(clock()) && isVisible()) {
-        scheduleCycle(0);
-      }
+      if (!mounted || !isVisible()) return;
+      // Start the heartbeat immediately if the window is already open (first
+      // cycle fires right away, as before); otherwise start it on the normal
+      // pollMs cadence so it keeps checking until the window opens.
+      scheduleCycle(isForzyWindowOpen(clock()) ? 0 : pollMs);
     }
 
     mountCycle();
@@ -150,8 +175,13 @@ export function TwinOpsProvider({
         if (mounted) setRefreshing(false);
         return;
       }
-      if (isForzyWindowOpen(clock()) && timerId === null && abortController === null) {
+      if (timerId !== null || abortController !== null) return;
+      if (isForzyWindowOpen(clock())) {
         runRefreshCycle();
+      } else {
+        // Window is closed right now, but resume the heartbeat so a page
+        // that stays visible across the window opening keeps polling.
+        scheduleCycle(pollMs);
       }
     };
     documentRef.addEventListener("visibilitychange", handleVisibilityChange);
@@ -163,6 +193,11 @@ export function TwinOpsProvider({
         await runRefreshCycle();
       } else {
         await readSnapshot();
+        // The line above didn't go through runRefreshCycle's `finally`, so
+        // the heartbeat that clearTimer() just stopped needs restarting
+        // here too, or a manual refresh outside the window would silently
+        // end automatic polling for the rest of the mount.
+        if (mounted && isVisible()) scheduleCycle(pollMs);
       }
     };
 

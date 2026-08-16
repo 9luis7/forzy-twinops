@@ -80,6 +80,63 @@ describe("isForzyWindowOpen", () => {
 });
 
 describe("TwinOpsProvider polling", () => {
+  it("keeps the default clock identity stable across re-renders (regression: unbounded remount loop when `clock` is omitted)", async () => {
+    // With no `clock` prop, the provider falls back to its default. If that
+    // default were an inline `() => new Date()` literal in the parameter
+    // list (instead of a stable module-level constant), it would be
+    // re-evaluated to a brand new function reference on every render. That
+    // reference sits in the polling effect's dependency array, and the
+    // effect's own state setters (setSnapshot/setError/setRefreshing/
+    // setLastRefreshAttemptAt) cause exactly those re-renders — so the
+    // effect would tear down and remount after every GET/POST resolves,
+    // firing a fresh GET each time, forever. This is driven purely by
+    // promise resolution (no setTimeout involved for the very first GET),
+    // so a handful of bounded microtask flushes is enough to reveal it
+    // without ever risking an actual hang.
+    vi.useFakeTimers();
+    const source = sourceStub();
+    render(
+      <TwinOpsProvider dataSource={source}>
+        <Probe />
+      </TwinOpsProvider>
+    );
+    for (let i = 0; i < 5; i += 1) {
+      // eslint-disable-next-line no-await-in-loop
+      await act(async () => {
+        await Promise.resolve();
+      });
+    }
+    expect(source.getSnapshot).toHaveBeenCalledTimes(1);
+  });
+
+  it("resumes polling once the Forzy window opens even without a visibilitychange event", async () => {
+    // Mount closed, stay visible throughout, and cross the window boundary
+    // purely by advancing the (faked) clock — no visibilitychange event is
+    // ever dispatched. The heartbeat must notice the window opening on its
+    // own instead of staying parked on the initial GET for the rest of the
+    // two-hour window.
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-12T14:55:00.000Z")); // quarta 11:55 BRT (fechada)
+    const doc = fakeDocument("visible");
+    const source = sourceStub();
+    render(
+      <TwinOpsProvider dataSource={source} documentRef={doc} pollMs={5000}>
+        <Probe />
+      </TwinOpsProvider>
+    );
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(source.refresh).not.toHaveBeenCalled();
+
+    // Advance 6 minutes of (faked) real time, crossing 12:00 BRT, with no
+    // visibilitychange dispatched anywhere in between.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(6 * 60 * 1000);
+    });
+    expect(source.refresh.mock.calls.length).toBeGreaterThan(0);
+  });
+
   it("refreshes only while visible and inside the Forzy window", async () => {
     vi.useFakeTimers();
     const source = sourceStub();
