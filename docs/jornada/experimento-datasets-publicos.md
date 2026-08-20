@@ -74,9 +74,23 @@ Após autorização explícita de rede e termos:
 services\twinops\.venv\Scripts\python.exe scripts/run_public_fault_lab.py `
   --datasets xjtu ims `
   --output artifacts/ml-public `
-  --seed 42
+  --seed 42 `
+  --overwrite
 ```
 
 O preflight sem escrita pode ser repetido com `--dry-run`. Quando os dados
 verificados existirem, o CLI produzirá contagens, hashes, splits, tempos,
 métricas das três vistas e intervalos de confiança por bootstrap de bearings.
+
+O caminho de sucesso foi exercitado sem rede com dois archives sintéticos
+pequenos, metadata hash-pinned e bearings/labels distintos. Esse teste cobre
+extração segura, inventário raw, ambas as direções cross-bench, deltas e
+verdicts; seus números permanecem somente no diretório temporário de teste. Os
+JSON versionados continuam com `metrics: null` até a execução com sinais
+originais realmente autorizados.
+
+A execução real também exige uma `featurePolicy` auditada. O arquivo atual
+mantém aceleração e temperatura como semântica não confirmada, pois eixo,
+estatística e janela interna da API Forzy ainda não foram demonstrados como
+equivalentes. Alterar apenas o status da fonte não é suficiente para liberar
+uma alegação Forzy-compatible.

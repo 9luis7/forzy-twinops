@@ -31,7 +31,7 @@
       "original extracted numeric signals",
       "curated adapter metadata for the retrieved archive versions"
     ],
-    "resumeCommand": "services\\twinops\\.venv\\Scripts\\python.exe scripts/run_public_fault_lab.py --datasets xjtu ims --output artifacts/ml-public --seed 42"
+    "resumeCommand": "services\\twinops\\.venv\\Scripts\\python.exe scripts/run_public_fault_lab.py --datasets xjtu ims --output artifacts/ml-public --seed 42 --overwrite"
   },
   "claims": {
     "fullToAggregateDelta": null,

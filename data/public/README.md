@@ -37,3 +37,39 @@ Cada adapter produz `SignalWindow` sem concatenar os brutos. As unidades da
 fonte são preservadas e qualquer conversão precisa ser explícita e documentada.
 Os splits são feitos por `bearing_id`, e toda alegação de transferência exige
 validação entre bancadas.
+
+## Cadeia de proveniência obrigatória
+
+O manifesto `sources.json` usa `schemaVersion: 2`. Uma fonte só atravessa o
+gate quando tem status `approved_for_research`, URLs HTTPS exatas, citação,
+termos/licença, data de acesso RFC 3339 e hashes SHA-256 independentes do
+archive e da metadata curada. O archive é inspecionado antes da escrita e
+extraído em destino vazio; traversal, caminhos absolutos, symlinks, colisões e
+overwrite são rejeitados. O manifesto final liga a fonte ao hash do archive,
+ao inventário SHA-256 de cada raw extraído e ao hash/schema/id da metadata.
+
+A metadata `schemaVersion: 1` é deliberadamente explícita: `files` mapeia cada
+`relativePath` do inventário, `bearingId`/`runId`, `sequenceIndex`,
+`timestampQuality`/`startedAt`, estado daquela janela e colunas/canais para
+eixos. Unidade e frequência de amostragem vêm da metadata hash-pinned. Nomes de
+pastas, filenames, posição implícita de coluna e timestamps aparentes nunca são
+usados como fallback. `terminalFailureMode` descreve apenas o desfecho do
+rolamento; não substitui `windowStateLabel`.
+
+## Políticas experimentais e retomada
+
+`experimentConfig` versiona duas decisões auditáveis:
+
+- `featurePolicy` seleciona um eixo e só libera RMS/temperatura na vista
+  Forzy-compatible quando a semântica foi confirmada; caso contrário a feature
+  fica marcada como `unconfirmed_semantics` e fora dessa vista;
+- `labelMapping` converte estados de janela para labels canônicos ou os exclui
+  explicitamente, com cobertura de janelas, bearings e labels no relatório.
+
+Os arquivos versionados em `artifacts/ml-public` são placeholders honestos com
+status `not_run_external_data_gate` e métricas nulas. Fixtures sintéticas
+provam o pipeline apenas em diretórios temporários e nunca são publicadas como
+resultado científico. Quando archives reais autorizados e metadata auditada
+existirem, use `--dry-run` para o preflight e `--overwrite` para substituir
+explicitamente apenas os dois JSON conhecidos do laboratório. Nada neste fluxo
+promove ou altera `artifacts/ml/real-forzy`.
