@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 import argparse
+from contextlib import ExitStack, contextmanager
 import hashlib
 import json
 import math
+import os
 import re
+import shutil
 import tempfile
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
@@ -16,6 +20,7 @@ import cadquery as cq
 ASSET_ID = "forzy-motor-01"
 MODEL_URL_PREFIX = "/models"
 CONVERTER_VERSION = "1.0.0"
+MAX_GLB_BYTES = 20 * 1024 * 1024
 UNSAFE_NAME_SEPARATOR = re.compile(r"[\s/\\.\[\]:\x00-\x1f]+")
 STEP_ENTITY = re.compile(r"(?m)^#(?P<id>\d+)\s*=\s*(?P<type>[A-Z_]+)\s*\((?P<body>[^;]*)\);\s*$")
 STEP_STRING = re.compile(r"^\s*'((?:''|[^'])*)'")
@@ -266,62 +271,186 @@ def _manifest(glb: Path, source_hash: str, node_names: tuple[str, ...]) -> dict[
     }
 
 
-def convert_step(source: Path, glb: Path, manifest: Path) -> ConversionReport:
-    source = Path(source).resolve(strict=True)
-    glb = Path(glb)
-    manifest = Path(manifest)
-    source_hash = _sha256(source)
-
-    glb.parent.mkdir(parents=True, exist_ok=True)
-    manifest.parent.mkdir(parents=True, exist_ok=True)
-
-    with tempfile.TemporaryDirectory(prefix="twin3d-") as temporary_directory:
-        prepared_step = Path(temporary_directory) / "prepared.step"
-        mappings = _prepare_step_for_cadquery(source, prepared_step)
-        assembly = cq.Assembly.load(str(prepared_step), importType="STEP", unit="MM")
-
-    leaves = _leaf_nodes(assembly)
-    solid_count = sum(len(leaf.obj.Solids()) for leaf in leaves)
-    node_names = tuple(leaf.name for leaf in leaves)
-    if solid_count != len(mappings) or len(leaves) != len(mappings):
-        raise ValueError(
-            "CadQuery did not preserve one traceable node per STEP solid: "
-            f"source={len(mappings)}, leaves={len(leaves)}, solids={solid_count}"
-        )
-    if node_names != tuple(mapping.node_name for mapping in mappings):
-        raise ValueError("CadQuery changed prepared STEP node names")
-
-    metre_assembly = _metre_assembly(assembly, leaves)
-
-    temporary_glb = glb.with_suffix(f"{glb.suffix}.tmp")
-    if not metre_assembly.save(
-        str(temporary_glb),
-        exportType="GLTF",
-        tolerance=0.1,
-        angularTolerance=0.1,
-        binary=True,
-    ):
-        raise RuntimeError("CadQuery/OpenCascade failed to export GLB")
-    if temporary_glb.read_bytes()[:4] != b"glTF":
-        raise RuntimeError("CadQuery output is not a binary glTF file")
-    temporary_glb.replace(glb)
-
-    manifest_value = _manifest(glb, source_hash, node_names)
-    manifest.write_text(
-        json.dumps(manifest_value, ensure_ascii=False, indent=2) + "\n",
+def _write_json(path: Path, value: dict[str, object]) -> None:
+    path.write_text(
+        json.dumps(value, ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",
         newline="\n",
     )
 
-    return ConversionReport(
-        source_sha256=f"sha256:{source_hash}",
-        glb_sha256=f"sha256:{_sha256(glb)}",
-        glb_bytes=glb.stat().st_size,
-        solid_count=solid_count,
-        node_names=node_names,
-        node_mappings=mappings,
-        bounds=_assembly_bounds_m(metre_assembly),
-    )
+
+def _validate_staged_outputs(
+    glb: Path,
+    manifest: Path,
+    report: Path | None,
+    expected_manifest: dict[str, object],
+    expected_report: ConversionReport,
+) -> None:
+    if glb.read_bytes()[:4] != b"glTF":
+        raise RuntimeError("CadQuery output is not a binary glTF file")
+    if glb.stat().st_size > MAX_GLB_BYTES:
+        raise RuntimeError(f"GLB exceeds the {MAX_GLB_BYTES}-byte publication limit")
+    if json.loads(manifest.read_text(encoding="utf-8")) != expected_manifest:
+        raise RuntimeError("Staged manifest differs from the validated manifest")
+    if _sha256(glb) != expected_report.glb_sha256.removeprefix("sha256:"):
+        raise RuntimeError("Staged GLB hash differs from the conversion report")
+    if glb.stat().st_size != expected_report.glb_bytes:
+        raise RuntimeError("Staged GLB size differs from the conversion report")
+    if expected_manifest["sourceSha256"] != expected_report.source_sha256.removeprefix("sha256:"):
+        raise RuntimeError("Staged source hashes disagree")
+    if report is not None:
+        if json.loads(report.read_text(encoding="utf-8")) != expected_report.to_json_dict():
+            raise RuntimeError("Staged report differs from the conversion report")
+
+
+@contextmanager
+def _publication_lock(lock_path: Path, timeout_seconds: float = 30.0):
+    deadline = time.monotonic() + timeout_seconds
+    descriptor: int | None = None
+    while descriptor is None:
+        try:
+            descriptor = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        except FileExistsError:
+            if time.monotonic() >= deadline:
+                raise TimeoutError(f"Timed out waiting for Twin 3D publication lock: {lock_path}")
+            time.sleep(0.05)
+    try:
+        os.write(descriptor, f"pid={os.getpid()}\n".encode("ascii"))
+        yield
+    finally:
+        os.close(descriptor)
+        lock_path.unlink(missing_ok=True)
+
+
+def _replace_file(source: Path, target: Path) -> None:
+    source.replace(target)
+
+
+def _publish_output_set(publications: list[tuple[Path, Path]], manifest_target: Path) -> None:
+    if not publications or publications[-1][1] != manifest_target:
+        raise ValueError("Manifest must be the final publication marker")
+
+    lock_path = manifest_target.with_suffix(f"{manifest_target.suffix}.publish.lock")
+    with _publication_lock(lock_path):
+        backups: dict[Path, Path | None] = {}
+        published: list[Path] = []
+        for staged, target in publications:
+            backup = staged.parent / f"{target.name}.previous"
+            if target.exists():
+                shutil.copy2(target, backup)
+                backups[target] = backup
+            else:
+                backups[target] = None
+
+        try:
+            for staged, target in publications:
+                _replace_file(staged, target)
+                published.append(target)
+        except Exception as publication_error:
+            rollback_errors: list[str] = []
+            for target in reversed(published):
+                backup = backups[target]
+                try:
+                    if backup is None:
+                        target.unlink(missing_ok=True)
+                    else:
+                        _replace_file(backup, target)
+                except Exception as rollback_error:  # pragma: no cover - catastrophic filesystem failure
+                    rollback_errors.append(f"{target}: {rollback_error}")
+            if rollback_errors:
+                raise RuntimeError(
+                    "Twin 3D publication failed and rollback was incomplete: "
+                    + "; ".join(rollback_errors)
+                ) from publication_error
+            raise
+
+
+def convert_step(
+    source: Path,
+    glb: Path,
+    manifest: Path,
+    report_path: Path | None = None,
+) -> ConversionReport:
+    source = Path(source).resolve(strict=True)
+    glb = Path(glb).resolve()
+    manifest = Path(manifest).resolve()
+    report_path = Path(report_path).resolve() if report_path is not None else None
+    source_hash = _sha256(source)
+
+    glb.parent.mkdir(parents=True, exist_ok=True)
+    manifest.parent.mkdir(parents=True, exist_ok=True)
+    if report_path is not None:
+        report_path.parent.mkdir(parents=True, exist_ok=True)
+
+    with ExitStack() as stack:
+        working_directory = Path(stack.enter_context(tempfile.TemporaryDirectory(prefix="twin3d-work-")))
+        glb_stage_directory = Path(
+            stack.enter_context(tempfile.TemporaryDirectory(prefix=".twin3d-stage-", dir=glb.parent))
+        )
+        manifest_stage_directory = Path(
+            stack.enter_context(tempfile.TemporaryDirectory(prefix=".twin3d-stage-", dir=manifest.parent))
+        )
+        report_stage_directory = (
+            Path(stack.enter_context(tempfile.TemporaryDirectory(prefix=".twin3d-stage-", dir=report_path.parent)))
+            if report_path is not None
+            else None
+        )
+
+        prepared_step = working_directory / "prepared.step"
+        mappings = _prepare_step_for_cadquery(source, prepared_step)
+        assembly = cq.Assembly.load(str(prepared_step), importType="STEP", unit="MM")
+
+        leaves = _leaf_nodes(assembly)
+        solid_count = sum(len(leaf.obj.Solids()) for leaf in leaves)
+        node_names = tuple(leaf.name for leaf in leaves)
+        if solid_count != len(mappings) or len(leaves) != len(mappings):
+            raise ValueError(
+                "CadQuery did not preserve one traceable node per STEP solid: "
+                f"source={len(mappings)}, leaves={len(leaves)}, solids={solid_count}"
+            )
+        if node_names != tuple(mapping.node_name for mapping in mappings):
+            raise ValueError("CadQuery changed prepared STEP node names")
+
+        metre_assembly = _metre_assembly(assembly, leaves)
+        staged_glb = glb_stage_directory / glb.name
+        if not metre_assembly.save(
+            str(staged_glb),
+            exportType="GLTF",
+            tolerance=0.1,
+            angularTolerance=0.1,
+            binary=True,
+        ):
+            raise RuntimeError("CadQuery/OpenCascade failed to export GLB")
+
+        conversion_report = ConversionReport(
+            source_sha256=f"sha256:{source_hash}",
+            glb_sha256=f"sha256:{_sha256(staged_glb)}",
+            glb_bytes=staged_glb.stat().st_size,
+            solid_count=solid_count,
+            node_names=node_names,
+            node_mappings=mappings,
+            bounds=_assembly_bounds_m(metre_assembly),
+        )
+        manifest_value = _manifest(glb, source_hash, node_names)
+        staged_manifest = manifest_stage_directory / manifest.name
+        _write_json(staged_manifest, manifest_value)
+        staged_report = report_stage_directory / report_path.name if report_path is not None else None
+        if staged_report is not None:
+            _write_json(staged_report, conversion_report.to_json_dict())
+
+        _validate_staged_outputs(
+            staged_glb,
+            staged_manifest,
+            staged_report,
+            manifest_value,
+            conversion_report,
+        )
+        publications = [(staged_glb, glb)]
+        if staged_report is not None and report_path is not None:
+            publications.append((staged_report, report_path))
+        publications.append((staged_manifest, manifest))
+        _publish_output_set(publications, manifest)
+        return conversion_report
 
 
 def _parse_args() -> argparse.Namespace:
@@ -335,15 +464,8 @@ def _parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = _parse_args()
-    report = convert_step(args.source, args.glb, args.manifest)
+    report = convert_step(args.source, args.glb, args.manifest, args.report)
     report_value = report.to_json_dict()
-    if args.report:
-        args.report.parent.mkdir(parents=True, exist_ok=True)
-        args.report.write_text(
-            json.dumps(report_value, ensure_ascii=False, indent=2) + "\n",
-            encoding="utf-8",
-            newline="\n",
-        )
     print(json.dumps(report_value, ensure_ascii=False))
     return 0
 
