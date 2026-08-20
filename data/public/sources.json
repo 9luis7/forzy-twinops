@@ -9,6 +9,7 @@
       "citation": "Wang et al., A Hybrid Prognostics Approach for Estimating Remaining Useful Life of Rolling Element Bearings, IEEE Transactions on Reliability, 2020.",
       "license": "No unambiguous data license recorded on the landing page; terms must be confirmed before download.",
       "expectedSha256": null,
+      "archivePath": null,
       "accessedAt": null,
       "status": "external_download_gate",
       "notes": "The author landing page links to externally hosted archives. Record the exact selected URL and hash only after approval and retrieval."
@@ -20,6 +21,7 @@
       "citation": "Lee et al., IMS Bearing Data, NASA Ames Prognostics Data Repository, University of Cincinnati.",
       "license": "Confirm the terms and provenance displayed by the NASA portal before download.",
       "expectedSha256": null,
+      "archivePath": null,
       "accessedAt": null,
       "status": "external_download_gate",
       "notes": "No archive was downloaded in this execution; do not treat a mirror as an official source."

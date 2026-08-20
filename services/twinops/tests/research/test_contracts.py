@@ -66,6 +66,16 @@ def test_window_accepts_axis_mapping_and_validates_each_axis() -> None:
             fault_label="normal",
         )
 
+    with pytest.raises(ValueError, match="same number of samples"):
+        SignalWindow(
+            dataset_id="xjtu-sy",
+            bearing_id="Bearing1_1",
+            run_id="003",
+            sampling_hz=25_600,
+            acceleration={"horizontal": [0.1, 0.2], "vertical": [0.3]},
+            fault_label="normal",
+        )
+
 
 @pytest.mark.parametrize("field,value", [("sampling_hz", 0), ("temperature_c", np.inf), ("rpm", -1)])
 def test_window_rejects_invalid_numeric_metadata(field: str, value: float) -> None:

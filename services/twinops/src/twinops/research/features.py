@@ -52,10 +52,14 @@ def _band_fractions(values: np.ndarray, sampling_hz: float) -> tuple[float, dict
     return total / values.size, fractions
 
 
-def _envelope_energy(values: np.ndarray, sampling_hz: float) -> float:
+def _envelope_features(values: np.ndarray, sampling_hz: float) -> tuple[float, dict[str, float]]:
     envelope = np.abs(scipy_signal.hilbert(values))
-    energy, _ = _band_fractions(envelope, sampling_hz)
-    return energy
+    energy, spectral_names = _band_fractions(envelope, sampling_hz)
+    fractions = {
+        name.replace("spectral_band_", "envelope_band_"): value
+        for name, value in spectral_names.items()
+    }
+    return energy, fractions
 
 
 def extract_views(window: SignalWindow) -> FeatureViews:
@@ -86,13 +90,16 @@ def extract_views(window: SignalWindow) -> FeatureViews:
         kurtosis = 0.0
 
     axis_bands: list[dict[str, float]] = []
+    axis_envelope_bands: list[dict[str, float]] = []
     raw_band_energies: list[float] = []
     envelope_energies: list[float] = []
     for axis in axes:
         energy, fractions = _band_fractions(axis, window.sampling_hz)
         raw_band_energies.append(energy)
         axis_bands.append(fractions)
-        envelope_energies.append(_envelope_energy(axis, window.sampling_hz))
+        envelope_energy, envelope_fractions = _envelope_features(axis, window.sampling_hz)
+        envelope_energies.append(envelope_energy)
+        axis_envelope_bands.append(envelope_fractions)
 
     full: dict[str, float] = {
         "rms_g": rms,
@@ -106,6 +113,8 @@ def extract_views(window: SignalWindow) -> FeatureViews:
     }
     for name in axis_bands[0]:
         full[name] = float(np.mean([bands[name] for bands in axis_bands]))
+    for name in axis_envelope_bands[0]:
+        full[name] = float(np.mean([bands[name] for bands in axis_envelope_bands]))
 
     aggregate: dict[str, float] = {
         "acceleration_rms_g": rms,

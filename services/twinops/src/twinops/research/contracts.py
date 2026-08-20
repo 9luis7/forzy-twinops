@@ -100,6 +100,8 @@ class SignalWindow:
                 if not isinstance(axis, str) or not axis.strip():
                     raise ValueError("acceleration axis names must be non-empty strings")
                 axes[axis.strip()] = _signal_array(values, name=f"acceleration[{axis!r}]")
+            if len({values.size for values in axes.values()}) != 1:
+                raise ValueError("all acceleration axes must contain the same number of samples")
             object.__setattr__(self, "acceleration", MappingProxyType(axes))
         else:
             object.__setattr__(self, "acceleration", _signal_array(self.acceleration, name="acceleration"))

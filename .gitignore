@@ -46,3 +46,4 @@ data/raw/**
 
 # Public fault-dataset laboratory (manifests remain versioned)
 data/public/*/raw/
+data/public/*/downloads/

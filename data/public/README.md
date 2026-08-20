@@ -26,7 +26,9 @@ Downloads e extrações grandes nunca entram no Git:
 
 ```text
 data/public/
+  xjtu-sy/downloads/
   xjtu-sy/raw/
+  nasa-ims/downloads/
   nasa-ims/raw/
   pronostia/raw/
 ```

@@ -51,6 +51,9 @@ def test_sine_features_have_explicit_numeric_tolerances(sine_window) -> None:
     assert sum(
         value for name, value in views.full.items() if name.startswith("spectral_band_")
     ) == pytest.approx(1.0, rel=1e-8)
+    assert sum(
+        value for name, value in views.full.items() if name.startswith("envelope_band_")
+    ) == pytest.approx(1.0, rel=1e-8)
 
 
 def test_multiaxis_features_are_order_invariant() -> None:
