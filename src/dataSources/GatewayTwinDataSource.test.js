@@ -1,15 +1,8 @@
 import { afterEach, expect, it, vi } from "vitest";
 import { createGatewayTwinDataSource } from "./GatewayTwinDataSource.js";
-import { buildReplaySnapshot } from "./ReplayTwinDataSource.js";
+import snapshotFixture from "../../contracts/v1/fixtures/digital-twin-snapshot-live.valid.json";
 
-const snapshot = buildReplaySnapshot({
-  assetTag: "MTR-BMB-042",
-  live: { points: [], running: false },
-  reading: { ts: "2026-08-12T15:00:00.000Z", temperature: 34, vibration: 2.1 },
-  status: "normal",
-  scenario: null,
-  risk: null,
-});
+const snapshot = structuredClone(snapshotFixture);
 
 afterEach(() => vi.useRealTimers());
 
