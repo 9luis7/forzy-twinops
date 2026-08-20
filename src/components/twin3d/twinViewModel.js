@@ -1,44 +1,16 @@
-const reading = (measurement, unit, statistic) => ({
-  value: measurement?.value ?? null,
-  unit,
-  ...(statistic ? { statistic: measurement?.statistic ?? statistic } : {}),
+const STATUS_MATERIAL = Object.freeze({
+  normal: Object.freeze({ materialColor: "#4f86a8", emissiveColor: "#16384b", emissiveIntensity: 0.06 }),
+  watch: Object.freeze({ materialColor: "#d9952f", emissiveColor: "#6b3f0d", emissiveIntensity: 0.16 }),
+  alert: Object.freeze({ materialColor: "#d95757", emissiveColor: "#6f1717", emissiveIntensity: 0.28 }),
+  unknown: Object.freeze({ materialColor: "#718096", emissiveColor: "#1f2937", emissiveIntensity: 0 }),
+  insufficient_data: Object.freeze({ materialColor: "#718096", emissiveColor: "#1f2937", emissiveIntensity: 0 }),
 });
 
-const nodesForComponent = (manifest, componentTag) =>
-  componentTag
-    ? Object.values(manifest.groups)
-        .filter((group) => group.componentTag === componentTag)
-        .flatMap((group) => group.nodeNames)
-    : [];
 
-function channelView(channel) {
-  const measurements = channel.measurements ?? {};
+export function buildTwinViewModel({ snapshot }) {
+  const status = STATUS_MATERIAL[snapshot?.status] ? snapshot.status : "unknown";
   return {
-    sensorId: channel.sensorId,
-    temperature: reading(measurements.temperature, "degC"),
-    vibrationVelocityRms: reading(measurements.vibrationVelocityRms, "mm/s"),
-    vibrationAcceleration: reading(
-      measurements.vibrationAcceleration,
-      measurements.vibrationAcceleration?.unit ?? "g",
-      "unknown",
-    ),
-    placementLabel: "Posição não validada",
-  };
-}
-
-export function buildTwinViewModel({ snapshot, manifest, activeComponent = null }) {
-  const assessmentTag = snapshot.assessment?.componentTag ?? null;
-  const highlightedNodeNames = nodesForComponent(manifest, assessmentTag);
-
-  return {
-    status: snapshot.status,
-    freshness: snapshot.freshness,
-    highlightedNodeNames,
-    activeNodeNames: nodesForComponent(manifest, activeComponent),
-    channels: snapshot.channels.map(channelView),
-    warning:
-      assessmentTag && highlightedNodeNames.length === 0
-        ? `Sem associação 3D aprovada para ${assessmentTag}`
-        : null,
+    status,
+    ...STATUS_MATERIAL[status],
   };
 }

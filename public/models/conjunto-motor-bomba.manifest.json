@@ -1,0 +1,78 @@
+{
+  "schemaVersion": "1.0",
+  "assetId": "forzy-motor-01",
+  "modelUrl": "/models/conjunto-motor-bomba.glb",
+  "sourceSha256": "7af8e745df756787282cfec2f5b6fe6a73650ba0937c542181f9d614324386f3",
+  "generatedBy": {
+    "tool": "tools/twin3d/convert_step.py",
+    "version": "1.0.0",
+    "cadqueryVersion": "2.8.0"
+  },
+  "solidCount": 17,
+  "units": "m",
+  "upAxis": "Y",
+  "nodes": [
+    "R11_06-2130-ME22A_001",
+    "R11_06-2130-ME22A_002",
+    "R11_06-2130-ME22A_003",
+    "R11_06-2130-ME22A_004",
+    "R11_06-2130-ME22A_005",
+    "R11_06-2130-ME22A_006",
+    "R11_06-2130-ME22A_007",
+    "R11_06-2130-B01A_BOMBA_008",
+    "R11_06-2130-B01A_BOMBA_009",
+    "R11_06-2130-B01A_BOMBA_010",
+    "R11_06-2130-B01A_A",
+    "R11_06-2130-B01A_A__02",
+    "R11_06-2130-B01A_B",
+    "R11_06-2130-B01A_B__02",
+    "R11_06-2130-B01A_C",
+    "R11_06-2130-B01A_BASE_011",
+    "R11_06-2130-B01A_BASE_012"
+  ],
+  "groups": {
+    "motor": {
+      "nodeNames": [
+        "R11_06-2130-ME22A_001",
+        "R11_06-2130-ME22A_002",
+        "R11_06-2130-ME22A_003",
+        "R11_06-2130-ME22A_004",
+        "R11_06-2130-ME22A_005",
+        "R11_06-2130-ME22A_006",
+        "R11_06-2130-ME22A_007"
+      ]
+    },
+    "pump": {
+      "nodeNames": [
+        "R11_06-2130-B01A_BOMBA_008",
+        "R11_06-2130-B01A_BOMBA_009",
+        "R11_06-2130-B01A_BOMBA_010"
+      ]
+    },
+    "base": {
+      "nodeNames": [
+        "R11_06-2130-B01A_BASE_011",
+        "R11_06-2130-B01A_BASE_012"
+      ]
+    },
+    "coupling": {
+      "nodeNames": [
+        "R11_06-2130-B01A_A",
+        "R11_06-2130-B01A_A__02",
+        "R11_06-2130-B01A_B",
+        "R11_06-2130-B01A_B__02",
+        "R11_06-2130-B01A_C"
+      ]
+    }
+  },
+  "sensors": [
+    {
+      "sensorId": "s1",
+      "placement": "unvalidated"
+    },
+    {
+      "sensorId": "s2",
+      "placement": "unvalidated"
+    }
+  ]
+}

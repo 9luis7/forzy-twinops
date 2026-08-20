@@ -1,0 +1,107 @@
+{
+  "sourceSha256": "sha256:7af8e745df756787282cfec2f5b6fe6a73650ba0937c542181f9d614324386f3",
+  "glbSha256": "sha256:fc313dd651c904115767d67992285b6213a4e7bc1c3d0ab8ad7f2742d7629296",
+  "glbBytes": 129196,
+  "solidCount": 17,
+  "nodes": [
+    "R11_06-2130-ME22A_001",
+    "R11_06-2130-ME22A_002",
+    "R11_06-2130-ME22A_003",
+    "R11_06-2130-ME22A_004",
+    "R11_06-2130-ME22A_005",
+    "R11_06-2130-ME22A_006",
+    "R11_06-2130-ME22A_007",
+    "R11_06-2130-B01A_BOMBA_008",
+    "R11_06-2130-B01A_BOMBA_009",
+    "R11_06-2130-B01A_BOMBA_010",
+    "R11_06-2130-B01A_A",
+    "R11_06-2130-B01A_A__02",
+    "R11_06-2130-B01A_B",
+    "R11_06-2130-B01A_B__02",
+    "R11_06-2130-B01A_C",
+    "R11_06-2130-B01A_BASE_011",
+    "R11_06-2130-B01A_BASE_012"
+  ],
+  "nodeMappings": [
+    {
+      "sourceName": "R11.06-2130-ME22A_001",
+      "nodeName": "R11_06-2130-ME22A_001"
+    },
+    {
+      "sourceName": "R11.06-2130-ME22A_002",
+      "nodeName": "R11_06-2130-ME22A_002"
+    },
+    {
+      "sourceName": "R11.06-2130-ME22A_003",
+      "nodeName": "R11_06-2130-ME22A_003"
+    },
+    {
+      "sourceName": "R11.06-2130-ME22A_004",
+      "nodeName": "R11_06-2130-ME22A_004"
+    },
+    {
+      "sourceName": "R11.06-2130-ME22A_005",
+      "nodeName": "R11_06-2130-ME22A_005"
+    },
+    {
+      "sourceName": "R11.06-2130-ME22A_006",
+      "nodeName": "R11_06-2130-ME22A_006"
+    },
+    {
+      "sourceName": "R11.06-2130-ME22A_007",
+      "nodeName": "R11_06-2130-ME22A_007"
+    },
+    {
+      "sourceName": "R11.06-2130-B01A/BOMBA_008",
+      "nodeName": "R11_06-2130-B01A_BOMBA_008"
+    },
+    {
+      "sourceName": "R11.06-2130-B01A/BOMBA_009",
+      "nodeName": "R11_06-2130-B01A_BOMBA_009"
+    },
+    {
+      "sourceName": "R11.06-2130-B01A/BOMBA_010",
+      "nodeName": "R11_06-2130-B01A_BOMBA_010"
+    },
+    {
+      "sourceName": "R11.06-2130-B01A/A",
+      "nodeName": "R11_06-2130-B01A_A"
+    },
+    {
+      "sourceName": "R11.06-2130-B01A/A",
+      "nodeName": "R11_06-2130-B01A_A__02"
+    },
+    {
+      "sourceName": "R11.06-2130-B01A/B",
+      "nodeName": "R11_06-2130-B01A_B"
+    },
+    {
+      "sourceName": "R11.06-2130-B01A/B",
+      "nodeName": "R11_06-2130-B01A_B__02"
+    },
+    {
+      "sourceName": "R11.06-2130-B01A/C",
+      "nodeName": "R11_06-2130-B01A_C"
+    },
+    {
+      "sourceName": "R11.06-2130-B01A/BASE_011",
+      "nodeName": "R11_06-2130-B01A_BASE_011"
+    },
+    {
+      "sourceName": "R11.06-2130-B01A/BASE_012",
+      "nodeName": "R11_06-2130-B01A_BASE_012"
+    }
+  ],
+  "bounds": {
+    "min": [
+      71.685003806,
+      -4.1280000146534634e-06,
+      18.264999900999985
+    ],
+    "max": [
+      72.18500400600001,
+      0.8174687798873274,
+      19.465000101000015
+    ]
+  }
+}
