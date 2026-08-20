@@ -13,7 +13,12 @@ const snapshot = structuredClone(snapshotFixture);
 
 beforeAll(() => {
   vi.stubGlobal("ResizeObserver", class {
-    observe() {}
+    constructor(callback) {
+      this.callback = callback;
+    }
+    observe(target) {
+      this.callback([{ target, contentRect: { width: 640, height: 180 } }]);
+    }
     unobserve() {}
     disconnect() {}
   });
@@ -57,18 +62,40 @@ it("distinguishes unavailable measurements from a valid zero", () => {
   expect(screen.getByText("0,00")).toBeInTheDocument();
 });
 
-it("renders separate sensor history and does not connect missing points", () => {
-  const first = structuredClone(snapshot.channels[0]);
-  const second = structuredClone(snapshot.channels[1]);
-  second.receivedAt = "2026-08-12T15:00:06.000Z";
-  second.observedAt = second.receivedAt;
+it("draws independent interleaved sensor series while preserving a real null gap", () => {
+  const frame = (sensorId, timestamp, value) => {
+    const channel = structuredClone(
+      snapshot.channels.find((candidate) => candidate.sensorId === sensorId)
+    );
+    channel.receivedAt = timestamp;
+    channel.observedAt = timestamp;
+    channel.measurements.vibrationVelocityRms = value === null
+      ? null
+      : { ...channel.measurements.vibrationVelocityRms, value };
+    return channel;
+  };
+  const history = [
+    frame("s1", "2026-08-12T15:00:00.000Z", 1),
+    frame("s2", "2026-08-12T15:00:01.000Z", 10),
+    frame("s1", "2026-08-12T15:00:02.000Z", null),
+    frame("s2", "2026-08-12T15:00:03.000Z", 11),
+    frame("s1", "2026-08-12T15:00:04.000Z", 2),
+    frame("s2", "2026-08-12T15:00:05.000Z", 12),
+    frame("s1", "2026-08-12T15:00:06.000Z", 3),
+  ];
 
-  render(<TelemetryTrend history={[first, second]} />);
+  render(<TelemetryTrend history={history} />);
 
-  const chart = screen.getByTestId("telemetry-trend");
-  expect(within(chart).getByText("S1")).toBeInTheDocument();
-  expect(within(chart).getByText("S2")).toBeInTheDocument();
-  expect(chart.querySelectorAll('[data-connect-nulls="false"]')).toHaveLength(2);
+  const s1 = screen.getByTestId("trend-series-s1");
+  const s2 = screen.getByTestId("trend-series-s2");
+  expect([...within(s1).getAllByRole("listitem")].map((item) => item.dataset.value)).toEqual([
+    "1", "unavailable", "2", "3",
+  ]);
+  expect([...within(s2).getAllByRole("listitem")].map((item) => item.dataset.value)).toEqual([
+    "10", "11", "12",
+  ]);
+  expect(s1.querySelector(".recharts-line-curve")?.getAttribute("d")).toMatch(/L/);
+  expect(s2.querySelector(".recharts-line-curve")?.getAttribute("d")).toMatch(/L/);
 });
 
 it("states the ML limitation even when assessment is absent", () => {

@@ -303,33 +303,38 @@ h3 {
   color: var(--muted);
 }
 
-.trend-legend {
-  display: flex;
-  justify-content: flex-end;
+.trend-series-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 1rem;
-  margin-bottom: 0.5rem;
-  color: var(--muted);
-  font-size: 0.78rem;
-  font-weight: 750;
 }
 
-.trend-legend span::before {
-  display: inline-block;
-  width: 0.65rem;
-  height: 0.65rem;
-  margin-right: 0.35rem;
-  border-radius: 50%;
-  background: var(--teal);
-  content: "";
-}
-
-.trend-legend .trend-legend__s2::before {
-  background: var(--blue);
-}
-
-.trend-chart {
+.trend-series {
   min-width: 0;
+  padding: 0.75rem;
+  border: 1px solid #263c57;
+  border-radius: 13px;
   overflow: hidden;
+  background: var(--surface-raised);
+}
+
+.trend-series h3 {
+  margin-bottom: 0.25rem;
+  color: var(--muted);
+  font-size: 0.82rem;
+  letter-spacing: 0.1em;
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
 }
 
 .model-disclaimer {
@@ -468,7 +473,8 @@ h3 {
 
   .sensor-grid,
   .details-grid,
-  .health-grid {
+  .health-grid,
+  .trend-series-grid {
     grid-template-columns: 1fr;
   }
 
