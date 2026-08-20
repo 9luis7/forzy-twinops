@@ -8,11 +8,12 @@ import TelemetryTrend from "./TelemetryTrend.jsx";
 
 export function TwinFallback() {
   return (
-    <div
-      className="twin-fallback"
-      role="img"
-      aria-label="Representação do conjunto motor-bomba indisponível"
-    >
+    <div className="twin-fallback">
+      <img
+        src="/models/conjunto-motor-bomba-preview.png"
+        alt="Prévia estática do conjunto motor-bomba derivada do STEP fornecido"
+        loading="lazy"
+      />
       <span>Visualização 3D indisponível</span>
       <small>Os dados operacionais não são simulados neste fallback.</small>
     </div>
@@ -77,9 +78,6 @@ export default function OperationsDashboard({ Twin3DComponent = null }) {
         {Twin3DComponent ? (
           <Twin3DComponent
             snapshot={snapshot}
-            asset={snapshot.asset}
-            activeComponent={null}
-            onSelectComponent={() => {}}
             fallback={fallback}
           />
         ) : fallback}

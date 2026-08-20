@@ -30,10 +30,13 @@ beforeAll(() => {
 beforeEach(() => {
   vi.useFakeTimers();
   vi.setSystemTime(new Date("2026-08-13T15:30:00.000Z"));
+  vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue(null);
+  vi.stubGlobal("matchMedia", vi.fn().mockReturnValue({ matches: false }));
 });
 
 afterEach(() => {
   cleanup();
+  vi.restoreAllMocks();
   vi.useRealTimers();
 });
 afterAll(() => vi.unstubAllGlobals());
@@ -143,8 +146,30 @@ it("exposes a testable Twin3D component seam with an honest fallback", async () 
   await flush();
 
   expect(screen.getByTestId("twin3d-probe")).toHaveTextContent("forzy-motor-01");
+  expect(Object.keys(Twin3DProbe.mock.calls.at(-1)[0]).sort()).toEqual([
+    "fallback",
+    "snapshot",
+  ]);
   expect(
-    screen.getByRole("img", { name: "Representação do conjunto motor-bomba indisponível" })
+    screen.getByAltText(/derivada do STEP fornecido/i)
   ).toBeInTheDocument();
-  expect(Twin3DProbe).toHaveBeenCalled();
+});
+
+it("mounts the real Twin3D shell by default", async () => {
+  vi.useRealTimers();
+  vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({});
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = vi.fn(() => new Promise(() => {}));
+
+  try {
+    render(<App dataSource={sourceWithSnapshot()} />);
+    await flush();
+
+    expect(
+      await screen.findByText(/Carregando modelo 3D real/, {}, { timeout: 5000 })
+    ).toBeInTheDocument();
+  } finally {
+    if (originalFetch) globalThis.fetch = originalFetch;
+    else delete globalThis.fetch;
+  }
 });
