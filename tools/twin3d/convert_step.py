@@ -16,7 +16,7 @@ import cadquery as cq
 ASSET_ID = "forzy-motor-01"
 MODEL_URL_PREFIX = "/models"
 CONVERTER_VERSION = "1.0.0"
-UNSAFE_NAME_SEPARATOR = re.compile(r"[/\\\x00-\x1f]")
+UNSAFE_NAME_SEPARATOR = re.compile(r"[\s/\\.\[\]:\x00-\x1f]+")
 STEP_ENTITY = re.compile(r"(?m)^#(?P<id>\d+)\s*=\s*(?P<type>[A-Z_]+)\s*\((?P<body>[^;]*)\);\s*$")
 STEP_STRING = re.compile(r"^\s*'((?:''|[^'])*)'")
 
@@ -120,7 +120,8 @@ def _prepare_step_for_cadquery(source: Path, destination: Path) -> tuple[NodeMap
     Some valid STEP exporters leave NEXT_ASSEMBLY_USAGE_OCCURRENCE names blank.
     CadQuery 2.8 cannot address those children after import. The source file remains
     untouched: this deterministic working copy borrows each referenced PRODUCT name,
-    removes only path separators, and suffixes repeated identities.
+    removes only separators unsafe for glTF/Three.js lookup, and suffixes
+    repeated identities.
     """
 
     text = source.read_text(encoding="utf-8")
@@ -181,6 +182,26 @@ def _leaf_nodes(assembly: cq.Assembly) -> list[cq.Assembly]:
     return leaves
 
 
+def _world_location(node: cq.Assembly) -> cq.Location:
+    location = node.loc
+    parent = node.parent
+    while parent is not None:
+        location = parent.loc * location
+        parent = parent.parent
+    return location
+
+
+def _metre_assembly(assembly: cq.Assembly, leaves: Iterable[cq.Assembly]) -> cq.Assembly:
+    output = cq.Assembly(name=ASSET_ID)
+    for leaf in leaves:
+        solids = leaf.obj.Solids()
+        if len(solids) != 1:
+            raise ValueError(f"STEP node {leaf.name} does not contain exactly one solid")
+        world_solid = solids[0].moved(_world_location(leaf))
+        output.add(world_solid.scale(0.001), name=leaf.name, color=leaf.color)
+    return output
+
+
 def _assembly_bounds_m(assembly: cq.Assembly) -> Bounds:
     bounding_box = assembly.toCompound().BoundingBox()
     # CadQuery exports glTF as metres and rotates its native Z-up coordinates
@@ -191,7 +212,7 @@ def _assembly_bounds_m(assembly: cq.Assembly) -> Bounds:
         for y in (bounding_box.ymin, bounding_box.ymax)
         for z in (bounding_box.zmin, bounding_box.zmax)
     )
-    points = [tuple(value / 1000 for value in corner) for corner in corners]
+    points = list(corners)
     minimum = tuple(min(point[index] for point in points) for index in range(3))
     maximum = tuple(max(point[index] for point in points) for index in range(3))
     if not all(math.isfinite(value) for value in (*minimum, *maximum)):
@@ -270,8 +291,10 @@ def convert_step(source: Path, glb: Path, manifest: Path) -> ConversionReport:
     if node_names != tuple(mapping.node_name for mapping in mappings):
         raise ValueError("CadQuery changed prepared STEP node names")
 
+    metre_assembly = _metre_assembly(assembly, leaves)
+
     temporary_glb = glb.with_suffix(f"{glb.suffix}.tmp")
-    if not assembly.save(
+    if not metre_assembly.save(
         str(temporary_glb),
         exportType="GLTF",
         tolerance=0.1,
@@ -297,7 +320,7 @@ def convert_step(source: Path, glb: Path, manifest: Path) -> ConversionReport:
         solid_count=solid_count,
         node_names=node_names,
         node_mappings=mappings,
-        bounds=_assembly_bounds_m(assembly),
+        bounds=_assembly_bounds_m(metre_assembly),
     )
 
 
