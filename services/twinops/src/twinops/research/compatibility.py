@@ -1,25 +1,12 @@
-"""Semantic compatibility matrix between laboratory and Forzy API features."""
+"""Semantic compatibility report derived from canonical feature masks."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from types import MappingProxyType
 from typing import Mapping
 
-from twinops.research.contracts import SignalWindow
-
-
-FULL_FEATURES = (
-    "rms_g",
-    "std_g",
-    "peak_to_peak_g",
-    "crest_factor",
-    "skewness",
-    "kurtosis",
-    "band_energy",
-    "envelope_band_energy",
-)
-AGGREGATE_BASE = ("acceleration_rms_g",)
+from twinops.research.contracts import FeaturePolicy, SignalWindow
+from twinops.research.features import extract_views
 
 
 @dataclass(frozen=True, slots=True)
@@ -28,39 +15,17 @@ class CompatibilityReport:
     aggregate_features: tuple[str, ...]
     forzy_features: tuple[str, ...]
     missing_semantics: Mapping[str, str]
+    feature_policy_id: str | None
 
 
-def compatibility(window: SignalWindow) -> CompatibilityReport:
-    """Describe reproducible views without manufacturing unavailable context."""
-
-    aggregate = list(AGGREGATE_BASE)
-    forzy = list(AGGREGATE_BASE)
-    missing: dict[str, str] = {
-        "velocity_rms_mm_s": (
-            "Acceleration waveform does not establish the validated filter and "
-            "integration semantics used by the Forzy sensor."
-        )
-    }
-
-    if window.temperature_c is not None:
-        aggregate.append("temperature_c")
-        forzy.append("temperature_c")
-    else:
-        missing["temperature_c"] = "Dataset window has no measured temperature."
-
-    if window.rpm is not None:
-        aggregate.append("rpm")
-    else:
-        missing["rpm"] = "Dataset window has no measured rotation speed."
-
-    if window.load is not None:
-        aggregate.append("load")
-    else:
-        missing["load"] = "Dataset window has no measured load."
-
+def compatibility(
+    window: SignalWindow, *, policy: FeaturePolicy | None = None
+) -> CompatibilityReport:
+    views = extract_views(window, policy=policy)
     return CompatibilityReport(
-        full_features=FULL_FEATURES,
-        aggregate_features=tuple(aggregate),
-        forzy_features=tuple(forzy),
-        missing_semantics=MappingProxyType(missing),
+        full_features=tuple(views.full),
+        aggregate_features=tuple(views.aggregate),
+        forzy_features=tuple(views.forzy),
+        missing_semantics=views.unconfirmed_semantics,
+        feature_policy_id=views.feature_policy_id,
     )

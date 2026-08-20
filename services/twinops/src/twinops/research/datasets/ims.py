@@ -1,95 +1,101 @@
-"""Adapter for original NASA IMS numeric vibration files."""
+"""Strict adapter for metadata-mapped NASA IMS numeric vibration files."""
 
 from __future__ import annotations
 
-import json
 from collections import defaultdict
 from collections.abc import Iterator
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 
 from twinops.research.contracts import SignalWindow
+from twinops.research.datasets.common import nonempty, raw_path, sequence_index, started_at
+from twinops.research.metadata import LoadedMetadata
 
 
-_TIMESTAMP_FORMAT = "%Y.%m.%d.%H.%M.%S"
+def _channel_context(channel: dict[str, Any], *, context: str) -> tuple[object, ...]:
+    return (
+        nonempty(channel, "windowStateLabel", context=context),
+        channel.get("terminalFailureMode"),
+        channel.get("lifeFraction"),
+        channel.get("temperatureC"),
+        channel.get("rpm"),
+        channel.get("load"),
+    )
 
 
-def _load_metadata(root: Path) -> dict[str, Any]:
-    path = root / "metadata.json"
-    if not path.is_file():
-        raise FileNotFoundError(
-            f"IMS adapter requires curated metadata at {path}; channel identity is never guessed"
-        )
-    metadata = json.loads(path.read_text(encoding="utf-8"))
-    if not isinstance(metadata.get("tests"), dict):
-        raise ValueError("IMS metadata must contain a tests mapping")
-    return metadata
-
-
-def _timestamp(path: Path) -> datetime:
-    try:
-        return datetime.strptime(path.name, _TIMESTAMP_FORMAT).replace(tzinfo=timezone.utc)
-    except ValueError as exc:
-        raise ValueError(f"IMS run filename is not an acquisition timestamp: {path.name}") from exc
-
-
-def iter_ims(root: str | Path) -> Iterator[SignalWindow]:
-    """Yield IMS windows using an explicit test/channel metadata map."""
-
+def iter_ims(root: str | Path, metadata: LoadedMetadata) -> Iterator[SignalWindow]:
     root_path = Path(root)
-    metadata = _load_metadata(root_path)
-    try:
-        sampling_hz = float(metadata["samplingHz"])
-    except (KeyError, TypeError, ValueError) as exc:
-        raise ValueError("IMS metadata requires numeric samplingHz") from exc
-    unit = str(metadata.get("accelerationUnit", "g"))
-
-    for test_name, test_meta in sorted(metadata["tests"].items()):
-        if not isinstance(test_meta, dict):
-            raise ValueError(f"IMS metadata for {test_name} must be an object")
-        channels = test_meta.get("channels")
-        labels = test_meta.get("faultLabels")
+    if metadata.dataset_id != "nasa-ims":
+        raise ValueError("IMS adapter requires nasa-ims metadata")
+    payload = metadata.payload
+    files = payload["files"]
+    ordered = sorted(
+        files.items(),
+        key=lambda item: (sequence_index(item[1], context=item[0]), item[0]),
+    )
+    seen_sequences: set[tuple[str, int]] = set()
+    for relative_path, raw_entry in ordered:
+        if not isinstance(raw_entry, dict):
+            raise ValueError(f"{relative_path}: metadata entry must be an object")
+        entry: dict[str, Any] = raw_entry
+        run_id = nonempty(entry, "runId", context=relative_path)
+        sequence = sequence_index(entry, context=relative_path)
+        acquisition_time = started_at(entry, context=relative_path)
+        channels = entry.get("channels")
         if not isinstance(channels, list) or not channels:
-            raise ValueError(f"IMS metadata for {test_name} requires a non-empty channel map")
-        if not isinstance(labels, dict):
-            raise ValueError(f"IMS metadata for {test_name} requires fault label metadata")
+            raise ValueError(f"{relative_path}: channels must be a non-empty list")
+        matrix = np.loadtxt(raw_path(root_path, relative_path), dtype=float, ndmin=2)
+        positions: list[int] = []
+        bearing_axes: dict[str, dict[str, np.ndarray]] = defaultdict(dict)
+        bearing_context: dict[str, tuple[object, ...]] = {}
+        for channel_number, raw_channel in enumerate(channels):
+            if not isinstance(raw_channel, dict):
+                raise ValueError(f"{relative_path}: channel {channel_number} must be an object")
+            channel: dict[str, Any] = raw_channel
+            index = channel.get("columnIndex")
+            if isinstance(index, bool) or not isinstance(index, int) or index < 0:
+                raise ValueError(f"{relative_path}: columnIndex must be a non-negative integer")
+            positions.append(index)
+            bearing_id = nonempty(channel, "bearingId", context=relative_path)
+            axis = nonempty(channel, "axis", context=relative_path)
+            if axis in bearing_axes[bearing_id]:
+                raise ValueError(f"{relative_path}: duplicate axis {axis!r} for {bearing_id}")
+            context = _channel_context(channel, context=relative_path)
+            if bearing_id in bearing_context and bearing_context[bearing_id] != context:
+                raise ValueError(f"{relative_path}: channels disagree on per-window state for {bearing_id}")
+            bearing_context[bearing_id] = context
+            if index >= matrix.shape[1]:
+                raise ValueError(f"{relative_path}: columnIndex {index} is outside the raw matrix")
+            bearing_axes[bearing_id][axis] = matrix[:, index]
+        if sorted(positions) != list(range(matrix.shape[1])):
+            raise ValueError(
+                f"{relative_path}: columnIndex values must map every raw column exactly once"
+            )
 
-        test_dir = root_path / test_name
-        if not test_dir.is_dir():
-            raise FileNotFoundError(f"IMS test directory does not exist: {test_dir}")
-        files = sorted((path for path in test_dir.iterdir() if path.is_file()), key=_timestamp)
-        for path in files:
-            matrix = np.loadtxt(path, dtype=float, ndmin=2)
-            if matrix.ndim != 2 or matrix.shape[1] != len(channels):
-                raise ValueError(
-                    f"IMS channel count mismatch in {path.name}: metadata={len(channels)}, file={matrix.shape[1]}"
-                )
-
-            bearing_axes: dict[str, dict[str, np.ndarray]] = defaultdict(dict)
-            for index, channel in enumerate(channels):
-                if not isinstance(channel, dict) or not channel.get("bearingId") or not channel.get("axis"):
-                    raise ValueError(f"invalid IMS channel metadata at index {index} for {test_name}")
-                bearing_id = str(channel["bearingId"])
-                axis = str(channel["axis"])
-                if axis in bearing_axes[bearing_id]:
-                    raise ValueError(f"duplicate IMS axis {axis!r} for bearing {bearing_id}")
-                bearing_axes[bearing_id][axis] = matrix[:, index]
-
-            started_at = _timestamp(path)
-            for bearing_id in sorted(bearing_axes):
-                fault_label = labels.get(bearing_id)
-                if not fault_label:
-                    raise ValueError(f"missing fault label metadata for IMS bearing {bearing_id}")
-                yield SignalWindow(
-                    dataset_id="nasa-ims",
-                    bearing_id=bearing_id,
-                    run_id=path.name,
-                    started_at=started_at,
-                    sampling_hz=sampling_hz,
-                    acceleration=bearing_axes[bearing_id],
-                    fault_label=str(fault_label),
-                    acceleration_unit=unit,
-                )
+        for bearing_id in sorted(bearing_axes):
+            sequence_key = (bearing_id, sequence)
+            if sequence_key in seen_sequences:
+                raise ValueError(f"{relative_path}: duplicate sequenceIndex for bearing {bearing_id}")
+            seen_sequences.add(sequence_key)
+            state, terminal, life, temperature, rpm, load = bearing_context[bearing_id]
+            yield SignalWindow(
+                dataset_id="nasa-ims",
+                bearing_id=bearing_id,
+                run_id=run_id,
+                sampling_hz=float(payload["samplingHz"]),
+                acceleration=bearing_axes[bearing_id],
+                acceleration_unit=str(payload["accelerationUnit"]),
+                window_state_label=str(state),
+                terminal_failure_mode=terminal,
+                sequence_index=sequence,
+                started_at=acquisition_time,
+                timestamp_quality=nonempty(entry, "timestampQuality", context=relative_path),
+                source_relative_path=relative_path,
+                metadata_sha256=metadata.metadata_sha256,
+                life_fraction=life,
+                temperature_c=temperature,
+                rpm=rpm,
+                load=load,
+            )
