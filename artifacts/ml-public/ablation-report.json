@@ -1,0 +1,43 @@
+{
+  "schemaVersion": 1,
+  "status": "not_run_external_data_gate",
+  "generatedAt": "2026-08-20T20:54:02Z",
+  "config": {
+    "datasets": [
+      "xjtu-sy",
+      "nasa-ims"
+    ],
+    "seed": 42,
+    "views": [
+      "full",
+      "aggregate",
+      "forzy"
+    ],
+    "splitUnit": "bearing_id",
+    "bootstrapUnit": "bearing_id",
+    "requiredCrossBench": [
+      "xjtu-sy->nasa-ims",
+      "nasa-ims->xjtu-sy"
+    ]
+  },
+  "dataActuallyUsed": [],
+  "metrics": null,
+  "gate": {
+    "reason": "Explicit approval for official-source downloads and terms is pending.",
+    "missing": [
+      "exact download URLs",
+      "access timestamps",
+      "verified archive SHA-256 hashes",
+      "original extracted numeric signals",
+      "curated adapter metadata for the retrieved archive versions"
+    ],
+    "resumeCommand": "services\\twinops\\.venv\\Scripts\\python.exe scripts/run_public_fault_lab.py --datasets xjtu ims --output artifacts/ml-public --seed 42"
+  },
+  "claims": {
+    "fullToAggregateDelta": null,
+    "aggregateToForzyDelta": null,
+    "crossBenchAboveMajorityBaseline": null,
+    "forzyFailurePrediction": false
+  },
+  "operationalImpact": "none; artifacts/ml/real-forzy and services/twinops/src/twinops/ml are outside this laboratory"
+}
