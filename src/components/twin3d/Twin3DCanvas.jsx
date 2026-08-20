@@ -13,7 +13,7 @@ export async function loadModelManifest({ signal } = {}) {
   return response.json();
 }
 
-function cloneSceneWithIndependentMaterials(scene) {
+export function cloneSceneWithIndependentMaterials(scene) {
   const clone = scene.clone(true);
   clone.traverse((node) => {
     if (!node.isMesh) return;
@@ -34,6 +34,10 @@ function visitMaterials(scene, visitor) {
   });
 }
 
+export function disposeSceneMaterials(scene) {
+  visitMaterials(scene, (material) => material.dispose());
+}
+
 export function TwinModel({ modelUrl, viewModel }) {
   const gltf = useGLTF(modelUrl);
   const model = useMemo(() => cloneSceneWithIndependentMaterials(gltf.scene), [gltf.scene]);
@@ -49,7 +53,7 @@ export function TwinModel({ modelUrl, viewModel }) {
 
   useEffect(
     () => () => {
-      visitMaterials(model, (material) => material.dispose());
+      disposeSceneMaterials(model);
     },
     [model],
   );

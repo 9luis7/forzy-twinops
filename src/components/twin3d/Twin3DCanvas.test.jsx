@@ -1,8 +1,9 @@
 import "@testing-library/jest-dom/vitest";
 import React, { Component } from "react";
-import { cleanup, render, screen } from "@testing-library/react";
+import { act, cleanup, render, screen } from "@testing-library/react";
+import { BoxGeometry, Mesh, MeshStandardMaterial, Scene } from "three";
 import { afterEach, expect, it, vi } from "vitest";
-import Twin3DCanvas from "./Twin3DCanvas.jsx";
+import Twin3DCanvas, * as twin3dModule from "./Twin3DCanvas.jsx";
 import { normalSnapshot, realManifestFixture } from "./testFixtures.js";
 
 
@@ -114,6 +115,60 @@ it("surfaces GLB rendering failures to the outer fallback boundary", async () =>
       />
     </TestErrorBoundary>,
   );
+
+  expect(await screen.findByTestId("error-fallback")).toBeVisible();
+});
+
+it("clones real Three materials independently and disposes only the clone", () => {
+  const sourceScene = new Scene();
+  const sourceGeometry = new BoxGeometry(1, 1, 1);
+  const sourceMaterial = new MeshStandardMaterial({ color: "#ffffff" });
+  sourceScene.add(new Mesh(sourceGeometry, sourceMaterial));
+  const sourceDispose = vi.spyOn(sourceMaterial, "dispose");
+
+  const clonedScene = twin3dModule.cloneSceneWithIndependentMaterials(sourceScene);
+  const clonedMaterial = clonedScene.children[0].material;
+  const clonedDispose = vi.spyOn(clonedMaterial, "dispose");
+
+  expect(clonedScene).not.toBe(sourceScene);
+  expect(clonedMaterial).not.toBe(sourceMaterial);
+  twin3dModule.disposeSceneMaterials(clonedScene);
+  expect(clonedDispose).toHaveBeenCalledTimes(1);
+  expect(sourceDispose).not.toHaveBeenCalled();
+  sourceGeometry.dispose();
+  sourceMaterial.dispose();
+});
+
+it("surfaces an asynchronous GLB resource failure after Suspense settles", async () => {
+  vi.spyOn(console, "error").mockImplementation(() => {});
+  let state = "pending";
+  let failure;
+  let settle;
+  const pending = new Promise((resolve) => {
+    settle = resolve;
+  });
+  const AsyncRejectingModel = () => {
+    if (state === "pending") throw pending;
+    throw failure;
+  };
+
+  render(
+    <TestErrorBoundary>
+      <Twin3DCanvas
+        snapshot={normalSnapshot}
+        loadManifest={() => Promise.resolve(realManifestFixture)}
+        Model={AsyncRejectingModel}
+      />
+    </TestErrorBoundary>,
+  );
+  await screen.findByLabelText("Modelo 3D do conjunto motor-bomba");
+
+  await act(async () => {
+    failure = new Error("asynchronous glb failure");
+    state = "failed";
+    settle();
+    await pending;
+  });
 
   expect(await screen.findByTestId("error-fallback")).toBeVisible();
 });
