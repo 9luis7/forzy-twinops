@@ -17,6 +17,20 @@ from typing import BinaryIO
 
 
 _SHA256 = re.compile(r"^[0-9a-fA-F]{64}$")
+_WINDOWS_RESERVED_NAMES = frozenset(
+    {
+        "con",
+        "prn",
+        "aux",
+        "nul",
+        "conin$",
+        "conout$",
+        *(f"com{index}" for index in range(1, 10)),
+        *(f"lpt{index}" for index in range(1, 10)),
+        *(f"com{index}" for index in "¹²³"),
+        *(f"lpt{index}" for index in "¹²³"),
+    }
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -75,6 +89,12 @@ def _safe_name(name: str) -> str:
     path = PurePosixPath(name)
     if path.is_absolute() or any(part in {"", ".", ".."} for part in path.parts):
         raise ValueError(f"unsafe archive member path: {name!r}")
+    for part in path.parts:
+        if part.rstrip(" .") != part:
+            raise ValueError(f"unsafe archive member path: {name!r}")
+        device_name = part.split(".", 1)[0].rstrip(" .").casefold()
+        if device_name in _WINDOWS_RESERVED_NAMES:
+            raise ValueError(f"unsafe archive member path: {name!r}")
     normalized = path.as_posix().rstrip("/")
     if not normalized:
         raise ValueError(f"unsafe archive member path: {name!r}")
@@ -211,6 +231,38 @@ def _scan_archive(archive: Path, destination: Path | None = None) -> RawInventor
     raise ValueError(f"unsupported archive format: {archive.name}")
 
 
+def _filesystem_inventory(root: Path) -> RawInventory:
+    files: list[RawFile] = []
+    reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+    for directory, directory_names, file_names in os.walk(root, topdown=True, followlinks=False):
+        current = Path(directory)
+        for name in directory_names:
+            path = current / name
+            metadata = path.lstat()
+            if stat.S_ISLNK(metadata.st_mode) or (
+                reparse_flag and getattr(metadata, "st_file_attributes", 0) & reparse_flag
+            ):
+                raise ValueError(f"extracted filesystem contains a link: {path}")
+            if not stat.S_ISDIR(metadata.st_mode):
+                raise ValueError(f"extracted filesystem contains unsupported entry: {path}")
+        for name in file_names:
+            path = current / name
+            metadata = path.lstat()
+            if stat.S_ISLNK(metadata.st_mode) or (
+                reparse_flag and getattr(metadata, "st_file_attributes", 0) & reparse_flag
+            ):
+                raise ValueError(f"extracted filesystem contains a link: {path}")
+            if not stat.S_ISREG(metadata.st_mode):
+                raise ValueError(f"extracted filesystem contains unsupported entry: {path}")
+            relative_path = _safe_name(path.relative_to(root).as_posix())
+            with path.open("rb") as stream:
+                size, sha256 = _hash_stream(stream)
+            files.append(RawFile(relative_path, size, sha256))
+    if not files:
+        raise ValueError("extracted filesystem contains no regular files")
+    return _inventory(files)
+
+
 def inspect_archive(path: str | Path) -> RawInventory:
     archive = Path(path)
     if not archive.is_file():
@@ -240,15 +292,18 @@ def safe_extract_archive(
     expected = inspect_archive(archive)
     temporary = Path(tempfile.mkdtemp(prefix=f".{destination_path.name}-extract-", dir=destination_path.parent))
     try:
-        actual = _scan_archive(archive, temporary)
-        if actual != expected:
+        streamed = _scan_archive(archive, temporary)
+        if streamed != expected:
             raise ValueError("extracted raw inventory differs from inspected archive")
+        actual = _filesystem_inventory(temporary)
+        if actual != streamed:
+            raise ValueError("extracted filesystem inventory differs from archive stream inventory")
         if hash_file(archive) != archive_hash_before:
             raise ValueError("archive changed during extraction")
         if destination_path.exists():
             destination_path.rmdir()
         temporary.replace(destination_path)
         return actual
-    except Exception:
+    except BaseException:
         shutil.rmtree(temporary, ignore_errors=True)
         raise

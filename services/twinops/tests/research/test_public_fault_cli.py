@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import importlib.util
 import json
 import os
 import subprocess
@@ -9,10 +10,21 @@ import zipfile
 from pathlib import Path
 
 import numpy as np
+import pytest
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[4]
 SCRIPT = REPOSITORY_ROOT / "scripts" / "run_public_fault_lab.py"
+
+
+def _load_script_module():
+    module_name = "twinops_public_fault_lab_test_module"
+    spec = importlib.util.spec_from_file_location(module_name, SCRIPT)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module
+    spec.loader.exec_module(module)
+    return module
 
 
 def _run(*arguments: object) -> subprocess.CompletedProcess[str]:
@@ -326,3 +338,305 @@ def test_cli_requires_empty_output_or_explicit_safe_overwrite(tmp_path) -> None:
     )
     assert overwrite.returncode == 2
     assert "unknown files" in json.loads(overwrite.stderr)["error"]
+
+
+def test_report_pair_publication_removes_partial_generation_after_second_replace_interrupt(
+    tmp_path, monkeypatch
+) -> None:
+    """Regression: publishing report one before report two must never expose a mixed pair."""
+
+    module = _load_script_module()
+    output = tmp_path / "output"
+    output.mkdir()
+    original_replace = os.replace
+    interruption = KeyboardInterrupt("second report publication interrupted")
+    final_replacements = 0
+
+    def interrupt_second_final(source, target):
+        nonlocal final_replacements
+        if Path(target).name in module._OUTPUT_FILES:
+            final_replacements += 1
+            if final_replacements == 2:
+                raise interruption
+        return original_replace(source, target)
+
+    monkeypatch.setattr(module.os, "replace", interrupt_second_final)
+
+    with pytest.raises(KeyboardInterrupt) as caught:
+        module._atomic_reports(
+            output,
+            {"schemaVersion": 2, "status": "new-ablation"},
+            {"schemaVersion": 2, "status": "new-dataset"},
+        )
+
+    assert caught.value is interruption
+    assert not any((output / name).exists() for name in module._OUTPUT_FILES)
+    assert list(output.iterdir()) == []
+
+
+def test_report_pair_publication_binds_both_documents_to_one_verified_generation(
+    tmp_path,
+) -> None:
+    """Regression: independently replaced JSON files need a verifiable common generation."""
+
+    module = _load_script_module()
+    output = tmp_path / "output"
+    output.mkdir()
+    module._atomic_reports(
+        output,
+        {"schemaVersion": 2, "status": "ablation"},
+        {"schemaVersion": 2, "status": "dataset"},
+    )
+
+    documents = {
+        name: json.loads((output / name).read_text(encoding="utf-8"))
+        for name in module._OUTPUT_FILES
+    }
+    publications = [document["publication"] for document in documents.values()]
+    assert publications[0] == publications[1]
+    publication = publications[0]
+    assert publication["schemaVersion"] == 1
+    assert len(publication["generationId"]) == 64
+    assert set(publication["documents"]) == module._OUTPUT_FILES
+    expected_hashes = {}
+    for name, document in documents.items():
+        unbound = dict(document)
+        unbound.pop("publication")
+        expected = hashlib.sha256(
+            json.dumps(unbound, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
+        assert publication["documents"][name] == expected
+        expected_hashes[name] = expected
+    expected_generation = hashlib.sha256(
+        json.dumps(
+            {"schemaVersion": 1, "documents": expected_hashes},
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    assert publication["generationId"] == expected_generation
+
+
+def test_report_pair_publication_verifies_disk_pair_and_rolls_back_tampering(
+    tmp_path, monkeypatch
+) -> None:
+    """Regression: success cannot be reported for a mismatched on-disk pair."""
+
+    module = _load_script_module()
+    output = tmp_path / "output"
+    output.mkdir()
+    original_replace = os.replace
+    final_replacements = 0
+
+    def tamper_after_second_final(source, target):
+        nonlocal final_replacements
+        original_replace(source, target)
+        if Path(target).name in module._OUTPUT_FILES:
+            final_replacements += 1
+            if final_replacements == 2:
+                payload = json.loads(Path(target).read_text(encoding="utf-8"))
+                payload["status"] = "tampered-after-publication"
+                Path(target).write_text(json.dumps(payload), encoding="utf-8")
+
+    monkeypatch.setattr(module.os, "replace", tamper_after_second_final)
+
+    with pytest.raises(ValueError, match="published report pair"):
+        module._atomic_reports(
+            output,
+            {"schemaVersion": 2, "status": "ablation"},
+            {"schemaVersion": 2, "status": "dataset"},
+        )
+
+    assert list(output.iterdir()) == []
+
+
+def test_report_pair_publication_restores_previous_pair_after_second_replace_failure(
+    tmp_path, monkeypatch
+) -> None:
+    """Regression: an overwrite failure must restore both previous reports byte-for-byte."""
+
+    module = _load_script_module()
+    output = tmp_path / "output"
+    output.mkdir()
+    module._atomic_reports(
+        output,
+        {"schemaVersion": 2, "status": "old-ablation"},
+        {"schemaVersion": 2, "status": "old-dataset"},
+    )
+    previous = {name: (output / name).read_bytes() for name in module._OUTPUT_FILES}
+    original_replace = os.replace
+    final_replacements = 0
+
+    def fail_second_final(source, target):
+        nonlocal final_replacements
+        if Path(target).name in module._OUTPUT_FILES:
+            final_replacements += 1
+            if final_replacements == 2:
+                raise RuntimeError("second report replace failed")
+        return original_replace(source, target)
+
+    monkeypatch.setattr(module.os, "replace", fail_second_final)
+
+    with pytest.raises(RuntimeError, match="second report replace failed"):
+        module._atomic_reports(
+            output,
+            {"schemaVersion": 2, "status": "new-ablation"},
+            {"schemaVersion": 2, "status": "new-dataset"},
+        )
+
+    assert {name: (output / name).read_bytes() for name in module._OUTPUT_FILES} == previous
+    assert {path.name for path in output.iterdir()} == module._OUTPUT_FILES
+
+
+def test_report_pair_publication_preserves_original_exception_if_rollback_replace_fails(
+    tmp_path, monkeypatch
+) -> None:
+    """Regression: rollback errors cannot mask the publish interrupt or leave a mixed pair."""
+
+    module = _load_script_module()
+    output = tmp_path / "output"
+    output.mkdir()
+    module._atomic_reports(
+        output,
+        {"schemaVersion": 2, "status": "old-ablation"},
+        {"schemaVersion": 2, "status": "old-dataset"},
+    )
+    original_replace = os.replace
+    publication_error = KeyboardInterrupt("publication interrupted")
+    final_replacements = 0
+
+    def fail_publication_and_rollback(source, target):
+        nonlocal final_replacements
+        if Path(target).name in module._OUTPUT_FILES:
+            final_replacements += 1
+            if final_replacements == 2:
+                raise publication_error
+            if final_replacements >= 3:
+                raise RuntimeError("rollback replace failed")
+        return original_replace(source, target)
+
+    monkeypatch.setattr(module.os, "replace", fail_publication_and_rollback)
+
+    with pytest.raises(KeyboardInterrupt) as caught:
+        module._atomic_reports(
+            output,
+            {"schemaVersion": 2, "status": "new-ablation"},
+            {"schemaVersion": 2, "status": "new-dataset"},
+        )
+
+    assert caught.value is publication_error
+    assert any("rollback" in note.lower() for note in getattr(caught.value, "__notes__", ()))
+    assert list(output.iterdir()) == []
+
+
+def test_report_pair_staging_interrupt_keeps_previous_pair_without_running_rollback(
+    tmp_path, monkeypatch
+) -> None:
+    """Regression: a failure before publication starts must leave the old pair untouched."""
+
+    module = _load_script_module()
+    output = tmp_path / "output"
+    output.mkdir()
+    module._atomic_reports(
+        output,
+        {"schemaVersion": 2, "status": "old-ablation"},
+        {"schemaVersion": 2, "status": "old-dataset"},
+    )
+    previous = {name: (output / name).read_bytes() for name in module._OUTPUT_FILES}
+    staging_error = KeyboardInterrupt("staging interrupted")
+
+    def interrupt_staging(*_arguments, **_keywords):
+        raise staging_error
+
+    def forbid_replace(*_arguments, **_keywords):
+        raise AssertionError("rollback must not run before the first publication replace")
+
+    monkeypatch.setattr(module, "_stage_json", interrupt_staging)
+    monkeypatch.setattr(module.os, "replace", forbid_replace)
+
+    with pytest.raises(KeyboardInterrupt) as caught:
+        module._atomic_reports(
+            output,
+            {"schemaVersion": 2, "status": "new-ablation"},
+            {"schemaVersion": 2, "status": "new-dataset"},
+        )
+
+    assert caught.value is staging_error
+    assert {name: (output / name).read_bytes() for name in module._OUTPUT_FILES} == previous
+
+
+def test_report_pair_first_replace_failure_restores_previous_pair(
+    tmp_path, monkeypatch
+) -> None:
+    """Regression: a failed first atomic replace must leave the old pair observable."""
+
+    module = _load_script_module()
+    output = tmp_path / "output"
+    output.mkdir()
+    module._atomic_reports(
+        output,
+        {"schemaVersion": 2, "status": "old-ablation"},
+        {"schemaVersion": 2, "status": "old-dataset"},
+    )
+    previous = {name: (output / name).read_bytes() for name in module._OUTPUT_FILES}
+    publication_error = OSError("first replace rejected before mutation")
+    replace_calls = 0
+
+    def fail_first_before_mutation(*_arguments, **_keywords):
+        nonlocal replace_calls
+        replace_calls += 1
+        if replace_calls == 1:
+            raise publication_error
+        return original_replace(*_arguments, **_keywords)
+
+    original_replace = os.replace
+    monkeypatch.setattr(module.os, "replace", fail_first_before_mutation)
+
+    with pytest.raises(OSError) as caught:
+        module._atomic_reports(
+            output,
+            {"schemaVersion": 2, "status": "new-ablation"},
+            {"schemaVersion": 2, "status": "new-dataset"},
+        )
+
+    assert caught.value is publication_error
+    assert {name: (output / name).read_bytes() for name in module._OUTPUT_FILES} == previous
+
+
+def test_report_pair_first_replace_mutates_then_interrupts_and_restores_previous_pair(
+    tmp_path, monkeypatch
+) -> None:
+    """Regression: an interrupt after the filesystem swap is an ambiguous replace failure."""
+
+    module = _load_script_module()
+    output = tmp_path / "output"
+    output.mkdir()
+    module._atomic_reports(
+        output,
+        {"schemaVersion": 2, "status": "old-ablation"},
+        {"schemaVersion": 2, "status": "old-dataset"},
+    )
+    previous = {name: (output / name).read_bytes() for name in module._OUTPUT_FILES}
+    original_replace = os.replace
+    publication_error = KeyboardInterrupt("interrupted after filesystem mutation")
+    replace_calls = 0
+
+    def mutate_then_interrupt(source, target):
+        nonlocal replace_calls
+        replace_calls += 1
+        original_replace(source, target)
+        if replace_calls == 1:
+            raise publication_error
+
+    monkeypatch.setattr(module.os, "replace", mutate_then_interrupt)
+
+    with pytest.raises(KeyboardInterrupt) as caught:
+        module._atomic_reports(
+            output,
+            {"schemaVersion": 2, "status": "new-ablation"},
+            {"schemaVersion": 2, "status": "new-dataset"},
+        )
+
+    assert caught.value is publication_error
+    assert {name: (output / name).read_bytes() for name in module._OUTPUT_FILES} == previous
+    assert {path.name for path in output.iterdir()} == module._OUTPUT_FILES

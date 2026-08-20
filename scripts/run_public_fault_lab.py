@@ -461,36 +461,149 @@ def _dependency_versions() -> dict[str, str]:
 
 
 def _stage_json(output: Path, name: str, payload: dict[str, Any]) -> Path:
+    encoded = (json.dumps(payload, indent=2, sort_keys=True) + "\n").encode("utf-8")
+    return _stage_bytes(output, name, encoded)
+
+
+def _stage_bytes(output: Path, name: str, payload: bytes) -> Path:
     descriptor, temporary_name = tempfile.mkstemp(prefix=f".{name}.", suffix=".tmp", dir=output)
     temporary = Path(temporary_name)
     try:
-        with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as stream:
-            json.dump(payload, stream, indent=2, sort_keys=True)
-            stream.write("\n")
+        with os.fdopen(descriptor, "wb") as stream:
+            stream.write(payload)
             stream.flush()
             os.fsync(stream.fileno())
-    except Exception:
-        temporary.unlink(missing_ok=True)
+    except BaseException as exc:
+        try:
+            temporary.unlink(missing_ok=True)
+        except BaseException as cleanup_exc:
+            exc.add_note(f"temporary report cleanup failed: {cleanup_exc!r}")
         raise
     return temporary
+
+
+def _bind_report_pair(
+    ablation_report: dict[str, Any], dataset_manifest: dict[str, Any]
+) -> dict[str, dict[str, Any]]:
+    documents = {
+        "ablation-report.json": dict(ablation_report),
+        "dataset-manifest.json": dict(dataset_manifest),
+    }
+    for document in documents.values():
+        document.pop("publication", None)
+    hashes = {name: _canonical_sha256(document) for name, document in documents.items()}
+    publication = {
+        "schemaVersion": 1,
+        "generationId": _canonical_sha256(
+            {"schemaVersion": 1, "documents": hashes}
+        ),
+        "documents": hashes,
+    }
+    return {
+        name: {**document, "publication": publication}
+        for name, document in documents.items()
+    }
+
+
+def _verify_published_report_pair(output: Path) -> None:
+    try:
+        documents = {
+            name: json.loads((output / name).read_text(encoding="utf-8"))
+            for name in _OUTPUT_FILES
+        }
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError(f"published report pair cannot be read: {exc}") from exc
+    if any(not isinstance(document, dict) for document in documents.values()):
+        raise ValueError("published report pair must contain two JSON objects")
+    publications = [document.get("publication") for document in documents.values()]
+    publication = publications[0]
+    if (
+        not isinstance(publication, dict)
+        or any(candidate != publication for candidate in publications[1:])
+        or publication.get("schemaVersion") != 1
+    ):
+        raise ValueError("published report pair has incompatible publication metadata")
+    unbound = {}
+    for name, document in documents.items():
+        payload = dict(document)
+        payload.pop("publication", None)
+        unbound[name] = payload
+    hashes = {name: _canonical_sha256(payload) for name, payload in unbound.items()}
+    if publication.get("documents") != hashes:
+        raise ValueError("published report pair document hashes do not match")
+    generation_id = _canonical_sha256({"schemaVersion": 1, "documents": hashes})
+    if publication.get("generationId") != generation_id:
+        raise ValueError("published report pair generationId does not match")
+
+
+def _rollback_report_pair(
+    output: Path, previous: dict[str, bytes | None]
+) -> list[BaseException]:
+    rollback_staged: dict[str, Path] = {}
+    errors: list[BaseException] = []
+    try:
+        for name, payload in previous.items():
+            if payload is not None:
+                rollback_staged[name] = _stage_bytes(output, f"rollback-{name}", payload)
+        for name in sorted(_OUTPUT_FILES):
+            payload = previous[name]
+            if payload is None:
+                (output / name).unlink(missing_ok=True)
+            else:
+                os.replace(rollback_staged[name], output / name)
+    except BaseException as exc:
+        errors.append(exc)
+        for name in _OUTPUT_FILES:
+            try:
+                (output / name).unlink(missing_ok=True)
+            except BaseException as cleanup_exc:
+                errors.append(cleanup_exc)
+    finally:
+        for temporary in rollback_staged.values():
+            try:
+                temporary.unlink(missing_ok=True)
+            except BaseException as cleanup_exc:
+                errors.append(cleanup_exc)
+    return errors
 
 
 def _atomic_reports(
     output: Path, ablation_report: dict[str, Any], dataset_manifest: dict[str, Any]
 ) -> None:
+    existing = {name for name in _OUTPUT_FILES if (output / name).exists()}
+    if existing and existing != _OUTPUT_FILES:
+        raise ValueError("existing research output contains an incomplete report pair")
+    previous = {
+        name: (output / name).read_bytes() if name in existing else None
+        for name in _OUTPUT_FILES
+    }
+    documents = _bind_report_pair(ablation_report, dataset_manifest)
     staged: dict[str, Path] = {}
+    active_error: BaseException | None = None
+    publication_attempted = False
     try:
-        staged["ablation-report.json"] = _stage_json(
-            output, "ablation-report.json", ablation_report
-        )
-        staged["dataset-manifest.json"] = _stage_json(
-            output, "dataset-manifest.json", dataset_manifest
-        )
+        for name, document in documents.items():
+            staged[name] = _stage_json(output, name, document)
         for name in sorted(staged):
+            publication_attempted = True
             os.replace(staged[name], output / name)
+        _verify_published_report_pair(output)
+    except BaseException as exc:
+        active_error = exc
+        if publication_attempted:
+            rollback_errors = _rollback_report_pair(output, previous)
+            for rollback_error in rollback_errors:
+                exc.add_note(f"report pair rollback incomplete: {rollback_error!r}")
+        raise
     finally:
         for temporary in staged.values():
-            temporary.unlink(missing_ok=True)
+            try:
+                temporary.unlink(missing_ok=True)
+            except BaseException as cleanup_exc:
+                if active_error is not None:
+                    active_error.add_note(f"staged report cleanup failed: {cleanup_exc!r}")
+                else:
+                    raise
 
 
 def _run(

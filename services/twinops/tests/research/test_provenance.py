@@ -45,14 +45,53 @@ def test_safe_archive_extraction_rechecks_expected_archive_hash_before_writing(t
 
 @pytest.mark.parametrize(
     "member",
-    ["../escape.csv", "/absolute.csv", "C:/drive.csv", "safe.csv:stream"],
+    [
+        "../escape.csv",
+        "/absolute.csv",
+        "C:/drive.csv",
+        "safe.csv:stream",
+        "CON",
+        "nul.txt",
+        "safe/COM1.csv",
+        "safe/LPT9.data",
+        "safe./file.csv",
+        "safe /file.csv",
+        "report.csv.",
+        "report.csv ",
+    ],
 )
-def test_archive_rejects_traversal_and_absolute_paths(tmp_path, member) -> None:
+def test_archive_rejects_paths_unsafe_on_supported_filesystems(tmp_path, member) -> None:
     archive = tmp_path / "bad.zip"
     _zip(archive, {member: b"bad"})
 
     with pytest.raises(ValueError, match="unsafe archive member"):
         inspect_archive(archive)
+
+
+def test_safe_archive_extraction_rejects_mismatched_real_filesystem_inventory(
+    tmp_path, monkeypatch
+) -> None:
+    """Regression: archive-stream hashes alone cannot attest the extracted tree."""
+
+    archive = tmp_path / "dataset.zip"
+    _zip(archive, {"bearing/a.csv": b"x,y\n1,2\n"})
+    destination = tmp_path / "raw"
+    from twinops.research import downloads
+
+    real_scan = downloads._scan_archive
+
+    def tampering_scan(archive_path, extraction_destination=None):
+        inventory = real_scan(archive_path, extraction_destination)
+        if extraction_destination is not None:
+            (extraction_destination / "unexpected.csv").write_text("tampered", encoding="utf-8")
+        return inventory
+
+    monkeypatch.setattr(downloads, "_scan_archive", tampering_scan)
+
+    with pytest.raises(ValueError, match="filesystem inventory"):
+        safe_extract_archive(archive, destination)
+
+    assert not destination.exists()
 
 
 def test_archive_rejects_symlink_collision_and_nonempty_destination(tmp_path) -> None:

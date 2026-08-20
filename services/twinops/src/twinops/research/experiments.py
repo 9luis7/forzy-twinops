@@ -53,7 +53,13 @@ class PrognosticMetrics:
     reason: str | None
     life_fraction_mae: float | None
     detection_lead_time_fraction: float | None
+    detection_lead_time_status: str
+    detection_lead_time_reason: str | None
     lead_time_rule: str
+    lead_time_detected_bearings: int
+    lead_time_total_bearings: int
+    lead_time_detection_coverage: float | None
+    undetected_bearing_ids: tuple[str, ...]
     confidence_intervals: Mapping[str, ConfidenceInterval]
 
 
@@ -334,14 +340,29 @@ def _prognose(
     availability = [window.life_fraction is not None for window in (*train_windows, *test_windows)]
     rule = (
         "Per bearing ordered only by typed sequence_index, first window with predicted "
-        "life_fraction >= 0.8; lead time is 1 - true life_fraction at that window."
+        "life_fraction >= 0.8; lead time is 1 - true life_fraction at that window. "
+        "The metric is available only when every test bearing crosses the threshold."
     )
+    test_bearing_ids = tuple(sorted({window.bearing_id for window in test_windows}))
     if not any(availability):
         reason = "life_fraction is unavailable for all mapped windows"
         unavailable = _unavailable_interval(reason)
         return PrognosticMetrics(
-            "not_available", reason, None, None, rule,
-            {"life_fraction_mae": unavailable, "detection_lead_time_fraction": unavailable},
+            status="not_available",
+            reason=reason,
+            life_fraction_mae=None,
+            detection_lead_time_fraction=None,
+            detection_lead_time_status="not_available",
+            detection_lead_time_reason=reason,
+            lead_time_rule=rule,
+            lead_time_detected_bearings=0,
+            lead_time_total_bearings=len(test_bearing_ids),
+            lead_time_detection_coverage=None,
+            undetected_bearing_ids=test_bearing_ids,
+            confidence_intervals={
+                "life_fraction_mae": unavailable,
+                "detection_lead_time_fraction": unavailable,
+            },
         )
     if not all(availability):
         raise ValueError("life_fraction is partially available; prognosis cannot mix missing targets")
@@ -359,6 +380,10 @@ def _prognose(
     for index, window in enumerate(test_windows):
         by_bearing[window.bearing_id].append(index)
     bearings = sorted(by_bearing)
+    undetected_bearings = tuple(sorted(set(bearings) - set(lead_times)))
+    detected_bearings = len(lead_times)
+    total_bearings = len(bearings)
+    detection_coverage = detected_bearings / total_bearings
     rng = np.random.default_rng(seed + 10_003)
     mae_values: list[float] = []
     lead_values: list[float] = []
@@ -366,21 +391,34 @@ def _prognose(
         drawn = [str(value) for value in rng.choice(bearings, size=len(bearings), replace=True)]
         indices = [index for bearing in drawn for index in by_bearing[bearing]]
         mae_values.append(float(mean_absolute_error(y_test[indices], predicted[indices])))
-        drawn_leads = [lead_times[bearing] for bearing in drawn if bearing in lead_times]
-        if drawn_leads:
+        if not undetected_bearings:
+            drawn_leads = [lead_times[bearing] for bearing in drawn]
             lead_values.append(float(np.mean(drawn_leads)))
-    lead_point = float(np.mean(list(lead_times.values()))) if lead_times else None
-    lead_interval = (
-        _completed_interval(lead_values, len(lead_values))
-        if len(lead_values) == bootstrap_samples
-        else _unavailable_interval("no threshold detection for every bearing bootstrap draw")
-    )
+    if undetected_bearings:
+        lead_reason = (
+            f"threshold detection available for {detected_bearings} of {total_bearings} "
+            f"test bearings; missing {list(undetected_bearings)}"
+        )
+        lead_point = None
+        lead_status = "not_available"
+        lead_interval = _unavailable_interval(lead_reason)
+    else:
+        lead_point = float(np.mean(list(lead_times.values())))
+        lead_status = "completed"
+        lead_reason = None
+        lead_interval = _completed_interval(lead_values, bootstrap_samples)
     return PrognosticMetrics(
         status="completed",
         reason=None,
         life_fraction_mae=mae,
         detection_lead_time_fraction=lead_point,
+        detection_lead_time_status=lead_status,
+        detection_lead_time_reason=lead_reason,
         lead_time_rule=rule,
+        lead_time_detected_bearings=detected_bearings,
+        lead_time_total_bearings=total_bearings,
+        lead_time_detection_coverage=detection_coverage,
+        undetected_bearing_ids=undetected_bearings,
         confidence_intervals={
             "life_fraction_mae": _completed_interval(mae_values, bootstrap_samples),
             "detection_lead_time_fraction": lead_interval,

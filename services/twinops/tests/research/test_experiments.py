@@ -4,6 +4,7 @@ import numpy as np
 import pytest
 
 from twinops.research.contracts import FeaturePolicy, LabelMappingPolicy
+from twinops.research import experiments
 from twinops.research.experiments import run_ablation
 
 from .factories import make_window
@@ -220,3 +221,64 @@ def test_run_ablation_rejects_bearing_leakage_and_unmappable_classes(
             feature_policy=feature_policy,
             label_policy=mapping,
         )
+
+
+def test_prognosis_lead_time_is_unavailable_when_any_test_bearing_is_undetected(
+    monkeypatch,
+) -> None:
+    """Regression: lead time must not average only bearings that crossed the threshold."""
+
+    class PartialDetectionRegressor:
+        def __init__(self, *, random_state):
+            self.random_state = random_state
+
+        def fit(self, features, targets):
+            return self
+
+        def predict(self, features):
+            return np.asarray([0.85, 0.9, 0.2, 0.3], dtype=float)
+
+    monkeypatch.setattr(experiments, "HistGradientBoostingRegressor", PartialDetectionRegressor)
+    train_windows = [
+        make_window(
+            dataset_id="xjtu-sy",
+            bearing_id="train-a",
+            run_id=f"train-{index}",
+            sequence_index=index,
+            life_fraction=float(index),
+        )
+        for index in range(2)
+    ]
+    test_windows = [
+        make_window(
+            dataset_id="nasa-ims",
+            bearing_id=bearing_id,
+            run_id=f"{bearing_id}-{index}",
+            sequence_index=index,
+            life_fraction=float(index),
+        )
+        for bearing_id in ("detected", "undetected")
+        for index in range(2)
+    ]
+
+    metrics = experiments._prognose(
+        np.asarray([[0.0], [1.0]]),
+        train_windows,
+        np.asarray([[0.0], [1.0], [2.0], [3.0]]),
+        test_windows,
+        seed=42,
+        bootstrap_samples=20,
+    )
+
+    assert metrics.status == "completed"
+    assert metrics.life_fraction_mae is not None
+    assert metrics.detection_lead_time_fraction is None
+    assert metrics.detection_lead_time_status == "not_available"
+    assert metrics.detection_lead_time_reason and "1 of 2" in metrics.detection_lead_time_reason
+    assert metrics.lead_time_detected_bearings == 1
+    assert metrics.lead_time_total_bearings == 2
+    assert metrics.lead_time_detection_coverage == pytest.approx(0.5)
+    assert metrics.undetected_bearing_ids == ("undetected",)
+    interval = metrics.confidence_intervals["detection_lead_time_fraction"]
+    assert interval.status == "not_available"
+    assert interval.reason == metrics.detection_lead_time_reason
