@@ -1,0 +1,28 @@
+{
+  "schemaVersion": 1,
+  "generatedAt": "2026-08-20T00:00:00Z",
+  "sources": [
+    {
+      "datasetId": "xjtu-sy",
+      "landingPage": "https://biaowang.tech/xjtu-sy-bearing-datasets/",
+      "downloadUrl": null,
+      "citation": "Wang et al., A Hybrid Prognostics Approach for Estimating Remaining Useful Life of Rolling Element Bearings, IEEE Transactions on Reliability, 2020.",
+      "license": "No unambiguous data license recorded on the landing page; terms must be confirmed before download.",
+      "expectedSha256": null,
+      "accessedAt": null,
+      "status": "external_download_gate",
+      "notes": "The author landing page links to externally hosted archives. Record the exact selected URL and hash only after approval and retrieval."
+    },
+    {
+      "datasetId": "nasa-ims",
+      "landingPage": "https://data.nasa.gov/dataset/ims-bearings",
+      "downloadUrl": null,
+      "citation": "Lee et al., IMS Bearing Data, NASA Ames Prognostics Data Repository, University of Cincinnati.",
+      "license": "Confirm the terms and provenance displayed by the NASA portal before download.",
+      "expectedSha256": null,
+      "accessedAt": null,
+      "status": "external_download_gate",
+      "notes": "No archive was downloaded in this execution; do not treat a mirror as an official source."
+    }
+  ]
+}

@@ -43,3 +43,6 @@ __pycache__/
 artifacts/ml/**/curated-features.csv
 docs/History_*.csv
 data/raw/**
+
+# Public fault-dataset laboratory (manifests remain versioned)
+data/public/*/raw/
