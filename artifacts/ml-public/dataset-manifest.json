@@ -1,0 +1,38 @@
+{
+  "schemaVersion": 1,
+  "status": "not_run_external_data_gate",
+  "generatedAt": "2026-08-20T20:54:02Z",
+  "datasets": {
+    "xjtu-sy": {
+      "landingPage": "https://biaowang.tech/xjtu-sy-bearing-datasets/",
+      "downloadUrl": null,
+      "accessedAt": null,
+      "verifiedSha256": null,
+      "metadataSchemaVersion": null,
+      "metadataSha256": null,
+      "rawInventorySha256": null,
+      "originalNumericDataUsed": false,
+      "windowCount": null,
+      "bearingCount": null,
+      "split": null
+    },
+    "nasa-ims": {
+      "landingPage": "https://data.nasa.gov/dataset/ims-bearings",
+      "downloadUrl": null,
+      "accessedAt": null,
+      "verifiedSha256": null,
+      "metadataSchemaVersion": null,
+      "metadataSha256": null,
+      "rawInventorySha256": null,
+      "originalNumericDataUsed": false,
+      "windowCount": null,
+      "bearingCount": null,
+      "split": null
+    }
+  },
+  "syntheticFixtures": {
+    "usedForPipelineTests": true,
+    "usedForScientificMetrics": false,
+    "versionedAsRawDataset": false
+  }
+}

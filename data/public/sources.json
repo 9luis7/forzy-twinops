@@ -1,0 +1,60 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-08-20T00:00:00Z",
+  "experimentConfig": {
+    "schemaVersion": 1,
+    "configId": "public-fault-real-sources-v1-unconfirmed",
+    "featurePolicy": {
+      "policyId": "forzy-semantics-unconfirmed-v1",
+      "selectedAccelerationAxis": null,
+      "accelerationRmsSemanticsConfirmed": false,
+      "temperatureSemanticsConfirmed": false,
+      "evidence": "Forzy acceleration statistic, axis and internal window remain unconfirmed; execution must stay blocked until an audited policy is supplied."
+    },
+    "labelMapping": {
+      "version": "canonical-bearing-window-state-v1",
+      "mapping": {
+        "normal": "normal",
+        "inner_race": "inner_race",
+        "outer_race": "outer_race",
+        "rolling_element": "rolling_element",
+        "cage": "cage",
+        "compound": "compound",
+        "unknown": null
+      }
+    },
+    "bootstrapSamples": 500
+  },
+  "sources": [
+    {
+      "datasetId": "xjtu-sy",
+      "status": "external_download_gate",
+      "landingPage": "https://biaowang.tech/xjtu-sy-bearing-datasets/",
+      "downloadUrl": null,
+      "citation": "Wang et al., A Hybrid Prognostics Approach for Estimating Remaining Useful Life of Rolling Element Bearings, IEEE Transactions on Reliability, 2020.",
+      "license": "No unambiguous data license recorded on the landing page; terms must be confirmed before download.",
+      "expectedSha256": null,
+      "archivePath": null,
+      "rawPath": "xjtu-sy/raw",
+      "metadataPath": null,
+      "expectedMetadataSha256": null,
+      "accessedAt": null,
+      "notes": "Record exact approved URL, archive hash, metadata path/hash and access time before execution."
+    },
+    {
+      "datasetId": "nasa-ims",
+      "status": "external_download_gate",
+      "landingPage": "https://data.nasa.gov/dataset/ims-bearings",
+      "downloadUrl": null,
+      "citation": "Lee et al., IMS Bearing Data, NASA Ames Prognostics Data Repository, University of Cincinnati.",
+      "license": "Confirm the terms and provenance displayed by the NASA portal before download.",
+      "expectedSha256": null,
+      "archivePath": null,
+      "rawPath": "nasa-ims/raw",
+      "metadataPath": null,
+      "expectedMetadataSha256": null,
+      "accessedAt": null,
+      "notes": "Do not treat a mirror as an official source; pin archive and curated metadata independently."
+    }
+  ]
+}
