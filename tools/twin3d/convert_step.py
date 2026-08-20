@@ -333,7 +333,7 @@ def _publish_output_set(publications: list[tuple[Path, Path]], manifest_target: 
     lock_path = manifest_target.with_suffix(f"{manifest_target.suffix}.publish.lock")
     with _publication_lock(lock_path):
         backups: dict[Path, Path | None] = {}
-        published: list[Path] = []
+        publication_attempts: list[Path] = []
         for staged, target in publications:
             backup = staged.parent / f"{target.name}.previous"
             if target.exists():
@@ -344,24 +344,26 @@ def _publish_output_set(publications: list[tuple[Path, Path]], manifest_target: 
 
         try:
             for staged, target in publications:
+                publication_attempts.append(target)
                 _replace_file(staged, target)
-                published.append(target)
-        except Exception as publication_error:
+        except BaseException as publication_error:
             rollback_errors: list[str] = []
-            for target in reversed(published):
+            for target in reversed(publication_attempts):
                 backup = backups[target]
                 try:
                     if backup is None:
                         target.unlink(missing_ok=True)
                     else:
                         _replace_file(backup, target)
-                except Exception as rollback_error:  # pragma: no cover - catastrophic filesystem failure
-                    rollback_errors.append(f"{target}: {rollback_error}")
+                except BaseException as rollback_error:
+                    rollback_errors.append(
+                        f"{target}: {type(rollback_error).__name__}: {rollback_error}"
+                    )
             if rollback_errors:
-                raise RuntimeError(
-                    "Twin 3D publication failed and rollback was incomplete: "
+                publication_error.add_note(
+                    "Twin 3D publication rollback was incomplete: "
                     + "; ".join(rollback_errors)
-                ) from publication_error
+                )
             raise
 
 
