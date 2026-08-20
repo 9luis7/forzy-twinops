@@ -1,0 +1,109 @@
+import React from "react";
+import { useTwinOps } from "../../TwinOpsContext.jsx";
+import AssessmentPanel from "./AssessmentPanel.jsx";
+import AssetHeader from "./AssetHeader.jsx";
+import IntegrationHealth from "./IntegrationHealth.jsx";
+import SensorCard from "./SensorCard.jsx";
+import TelemetryTrend from "./TelemetryTrend.jsx";
+
+export function TwinFallback() {
+  return (
+    <div
+      className="twin-fallback"
+      role="img"
+      aria-label="Representação do conjunto motor-bomba indisponível"
+    >
+      <span>Visualização 3D indisponível</span>
+      <small>Os dados operacionais não são simulados neste fallback.</small>
+    </div>
+  );
+}
+
+export default function OperationsDashboard({ Twin3DComponent = null }) {
+  const { snapshot, error, refreshing, refreshNow } = useTwinOps();
+
+  if (!snapshot && !error) {
+    return (
+      <main className="operations-shell operations-shell--centered">
+        <p className="loading-state" role="status">Carregando o último snapshot real…</p>
+      </main>
+    );
+  }
+
+  if (!snapshot) {
+    return (
+      <main className="operations-shell operations-shell--centered">
+        <section className="fatal-state" role="alert">
+          <p className="eyebrow">TwinOps</p>
+          <h1>Dados reais indisponíveis</h1>
+          <p>O backend não forneceu um snapshot válido. Nenhum dado sintético foi usado.</p>
+          <button type="button" onClick={() => void refreshNow()} disabled={refreshing}>
+            {refreshing ? "Atualizando…" : "Atualizar agora"}
+          </button>
+        </section>
+      </main>
+    );
+  }
+
+  const fallback = <TwinFallback />;
+
+  return (
+    <main className="operations-shell">
+      <AssetHeader asset={snapshot.asset} operationalState={snapshot.operationalState} />
+
+      <div className="dashboard-actions">
+        <p>Atualização automática apenas seg/ter/qua, das 12h às 14h (America/Sao_Paulo).</p>
+        <button type="button" onClick={() => void refreshNow()} disabled={refreshing}>
+          {refreshing ? "Atualizando…" : "Atualizar agora"}
+        </button>
+      </div>
+
+      {error && (
+        <p className="warning-banner" role="alert">
+          A atualização falhou. O último dado real conhecido continua visível.
+        </p>
+      )}
+      {snapshot.operationalState === "unavailable" && (
+        <p className="warning-banner">Nenhuma leitura real foi persistida ainda.</p>
+      )}
+
+      <section className="panel twin-panel" aria-labelledby="twin-title">
+        <div className="panel-heading">
+          <div>
+            <p className="eyebrow">Geometria do conjunto fornecido</p>
+            <h2 id="twin-title">Gêmeo 3D</h2>
+          </div>
+        </div>
+        {Twin3DComponent ? (
+          <Twin3DComponent
+            snapshot={snapshot}
+            asset={snapshot.asset}
+            activeComponent={null}
+            onSelectComponent={() => {}}
+            fallback={fallback}
+          />
+        ) : fallback}
+      </section>
+
+      <section className="sensor-grid" aria-label="Valores atuais dos sensores">
+        {snapshot.channels.map((channel) => (
+          <SensorCard channel={channel} key={channel.sensorId} />
+        ))}
+      </section>
+
+      <TelemetryTrend history={snapshot.history} />
+
+      <section className="details-grid">
+        <AssessmentPanel assessment={snapshot.assessment} />
+        <IntegrationHealth integration={snapshot.integration} />
+      </section>
+
+      <footer className="operations-footer">
+        <p>
+          A API atual não comprova o frescor físico na origem, antecedência de falha ou SLA
+          industrial.
+        </p>
+      </footer>
+    </main>
+  );
+}

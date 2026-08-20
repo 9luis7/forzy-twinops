@@ -12,6 +12,7 @@ import { createGatewayTwinDataSourceV2 } from "./dataSources/GatewayTwinDataSour
 const ASSET_ID = "forzy-motor-01";
 const TwinOpsContext = createContext(null);
 const defaultDataSource = createGatewayTwinDataSourceV2();
+const defaultClock = () => new Date();
 const forzyTime = new Intl.DateTimeFormat("en-US", {
   timeZone: "America/Sao_Paulo",
   weekday: "short",
@@ -36,7 +37,7 @@ const isAbortError = (error) => error?.name === "AbortError";
 export function TwinOpsProvider({
   children,
   dataSource = defaultDataSource,
-  clock = () => new Date(),
+  clock = defaultClock,
   pollMs = 5000,
   documentRef = document,
 }) {
