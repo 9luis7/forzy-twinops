@@ -1,5 +1,5 @@
 import React from "react";
-import { act, cleanup, renderHook } from "@testing-library/react";
+import { act, cleanup, render, renderHook, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { TwinOpsProvider, isForzyWindowOpen, useTwinOps } from "./TwinOpsContext.jsx";
 
@@ -42,6 +42,31 @@ const wrapperFor = (props) =>
   function Wrapper({ children }) {
     return <TwinOpsProvider {...props}>{children}</TwinOpsProvider>;
   };
+
+function TwinOpsStateProbe() {
+  const { refreshing, snapshot: currentSnapshot } = useTwinOps();
+  return (
+    <output
+      data-testid="twin-ops-state"
+      data-refreshing={String(refreshing)}
+    >
+      {currentSnapshot?.marker ?? "none"}
+    </output>
+  );
+}
+
+function TwinOpsHarness({ dataSource, clock, documentRef, pollMs = 5000 }) {
+  return (
+    <TwinOpsProvider
+      dataSource={dataSource}
+      clock={clock}
+      documentRef={documentRef}
+      pollMs={pollMs}
+    >
+      <TwinOpsStateProbe />
+    </TwinOpsProvider>
+  );
+}
 
 afterEach(() => {
   cleanup();
@@ -156,6 +181,103 @@ it("never overlaps a slow refresh", async () => {
   expect(source.refresh).toHaveBeenCalledTimes(1);
   await act(async () => vi.advanceTimersByTimeAsync(1));
   expect(source.refresh).toHaveBeenCalledTimes(2);
+});
+
+it("keeps refresh and timer ownership when dependencies change during a late refresh", async () => {
+  vi.useFakeTimers();
+  const doc = visibleDocument();
+  const clock = () => new Date("2026-08-12T15:30:00.000Z");
+  const markedSnapshot = (marker) => ({ ...snapshot, marker });
+  let oldRefreshSignal;
+  let resolveOldRefresh;
+  const oldSource = {
+    getSnapshot: vi.fn().mockResolvedValue(markedSnapshot("old-bootstrap")),
+    refresh: vi.fn((_, { signal }) => {
+      oldRefreshSignal = signal;
+      return new Promise((resolve) => {
+        resolveOldRefresh = () => resolve({
+          refreshAttempted: true,
+          snapshot: markedSnapshot("old-late"),
+        });
+      });
+    }),
+  };
+
+  let resolveNewSnapshot;
+  let resolveNewRefresh;
+  const newSource = {
+    getSnapshot: vi.fn(() => new Promise((resolve) => {
+      resolveNewSnapshot = () => resolve(markedSnapshot("new-bootstrap"));
+    })),
+    refresh: vi.fn()
+      .mockImplementationOnce(() => new Promise((resolve) => {
+        resolveNewRefresh = () => resolve({
+          refreshAttempted: true,
+          snapshot: markedSnapshot("new-refreshed"),
+        });
+      }))
+      .mockResolvedValue({
+        refreshAttempted: true,
+        snapshot: markedSnapshot("new-polled"),
+      }),
+  };
+
+  const { rerender } = render(
+    <TwinOpsHarness
+      dataSource={oldSource}
+      clock={clock}
+      documentRef={doc.target}
+    />
+  );
+  await flush();
+  expect(oldSource.refresh).toHaveBeenCalledTimes(1);
+  expect(screen.getByTestId("twin-ops-state").dataset.refreshing).toBe("true");
+
+  rerender(
+    <TwinOpsHarness
+      dataSource={newSource}
+      clock={clock}
+      documentRef={doc.target}
+    />
+  );
+  await flush();
+
+  expect(oldRefreshSignal.aborted).toBe(true);
+  expect(newSource.getSnapshot).toHaveBeenCalledTimes(1);
+  expect(screen.getByTestId("twin-ops-state").dataset.refreshing).toBe("false");
+
+  await act(async () => {
+    resolveNewSnapshot();
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+  expect(newSource.refresh).toHaveBeenCalledTimes(1);
+  expect(screen.getByTestId("twin-ops-state").dataset.refreshing).toBe("true");
+
+  await act(async () => vi.advanceTimersByTimeAsync(20_000));
+  expect(newSource.refresh).toHaveBeenCalledTimes(1);
+
+  await act(async () => {
+    resolveNewRefresh();
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+  expect(screen.getByTestId("twin-ops-state").textContent).toBe("new-refreshed");
+  expect(screen.getByTestId("twin-ops-state").dataset.refreshing).toBe("false");
+
+  await act(async () => {
+    resolveOldRefresh();
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+  expect(screen.getByTestId("twin-ops-state").textContent).toBe("new-refreshed");
+  expect(screen.getByTestId("twin-ops-state").dataset.refreshing).toBe("false");
+
+  await act(async () => vi.advanceTimersByTimeAsync(4_999));
+  expect(newSource.refresh).toHaveBeenCalledTimes(1);
+  await act(async () => vi.advanceTimersByTimeAsync(1));
+  expect(newSource.refresh).toHaveBeenCalledTimes(2);
+  expect(screen.getByTestId("twin-ops-state").textContent).toBe("new-polled");
 });
 
 it("keeps the last real snapshot when refresh fails", async () => {
