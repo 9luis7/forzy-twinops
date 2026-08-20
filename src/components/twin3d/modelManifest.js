@@ -19,16 +19,24 @@ const EXPECTED_NODES = 17;
 const SAFE_NODE_NAME = /^[A-Za-z0-9_-]+$/;
 
 
-const isObject = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
+const hasOwn = (value, key) => Object.prototype.hasOwnProperty.call(value, key);
+const isPlainRecord = (value) => {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
+};
 
 function invalid(message) {
   throw new Error(`Invalid twin model manifest: ${message}`);
 }
 
 function requireOnlyKeys(value, allowed, location) {
-  if (!isObject(value)) invalid(`${location} must be an object`);
+  if (!isPlainRecord(value)) invalid(`${location} must be a plain record`);
   for (const key of Object.keys(value)) {
     if (!allowed.has(key)) invalid(`${location}.${key} is not allowed`);
+  }
+  for (const key of allowed) {
+    if (!hasOwn(value, key)) invalid(`${location}.${key} must be an own property`);
   }
 }
 

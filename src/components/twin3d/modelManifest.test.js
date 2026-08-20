@@ -60,3 +60,39 @@ it("rejects the legacy fictitious assetTag", () => {
 
   expect(() => parseModelManifest(manifest)).toThrow(/assetTag/);
 });
+
+it("rejects a root whose required properties are inherited", () => {
+  const inheritedRoot = Object.create(fixture());
+
+  expect(() => parseModelManifest(inheritedRoot)).toThrow(/root.*plain record|root.*own propert/i);
+});
+
+it.each([
+  ["generatedBy", (manifest) => {
+    manifest.generatedBy = Object.assign(Object.create({ polluted: true }), manifest.generatedBy);
+  }],
+  ["groups", (manifest) => {
+    manifest.groups = Object.assign(Object.create({ polluted: true }), manifest.groups);
+  }],
+  ["sensors", (manifest) => {
+    manifest.sensors[0] = Object.assign(Object.create({ polluted: true }), manifest.sensors[0]);
+  }],
+])("rejects a %s record with a hostile prototype", (location, mutate) => {
+  const manifest = fixture();
+  mutate(manifest);
+
+  expect(() => parseModelManifest(manifest)).toThrow(new RegExp(`${location}.*plain record`, "i"));
+});
+
+it("accepts plain records whose prototype is null", () => {
+  const manifest = fixture();
+  manifest.generatedBy = Object.assign(Object.create(null), manifest.generatedBy);
+  manifest.groups = Object.assign(Object.create(null), manifest.groups);
+  for (const groupName of Object.keys(manifest.groups)) {
+    manifest.groups[groupName] = Object.assign(Object.create(null), manifest.groups[groupName]);
+  }
+  manifest.sensors = manifest.sensors.map((sensor) => Object.assign(Object.create(null), sensor));
+  const nullPrototypeRoot = Object.assign(Object.create(null), manifest);
+
+  expect(parseModelManifest(nullPrototypeRoot)).toBe(nullPrototypeRoot);
+});
