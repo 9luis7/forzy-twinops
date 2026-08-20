@@ -54,7 +54,7 @@ export function TwinOpsProvider({
   const [refreshing, setRefreshing] = useState(false);
   const [lastRefreshAttemptAt, setLastRefreshAttemptAt] = useState(null);
   const mountedRef = useRef(false);
-  const controllerRef = useRef(null);
+  const effectGenerationRef = useRef(0);
   const timerRef = useRef(null);
   const inFlightRef = useRef(null);
 
@@ -70,18 +70,25 @@ export function TwinOpsProvider({
     }
   }, []);
 
-  const request = useCallback((kind) => {
+  const abortActiveRequest = useCallback((generation, resetRefreshing = false) => {
+    const activeRequest = inFlightRef.current;
+    if (!activeRequest || activeRequest.generation !== generation) return;
+    inFlightRef.current = null;
+    activeRequest.controller.abort();
+    if (resetRefreshing && activeRequest.kind === "refresh") setRefreshing(false);
+  }, []);
+
+  const request = useCallback((kind, generation = effectGenerationRef.current) => {
     const existing = inFlightRef.current;
-    if (existing) {
+    if (existing && existing.generation === generation && !existing.controller.signal.aborted) {
       if (existing.kind === kind) return existing.promise;
       return existing.promise.then(() => {
-        if (!mountedRef.current) return null;
-        return request(kind);
+        if (!mountedRef.current || effectGenerationRef.current !== generation) return null;
+        return request(kind, generation);
       });
     }
 
     const controller = new AbortController();
-    controllerRef.current = controller;
     if (kind === "refresh") {
       setRefreshing(true);
       const attemptedAt = clock();
@@ -98,40 +105,61 @@ export function TwinOpsProvider({
 
     const promise = Promise.resolve(operation)
       .then((value) => {
-        if (!mountedRef.current) return null;
+        if (!mountedRef.current || effectGenerationRef.current !== generation) return null;
         const nextSnapshot = kind === "refresh" ? value?.snapshot : value;
         if (nextSnapshot) setSnapshot(nextSnapshot);
         setError(null);
         return nextSnapshot ?? null;
       })
       .catch((requestError) => {
-        if (mountedRef.current && !isAbortError(requestError)) setError(requestError);
+        if (
+          mountedRef.current
+          && effectGenerationRef.current === generation
+          && !isAbortError(requestError)
+        ) setError(requestError);
         return null;
       })
       .finally(() => {
-        if (controllerRef.current === controller) controllerRef.current = null;
-        if (inFlightRef.current?.promise === promise) inFlightRef.current = null;
-        if (mountedRef.current && kind === "refresh") setRefreshing(false);
+        const ownsActiveRequest = inFlightRef.current?.promise === promise;
+        if (ownsActiveRequest) inFlightRef.current = null;
+        if (
+          ownsActiveRequest
+          && mountedRef.current
+          && effectGenerationRef.current === generation
+          && kind === "refresh"
+        ) setRefreshing(false);
       });
 
-    inFlightRef.current = { kind, promise };
+    inFlightRef.current = { kind, promise, controller, generation };
     return promise;
   }, [clock, dataSource]);
 
   const runAutomaticRefreshRef = useRef(null);
-  const scheduleNext = useCallback(() => {
+  const scheduleNext = useCallback((generation = effectGenerationRef.current) => {
     clearTimer();
-    if (!mountedRef.current || !isVisible() || !isForzyWindowOpen(clock())) return;
+    if (
+      !mountedRef.current
+      || effectGenerationRef.current !== generation
+      || !isVisible()
+      || !isForzyWindowOpen(clock())
+    ) return;
     timerRef.current = setTimeout(() => {
       timerRef.current = null;
-      void runAutomaticRefreshRef.current?.();
+      if (effectGenerationRef.current === generation) {
+        void runAutomaticRefreshRef.current?.(generation);
+      }
     }, pollMs);
   }, [clearTimer, clock, isVisible, pollMs]);
 
-  const runAutomaticRefresh = useCallback(async () => {
-    if (!mountedRef.current || !isVisible() || !isForzyWindowOpen(clock())) return;
-    await request("refresh");
-    scheduleNext();
+  const runAutomaticRefresh = useCallback(async (generation = effectGenerationRef.current) => {
+    if (
+      !mountedRef.current
+      || effectGenerationRef.current !== generation
+      || !isVisible()
+      || !isForzyWindowOpen(clock())
+    ) return;
+    await request("refresh", generation);
+    scheduleNext(generation);
   }, [clock, isVisible, request, scheduleNext]);
   runAutomaticRefreshRef.current = runAutomaticRefresh;
 
@@ -142,13 +170,21 @@ export function TwinOpsProvider({
   }, [clock, isVisible, request]);
 
   useEffect(() => {
+    const generation = effectGenerationRef.current + 1;
+    effectGenerationRef.current = generation;
     mountedRef.current = true;
     let active = true;
 
     const bootstrap = async () => {
-      await request("snapshot");
-      if (active && mountedRef.current && isVisible() && isForzyWindowOpen(clock())) {
-        await runAutomaticRefresh();
+      await request("snapshot", generation);
+      if (
+        active
+        && mountedRef.current
+        && effectGenerationRef.current === generation
+        && isVisible()
+        && isForzyWindowOpen(clock())
+      ) {
+        await runAutomaticRefresh(generation);
       }
     };
     void bootstrap();
@@ -156,10 +192,10 @@ export function TwinOpsProvider({
     const onVisibilityChange = () => {
       clearTimer();
       if (!isVisible()) {
-        controllerRef.current?.abort();
+        abortActiveRequest(generation, true);
         return;
       }
-      if (isForzyWindowOpen(clock())) void runAutomaticRefresh();
+      if (isForzyWindowOpen(clock())) void runAutomaticRefresh(generation);
     };
     documentRef?.addEventListener?.("visibilitychange", onVisibilityChange);
 
@@ -167,11 +203,10 @@ export function TwinOpsProvider({
       active = false;
       mountedRef.current = false;
       clearTimer();
-      controllerRef.current?.abort();
-      controllerRef.current = null;
+      abortActiveRequest(generation);
       documentRef?.removeEventListener?.("visibilitychange", onVisibilityChange);
     };
-  }, [clearTimer, clock, documentRef, isVisible, request, runAutomaticRefresh]);
+  }, [abortActiveRequest, clearTimer, clock, documentRef, isVisible, request, runAutomaticRefresh]);
 
   const value = useMemo(() => ({
     assetId: ASSET_ID,

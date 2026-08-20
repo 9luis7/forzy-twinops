@@ -59,6 +59,34 @@ it("shows an honest loading state before the first real snapshot", () => {
   expect(screen.getByText("Carregando o último snapshot real…")).toBeInTheDocument();
 });
 
+it("starts a fresh bootstrap after StrictMode aborts the first setup outside the window", async () => {
+  const source = {
+    getSnapshot: vi.fn((_, { signal }) => {
+      if (source.getSnapshot.mock.calls.length === 1) {
+        return new Promise((_, reject) => {
+          signal.addEventListener("abort", () => {
+            reject(new DOMException("aborted", "AbortError"));
+          });
+        });
+      }
+      return Promise.resolve(structuredClone(receivedSnapshot));
+    }),
+    refresh: vi.fn(),
+  };
+
+  render(
+    <React.StrictMode>
+      <App dataSource={source} />
+    </React.StrictMode>
+  );
+  await flush();
+
+  expect(source.getSnapshot).toHaveBeenCalledTimes(2);
+  expect(screen.getByText("Conjunto motor-bomba monitorado")).toBeInTheDocument();
+  expect(screen.queryByText("Carregando o último snapshot real…")).not.toBeInTheDocument();
+  expect(source.refresh).not.toHaveBeenCalled();
+});
+
 it("shows backend unavailability without creating a normal snapshot", async () => {
   const source = {
     getSnapshot: vi.fn().mockRejectedValue(new Error("database unavailable")),
