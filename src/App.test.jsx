@@ -6,6 +6,10 @@ import receivedSnapshot from "../contracts/v2/fixtures/snapshot-received-now.val
 import lastKnownSnapshot from "../contracts/v2/fixtures/snapshot-last-known.valid.json";
 import App from "./App.jsx";
 
+vi.mock("./components/twin3d/Twin3DCanvas.jsx", () => ({
+  default: ({ snapshot }) => `canvas-3d-real:${snapshot.asset.assetId}`,
+}));
+
 const flush = async () => {
   await act(async () => {
     await Promise.resolve();
@@ -158,18 +162,9 @@ it("exposes a testable Twin3D component seam with an honest fallback", async () 
 it("mounts the real Twin3D shell by default", async () => {
   vi.useRealTimers();
   vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({});
-  const originalFetch = globalThis.fetch;
-  globalThis.fetch = vi.fn(() => new Promise(() => {}));
 
-  try {
-    render(<App dataSource={sourceWithSnapshot()} />);
-    await flush();
+  render(<App dataSource={sourceWithSnapshot()} />);
+  await flush();
 
-    expect(
-      await screen.findByText(/Carregando modelo 3D real/, {}, { timeout: 5000 })
-    ).toBeInTheDocument();
-  } finally {
-    if (originalFetch) globalThis.fetch = originalFetch;
-    else delete globalThis.fetch;
-  }
+  expect(await screen.findByText("canvas-3d-real:forzy-motor-01")).toBeInTheDocument();
 });
