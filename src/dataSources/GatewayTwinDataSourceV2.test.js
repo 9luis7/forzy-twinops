@@ -66,6 +66,22 @@ it("encodes the asset id and builds the bounded history query", async () => {
   );
 });
 
+it.each([
+  ["unknown sensor", { sensorId: "s3", limit: 25 }, /sensorId/],
+  ["zero limit", { sensorId: "s1", limit: 0 }, /limit/],
+  ["limit above 500", { sensorId: "s1", limit: 501 }, /limit/],
+  ["decimal limit", { sensorId: "s1", limit: 1.5 }, /limit/],
+  ["string limit", { sensorId: "s1", limit: "10" }, /limit/],
+  ["NaN limit", { sensorId: "s1", limit: Number.NaN }, /limit/],
+])("rejects %s before issuing a history request", async (_, options, expectedError) => {
+  const fetchImpl = vi.fn();
+  const source = createGatewayTwinDataSourceV2({ fetchImpl });
+
+  await expect(source.getHistory("forzy-motor-01", options)).rejects.toThrow(expectedError);
+
+  expect(fetchImpl).not.toHaveBeenCalled();
+});
+
 it("rejects an invalid v2 snapshot and refresh envelope", async () => {
   const invalid = { ...snapshot, schemaVersion: "1.0" };
   const fetchImpl = vi.fn()
