@@ -92,10 +92,13 @@ Sem essa flag, o spec inteiro permanece read-only. Com a flag, não descreva a
 execução inteira como livre de efeitos colaterais: o segundo teste pode persistir
 uma leitura do stub no Neon do preview.
 
-Fora da janela de segunda a quarta, 12h–14h em `America/Sao_Paulo`, o teste de
-refresh é pulado. Não altere o relógio ou a regra de negócio para fazê-lo
-passar. Quando S1 e S2 retornam `stored`/`unchanged`, o E2E exige assessment
-estruturado; `insufficient_data` é um resultado real válido, mas `null` não é.
+Fora da janela de segunda a quarta, 12h–14h em `America/Sao_Paulo`, o segundo
+teste de refresh é pulado. Não altere o relógio do backend/servidor nem o gate
+de negócio para fazê-lo passar. O relógio fixo do primeiro teste existe apenas
+dentro da página do browser: ele exercita o firewall de mutação, mas não muda
+`health.integration.state` nem abre a janela controlada pelo servidor. Quando
+S1 e S2 retornam `stored`/`unchanged`, o E2E exige assessment estruturado;
+`insufficient_data` é um resultado real válido, mas `null` não é.
 
 O smoke padrão também é read-only:
 

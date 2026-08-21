@@ -58,6 +58,23 @@ untracked e fora do stage. Não houve rede, deploy, push, merge, env, Vercel,
 Neon, upstream, backend/frontend de produção ou Plan06.
 
 Concern residual: por proibição explícita de rede, esta task não executou o spec
-contra um deployment. O próximo preview autorizado deve rodar o Playwright real
-para provar a interceptação no browser implantado; nenhum bypass de proteção ou
-mudança de scheduler é necessário para isso.
+contra um deployment. No próximo preview autorizado, o smoke autenticado via
+`vercel curl` permanece disponível sem desabilitar Preview Protection. Se a
+proteção bloquear a navegação direta do Playwright, preserve-a e interrompa o
+browser E2E até existir um mecanismo suportado de autenticação ou bypass para o
+runner; não enfraqueça a proteção para fazer o teste passar. O relógio fixo da
+página não muda o scheduler nem o gate mantido pelo backend.
+
+## Follow-up da revisão independente
+
+- Resultado da revisão em `78e70f2`: PASS, 0 Critical e 0 Important.
+- RED textual: o check na base terminou com exit 1 ao encontrar simultaneamente
+  a instrução ambígua sobre relógio e a afirmação incompleta sobre proteção.
+- Minor 1: o runbook agora distingue o relógio browser-only do primeiro teste
+  do relógio e do gate de negócio controlados pelo backend no segundo teste.
+- Minor 2: o concern residual agora reconhece Preview Protection, mantém
+  `vercel curl` como smoke autenticado e exige parar o browser E2E quando não
+  houver autenticação/bypass suportado, sem desabilitar a proteção.
+- GREEN textual: o check confirmou as duas distinções e a ausência das frases
+  antigas; `node --check`, Playwright discovery com 2 testes e
+  `git diff --check` também passaram sem rede.
