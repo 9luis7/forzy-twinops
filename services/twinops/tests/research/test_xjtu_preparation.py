@@ -16,6 +16,7 @@ from twinops.research.downloads import (
     RawInventory,
 )
 from twinops.research.datasets import xjtu_preparation
+from twinops.research.datasets._decimal import parse_ascii_decimal
 from twinops.research.datasets.xjtu import iter_xjtu
 from twinops.research.datasets.xjtu_preparation import (
     XjtuSyPreparationConfig,
@@ -707,11 +708,21 @@ def test_decimal_grammar_rejects_underscore_before_publication_and_preserves_sta
     assert not list(config.destination_root.glob("xjtu-sy-v1-*"))
 
 
-def test_decimal_grammar_whitespace_and_exponents_publish_and_round_trip(
-    tmp_path, monkeypatch
+@pytest.mark.parametrize(
+    "line_ending", [b"\n", b"\r\n"], ids=["LF", "CRLF"]
+)
+def test_horizontal_whitespace_exponents_and_canonical_line_endings_round_trip(
+    tmp_path, monkeypatch, line_ending
 ) -> None:
     config = _config(tmp_path)
-    compatible_csv = _OFFICIAL_HEADER + b" 1.5 ,1e2\n+2.5,-3E-1\n"
+    compatible_csv = (
+        _OFFICIAL_HEADER.removesuffix(b"\n")
+        + line_ending
+        + b"\t1.5 \t,1e2"
+        + line_ending
+        + b"+2.5,-3E-1"
+        + line_ending
+    )
     specs, _, _, _ = _install_small_source(
         monkeypatch, config, bad_csv=compatible_csv
     )
@@ -735,6 +746,56 @@ def test_decimal_grammar_whitespace_and_exponents_publish_and_round_trip(
     assert target.acceleration["vertical"] == pytest.approx([100.0, -0.3])
     assert result.generation_root.is_dir()
     assert not list(config.destination_root.glob(".xjtu-sy-generation-*"))
+
+
+@pytest.mark.parametrize(
+    "token",
+    [
+        "1.5\r",
+        "\r1.5",
+        "1.5\n",
+        "1.5\v",
+        "1.5\f",
+        "1.5\N{NO-BREAK SPACE}",
+        "1.5\x00",
+    ],
+    ids=[
+        "CR-trailing",
+        "CR-leading",
+        "LF",
+        "vtab",
+        "formfeed",
+        "unicode",
+        "NUL",
+    ],
+)
+def test_shared_decimal_parser_rejects_non_horizontal_whitespace_and_controls(
+    token,
+) -> None:
+    with pytest.raises(ValueError, match="ASCII decimal"):
+        parse_ascii_decimal(token, context="synthetic XJTU token")
+
+
+@pytest.mark.parametrize(
+    ("case", "bad_csv"),
+    [
+        ("before-comma", _OFFICIAL_HEADER + b"1.5\r,2\n3,4\n"),
+        ("leading", _OFFICIAL_HEADER + b"\r1.5,2\n3,4\n"),
+        ("double-before-LF", _OFFICIAL_HEADER + b"1.5,2\r\r\n3,4\r\n"),
+    ],
+)
+def test_residual_carriage_return_fails_before_publication_and_preserves_staging(
+    tmp_path, monkeypatch, case, bad_csv
+) -> None:
+    config = _config(tmp_path)
+    _install_small_source(monkeypatch, config, bad_csv=bad_csv)
+
+    with pytest.raises(ValueError, match="ASCII decimal|CSV") as caught:
+        prepare_xjtu_sy(config)
+
+    preserved = _assert_preserved_staging_in_place(config, caught.value)
+    assert preserved.name.startswith(".xjtu-sy-generation-")
+    assert not list(config.destination_root.glob("xjtu-sy-v1-*"))
 
 
 def test_shared_decimal_parser_publishes_and_consumes_large_finite_integer(

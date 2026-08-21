@@ -606,6 +606,14 @@ def _filesystem_relative_files(root: Path) -> tuple[str, ...]:
     return tuple(sorted(files))
 
 
+def _without_canonical_line_ending(raw_line: bytes) -> bytes:
+    if raw_line.endswith(b"\r\n"):
+        return raw_line[:-2]
+    if raw_line.endswith(b"\n"):
+        return raw_line[:-1]
+    return raw_line
+
+
 def _validate_numeric_csv(
     path: Path,
     *,
@@ -629,7 +637,11 @@ def _validate_numeric_csv(
         digest.update(raw_header)
         size += len(raw_header)
         try:
-            header = raw_header.rstrip(b"\r\n").decode("ascii").split(",")
+            header = (
+                _without_canonical_line_ending(raw_header)
+                .decode("ascii")
+                .split(",")
+            )
         except UnicodeDecodeError as error:
             raise ValueError(
                 f"XJTU-SY CSV header must match the official ASCII names: {path.name}"
@@ -641,11 +653,11 @@ def _validate_numeric_csv(
         for raw_line in stream:
             digest.update(raw_line)
             size += len(raw_line)
-            stripped = raw_line.strip()
-            if not stripped:
+            line = _without_canonical_line_ending(raw_line)
+            if not line.strip(b" \t"):
                 raise ValueError(f"XJTU-SY CSV contains a blank row: {path.name}")
             try:
-                tokens = stripped.decode("ascii").split(",")
+                tokens = line.decode("ascii").split(",")
             except UnicodeDecodeError as error:
                 raise ValueError(f"XJTU-SY CSV is not ASCII numeric data: {path.name}") from error
             if tuple(tokens) == _OFFICIAL_CSV_HEADER:

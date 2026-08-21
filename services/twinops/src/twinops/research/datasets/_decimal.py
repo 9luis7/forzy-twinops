@@ -16,7 +16,7 @@ def parse_ascii_decimal(token: object, *, context: str) -> float:
 
     if not isinstance(token, str):
         raise ValueError(f"{context}: numeric token must be an ASCII decimal string")
-    normalized = token.strip()
+    normalized = token.strip(" \t")
     if _ASCII_DECIMAL.fullmatch(normalized) is None:
         raise ValueError(f"{context}: numeric token must use ASCII decimal syntax")
     try:

@@ -568,3 +568,44 @@ and joblib physical-core fallback. Header validation, exact 32,768-row count,
 two finite columns, byte/hash binding, metadata, axis/unit/identity behavior,
 determinism, atomic publication, and preserve-in-place error handling remain
 covered. Final diff/tracking gates are recorded against the committed SHA.
+
+## Canonical line-ending correction after `9d8faa5`
+
+Status: IMPLEMENTED AND LOCALLY VERIFIED; awaiting independent re-review. No
+real archive, extracted CSV, preserved staging, or 7-Zip process was accessed
+or invoked during this correction.
+
+The independent re-review found that generic `str.strip()` admitted carriage
+returns around otherwise valid decimal tokens. Preparation also used generic
+`bytes.strip()` on each raw data line, so a leading CR or an extra CR before a
+canonical line ending could disappear before the shared parser. Such bytes
+could publish successfully while pandas interpreted CR as a row boundary and
+the adapter then failed its row-count gate.
+
+The shared parser now normalizes only ASCII space and tab. Preparation removes
+exactly one canonical LF or CRLF terminator from the header and each data row,
+uses only space/tab to identify blank rows, and leaves every residual control
+character for strict parser rejection. Canonical LF and CRLF files remain
+interoperable with the adapter; CR before a comma, leading CR, and CRCRLF all
+fail before publication with synthetic staging preserved in place.
+
+### TDD and fresh verification
+
+- RED on unchanged production code: `9 failed, 3 passed in 3.48s`. Generic
+  strip incorrectly accepted CR leading/trailing, LF, vertical tab, form feed,
+  and Unicode NBSP; all three residual-CR E2E fixtures published instead of
+  raising. NUL already rejected, while canonical LF/CRLF controls passed.
+- First GREEN on the identical selection: `12 passed in 2.15s`.
+- final preparation plus adapter rerun: `129 passed, 2 skipped in 8.62s`;
+- research suite: `364 passed, 5 skipped, 1 warning in 37.08s`;
+- full Python suite: `579 passed, 7 skipped, 2 warnings in 45.39s`;
+- isolated performance gate: `p50=47.15 ms`, `p95=p99=48.37 ms`,
+  `1 passed in 0.89s`;
+- `compileall` and `pip check` passed; pip reported no broken requirements.
+
+The broad-suite warnings remain the pre-existing Starlette/httpx deprecation
+and joblib physical-core fallback. Official header, exact 32,768-row count,
+two finite columns, byte/hash binding, shared producer-consumer parsing,
+metadata, identity, deterministic generation, atomic publication, and
+preserve-in-place error handling remain covered. Final diff/tracking gates are
+recorded against the committed SHA.
