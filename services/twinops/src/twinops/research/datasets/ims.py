@@ -30,12 +30,20 @@ def iter_ims(root: str | Path, metadata: LoadedMetadata) -> Iterator[SignalWindo
     if metadata.dataset_id != "nasa-ims":
         raise ValueError("IMS adapter requires nasa-ims metadata")
     payload = metadata.payload
+    samples_per_window = payload.get("samplesPerWindow")
+    if (
+        isinstance(samples_per_window, bool)
+        or not isinstance(samples_per_window, int)
+        or samples_per_window <= 0
+    ):
+        raise ValueError("IMS metadata samplesPerWindow must be a positive integer")
     files = payload["files"]
     ordered = sorted(
         files.items(),
         key=lambda item: (sequence_index(item[1], context=item[0]), item[0]),
     )
-    seen_sequences: set[tuple[str, int]] = set()
+    seen_sequences: set[tuple[str, str, int]] = set()
+    bearing_runs: dict[str, str] = {}
     for relative_path, raw_entry in ordered:
         if not isinstance(raw_entry, dict):
             raise ValueError(f"{relative_path}: metadata entry must be an object")
@@ -47,6 +55,11 @@ def iter_ims(root: str | Path, metadata: LoadedMetadata) -> Iterator[SignalWindo
         if not isinstance(channels, list) or not channels:
             raise ValueError(f"{relative_path}: channels must be a non-empty list")
         matrix = np.loadtxt(raw_path(root_path, relative_path), dtype=float, ndmin=2)
+        if matrix.shape[0] != samples_per_window:
+            raise ValueError(
+                f"{relative_path}: raw matrix row count {matrix.shape[0]} "
+                f"does not equal samplesPerWindow {samples_per_window}"
+            )
         positions: list[int] = []
         bearing_axes: dict[str, dict[str, np.ndarray]] = defaultdict(dict)
         bearing_context: dict[str, tuple[object, ...]] = {}
@@ -59,6 +72,11 @@ def iter_ims(root: str | Path, metadata: LoadedMetadata) -> Iterator[SignalWindo
                 raise ValueError(f"{relative_path}: columnIndex must be a non-negative integer")
             positions.append(index)
             bearing_id = nonempty(channel, "bearingId", context=relative_path)
+            owning_run = bearing_runs.setdefault(bearing_id, run_id)
+            if owning_run != run_id:
+                raise ValueError(
+                    f"{relative_path}: bearingId values must be globally unique across runs"
+                )
             axis = nonempty(channel, "axis", context=relative_path)
             if axis in bearing_axes[bearing_id]:
                 raise ValueError(f"{relative_path}: duplicate axis {axis!r} for {bearing_id}")
@@ -75,7 +93,7 @@ def iter_ims(root: str | Path, metadata: LoadedMetadata) -> Iterator[SignalWindo
             )
 
         for bearing_id in sorted(bearing_axes):
-            sequence_key = (bearing_id, sequence)
+            sequence_key = (run_id, bearing_id, sequence)
             if sequence_key in seen_sequences:
                 raise ValueError(f"{relative_path}: duplicate sequenceIndex for bearing {bearing_id}")
             seen_sequences.add(sequence_key)

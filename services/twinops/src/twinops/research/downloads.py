@@ -3,20 +3,27 @@
 from __future__ import annotations
 
 import hashlib
+import importlib
 import json
+import math
 import os
 import re
+import secrets
 import shutil
 import stat
+import subprocess
 import tarfile
 import tempfile
+import unicodedata
 import zipfile
 from dataclasses import dataclass
+from enum import Enum, auto
 from pathlib import Path, PurePosixPath
-from typing import BinaryIO
+from typing import BinaryIO, Sequence
 
 
 _SHA256 = re.compile(r"^[0-9a-fA-F]{64}$")
+_RAR_STAGING_CAPABILITY_MARKER = ".twinops-rar-staging-capability"
 _WINDOWS_RESERVED_NAMES = frozenset(
     {
         "con",
@@ -61,6 +68,65 @@ class RawInventory:
         }
 
 
+@dataclass(frozen=True, slots=True)
+class ArchivePart:
+    """One caller-authorized RAR volume and its exact expected digest."""
+
+    path: Path
+    sha256: str
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "path", Path(self.path))
+        if not isinstance(self.sha256, str) or not _SHA256.fullmatch(self.sha256):
+            raise ValueError("archive part sha256 must be exactly 64 hexadecimal characters")
+        object.__setattr__(self, "sha256", self.sha256.lower())
+
+
+@dataclass(frozen=True, slots=True)
+class RarExtractionLimits:
+    """Conservative limits applied to RAR metadata before any output is written."""
+
+    max_file_count: int = 10_000
+    max_file_uncompressed_bytes: int = 1 * 1024**3
+    max_total_uncompressed_bytes: int = 8 * 1024**3
+    max_compression_ratio: float = 1_000.0
+    member_timeout_seconds: float = 120.0
+
+    def __post_init__(self) -> None:
+        integer_limits = (
+            ("max_file_count", self.max_file_count),
+            ("max_file_uncompressed_bytes", self.max_file_uncompressed_bytes),
+            ("max_total_uncompressed_bytes", self.max_total_uncompressed_bytes),
+        )
+        for name, value in integer_limits:
+            if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+                raise ValueError(f"{name} must be a positive integer")
+        for name, value in (
+            ("max_compression_ratio", self.max_compression_ratio),
+            ("member_timeout_seconds", self.member_timeout_seconds),
+        ):
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                raise ValueError(f"{name} must be a positive finite number")
+            if not math.isfinite(value) or value <= 0:
+                raise ValueError(f"{name} must be a positive finite number")
+
+
+@dataclass(frozen=True, slots=True)
+class RarMember:
+    relative_path: str
+    size_bytes: int
+    compressed_bytes: int
+    is_directory: bool
+
+
+@dataclass(frozen=True, slots=True)
+class RarInspection:
+    parts: tuple[ArchivePart, ...]
+    members: tuple[RarMember, ...]
+    total_bytes: int
+    total_compressed_bytes: int
+
+
 def hash_file(path: str | Path) -> str:
     digest = hashlib.sha256()
     with Path(path).open("rb") as stream:
@@ -83,8 +149,764 @@ def verify_archive(path: str | Path, expected_sha256: str) -> str:
     return actual
 
 
+def _require_rarfile():
+    install_action = (
+        "install the research extra with "
+        "python -m pip install -e 'services/twinops[research]' "
+        "(requires rarfile>=4.5,<5)"
+    )
+    try:
+        module = importlib.import_module("rarfile")
+    except (ImportError, ModuleNotFoundError) as error:
+        raise RuntimeError(f"RAR inspection unavailable; {install_action}") from error
+    version = getattr(module, "__version__", "")
+    match = re.match(r"^(\d+)\.(\d+)", str(version))
+    if match is None or not ((4, 5) <= tuple(map(int, match.groups())) < (5, 0)):
+        raise RuntimeError(f"incompatible rarfile version; {install_action}")
+    return module
+
+
+def _canonical_path(path: Path, *, relative_to: Path | None = None) -> Path:
+    candidate = path
+    if relative_to is not None and not candidate.is_absolute():
+        candidate = relative_to / candidate
+    return candidate.resolve(strict=False)
+
+
+def _path_key(path: Path) -> str:
+    return os.path.normcase(str(path)).casefold()
+
+
+def _validated_rar_parts(parts: Sequence[ArchivePart]) -> tuple[ArchivePart, ...]:
+    if isinstance(parts, (str, bytes, Path)) or not isinstance(parts, Sequence) or not parts:
+        raise ValueError("RAR parts must be a non-empty ordered sequence of ArchivePart values")
+    normalized: list[ArchivePart] = []
+    seen: set[str] = set()
+    reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+    for part in parts:
+        if not isinstance(part, ArchivePart):
+            raise TypeError("RAR parts must contain only ArchivePart values")
+        supplied_path = part.path.absolute()
+        try:
+            metadata = supplied_path.lstat()
+        except FileNotFoundError as error:
+            raise FileNotFoundError(
+                f"RAR archive part does not exist: {supplied_path.name}"
+            ) from error
+        if (
+            not stat.S_ISREG(metadata.st_mode)
+            or stat.S_ISLNK(metadata.st_mode)
+            or (reparse_flag and getattr(metadata, "st_file_attributes", 0) & reparse_flag)
+        ):
+            raise ValueError(
+                f"RAR archive part must be a regular non-link file: {supplied_path.name}"
+            )
+        path = supplied_path.resolve(strict=True)
+        key = _path_key(path)
+        if key in seen:
+            raise ValueError(f"duplicate RAR archive part: {path.name}")
+        seen.add(key)
+        verify_archive(path, part.sha256)
+        normalized.append(ArchivePart(path, part.sha256))
+    return tuple(normalized)
+
+
+def _open_rar(rarfile_module, first_part: Path):
+    try:
+        return rarfile_module.RarFile(
+            first_part,
+            mode="r",
+            errors="strict",
+            crc_check=True,
+        )
+    except Exception as error:
+        if error.__class__.__name__ in {"PasswordRequired", "NoCrypto", "RarWrongPassword"}:
+            raise ValueError("encrypted RAR headers are not supported") from error
+        raise ValueError(
+            f"RAR inspection failed safely ({error.__class__.__name__}); verify the first volume"
+        ) from error
+
+
+def _validate_rar_volume_list(container, parts: tuple[ArchivePart, ...]) -> None:
+    expected = [_path_key(part.path) for part in parts]
+    try:
+        observed_paths = tuple(container.volumelist())
+    except Exception as error:
+        raise ValueError(
+            f"RAR volume discovery failed safely ({error.__class__.__name__})"
+        ) from error
+    observed = [
+        _path_key(_canonical_path(Path(path), relative_to=parts[0].path.parent))
+        for path in observed_paths
+    ]
+    if observed != expected:
+        raise ValueError(
+            "RAR volume list does not exactly match the ordered caller-supplied archive parts"
+        )
+
+
+def _valid_archive_size(value: object) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value >= 0
+
+
+def inspect_rar_archive(
+    parts: Sequence[ArchivePart],
+    *,
+    limits: RarExtractionLimits = RarExtractionLimits(),
+) -> RarInspection:
+    """Inspect an exact caller-supplied RAR volume set without writing output."""
+
+    if not isinstance(limits, RarExtractionLimits):
+        raise TypeError("limits must be a RarExtractionLimits value")
+    checked_parts = _validated_rar_parts(parts)
+    rarfile_module = _require_rarfile()
+    container = _open_rar(rarfile_module, checked_parts[0].path)
+    with container:
+        _validate_rar_volume_list(container, checked_parts)
+        if container.needs_password():
+            raise ValueError("password-protected RAR archives are not supported")
+        members: list[RarMember] = []
+        collision_paths: list[tuple[str, bool]] = []
+        file_count = 0
+        total_bytes = 0
+        total_compressed = 0
+        for info in container.infolist():
+            name = _safe_name(info.filename)
+            if info.is_symlink():
+                raise ValueError(f"RAR symlink is not allowed: {name}")
+            if getattr(info, "file_redir", None) is not None:
+                raise ValueError(f"RAR redirected member is not allowed: {name}")
+            if info.needs_password():
+                raise ValueError("password-protected RAR members are not supported")
+            is_directory = bool(info.is_dir())
+            is_file = bool(info.is_file())
+            if is_directory == is_file:
+                raise ValueError(f"unsupported RAR member type: {name}")
+            size = getattr(info, "file_size", None)
+            compressed = getattr(info, "compress_size", None)
+            if not _valid_archive_size(size) or not _valid_archive_size(compressed):
+                raise ValueError(f"RAR member has an invalid size: {name}")
+            collision_paths.append((name, is_directory))
+            if is_file:
+                file_count += 1
+                if file_count > limits.max_file_count:
+                    raise ValueError("RAR file count exceeds the configured safety limit")
+                if size > limits.max_file_uncompressed_bytes:
+                    raise ValueError(f"RAR member exceeds the per-file size limit: {name}")
+                total_bytes += size
+                total_compressed += compressed
+                if total_bytes > limits.max_total_uncompressed_bytes:
+                    raise ValueError("RAR total uncompressed size exceeds the configured safety limit")
+                if size and (compressed == 0 or size / compressed > limits.max_compression_ratio):
+                    raise ValueError(f"RAR member exceeds the compression-ratio limit: {name}")
+            members.append(RarMember(name, size, compressed, is_directory))
+        _check_collisions(collision_paths)
+        if file_count == 0:
+            raise ValueError("RAR archive contains no regular files")
+        if total_bytes and (
+            total_compressed == 0
+            or total_bytes / total_compressed > limits.max_compression_ratio
+        ):
+            raise ValueError("RAR archive exceeds the total compression-ratio limit")
+    for part in checked_parts:
+        verify_archive(part.path, part.sha256)
+    return RarInspection(
+        parts=checked_parts,
+        members=tuple(members),
+        total_bytes=total_bytes,
+        total_compressed_bytes=total_compressed,
+    )
+
+
+def _seven_zip_command(executable: str, archive: Path, member: RarMember) -> list[str]:
+    return [
+        executable,
+        "x",
+        "-so",
+        "-bd",
+        "-bb0",
+        "-bsp0",
+        "-bse1",
+        "-spd",
+        "--",
+        str(archive),
+        member.relative_path,
+    ]
+
+
+def _stream_rar_member(
+    archive: Path,
+    member: RarMember,
+    target: Path,
+    *,
+    seven_zip_executable: str,
+    timeout_seconds: float,
+) -> RawFile:
+    target.parent.mkdir(parents=True, exist_ok=True)
+    descriptor = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    command = _seven_zip_command(seven_zip_executable, archive, member)
+    with os.fdopen(descriptor, "wb") as output:
+        try:
+            process = subprocess.Popen(
+                command,
+                stdin=subprocess.DEVNULL,
+                stdout=output,
+                stderr=subprocess.PIPE,
+                shell=False,
+            )
+        except FileNotFoundError as error:
+            raise RuntimeError(
+                "7z executable is unavailable; install 7-Zip and pass "
+                "seven_zip_executable with its trusted executable path"
+            ) from error
+        except OSError as error:
+            raise RuntimeError(
+                f"7z could not be started safely ({error.__class__.__name__})"
+            ) from error
+        try:
+            _, _stderr = process.communicate(timeout=timeout_seconds)
+        except subprocess.TimeoutExpired as error:
+            try:
+                process.kill()
+            except BaseException:
+                pass
+            try:
+                process.communicate()
+            except BaseException:
+                pass
+            raise TimeoutError("7z exceeded the configured per-member timeout") from error
+        except BaseException:
+            try:
+                process.kill()
+            except BaseException:
+                pass
+            try:
+                process.communicate()
+            except BaseException:
+                pass
+            raise
+        if process.returncode != 0:
+            raise ValueError(
+                f"7z failed while validating a RAR member (exit code {process.returncode})"
+            )
+        if _stderr:
+            raise ValueError("7z emitted unexpected diagnostic output for a RAR member")
+    with target.open("rb") as stream:
+        size, sha256 = _hash_stream(stream)
+    if size != member.size_bytes:
+        raise ValueError(
+            f"7z streamed byte count differs from RAR metadata for {member.relative_path!r}"
+        )
+    return RawFile(member.relative_path, size, sha256)
+
+
+def _expected_rar_directories(inspection: RarInspection) -> set[str]:
+    expected: set[str] = set()
+    for member in inspection.members:
+        path = PurePosixPath(member.relative_path)
+        if member.is_directory:
+            expected.add(member.relative_path)
+        for parent in path.parents:
+            if parent != PurePosixPath("."):
+                expected.add(parent.as_posix())
+    return expected
+
+
+def _validate_rar_filesystem(
+    root: Path,
+    inspection: RarInspection,
+    streamed: RawInventory,
+) -> RawInventory:
+    actual = _filesystem_inventory(root)
+    if actual != streamed:
+        raise ValueError("extracted filesystem inventory differs from streamed RAR inventory")
+    expected_files = {
+        member.relative_path: member.size_bytes
+        for member in inspection.members
+        if not member.is_directory
+    }
+    actual_files = {item.relative_path: item.size_bytes for item in actual.files}
+    if actual_files != expected_files:
+        raise ValueError("extracted filesystem files differ from inspected RAR inventory")
+    actual_directories: set[str] = set()
+    for directory, directory_names, _file_names in os.walk(root, topdown=True, followlinks=False):
+        current = Path(directory)
+        for name in directory_names:
+            actual_directories.add(_safe_name((current / name).relative_to(root).as_posix()))
+    if actual_directories != _expected_rar_directories(inspection):
+        raise ValueError("extracted filesystem directories differ from inspected RAR inventory")
+    return actual
+
+
+def _destination_exists_and_is_empty(destination: Path, *, promotion: bool = False) -> bool:
+    if not os.path.lexists(destination):
+        return False
+    metadata = destination.lstat()
+    reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+    if (
+        stat.S_ISLNK(metadata.st_mode)
+        or (reparse_flag and getattr(metadata, "st_file_attributes", 0) & reparse_flag)
+        or not stat.S_ISDIR(metadata.st_mode)
+        or any(destination.iterdir())
+    ):
+        state = "remain empty" if promotion else "be empty"
+        raise ValueError(f"extraction destination must {state}: {destination}")
+    return True
+
+
+@dataclass(frozen=True, slots=True)
+class _DirectoryIdentity:
+    device: int
+    inode: int
+
+
+@dataclass(frozen=True, slots=True)
+class _RarStagingCleanupCapability:
+    marker: Path
+    token: bytes
+
+
+@dataclass(frozen=True, slots=True)
+class _RarStagingCreationGuard:
+    mode: int
+    device: int | None
+    inode: int | None
+    ctime_ns: int | None
+    birthtime_ns: int | None
+    mtime_ns: int | None
+    file_attributes: int | None
+    reparse_tag: int | None
+    size_bytes: int | None
+    link_count: int | None
+
+
+class _RarStagingPhase(Enum):
+    CREATED_GUARDED = auto()
+    MARKER_ESTABLISHED = auto()
+    IDENTITY_ESTABLISHED = auto()
+    MARKER_CONSUMED = auto()
+
+
+@dataclass(slots=True)
+class _RarStagingOwnership:
+    temporary: Path
+    creation_guard: _RarStagingCreationGuard
+    phase: _RarStagingPhase = _RarStagingPhase.CREATED_GUARDED
+    capability: _RarStagingCleanupCapability | None = None
+    owned_identity: _DirectoryIdentity | None = None
+
+
+def _require_plain_directory(path: Path, *, context: str) -> os.stat_result:
+    metadata = path.lstat()
+    reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+    if (
+        stat.S_ISLNK(metadata.st_mode)
+        or (reparse_flag and getattr(metadata, "st_file_attributes", 0) & reparse_flag)
+        or not stat.S_ISDIR(metadata.st_mode)
+    ):
+        raise RuntimeError(f"RAR {context} is not a regular directory")
+    return metadata
+
+
+def _optional_metadata_int(metadata: os.stat_result, name: str) -> int | None:
+    value = getattr(metadata, name, None)
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    return value
+
+
+def _metadata_timestamp_ns(
+    metadata: os.stat_result,
+    nanoseconds_name: str,
+    seconds_name: str,
+) -> int | None:
+    nanoseconds = _optional_metadata_int(metadata, nanoseconds_name)
+    if nanoseconds is not None:
+        return nanoseconds
+    seconds = getattr(metadata, seconds_name, None)
+    if (
+        isinstance(seconds, bool)
+        or not isinstance(seconds, (int, float))
+        or not math.isfinite(seconds)
+    ):
+        return None
+    return int(seconds * 1_000_000_000)
+
+
+def _rar_staging_creation_guard(path: Path) -> _RarStagingCreationGuard:
+    metadata = _require_plain_directory(path, context="staging creation guard")
+    return _RarStagingCreationGuard(
+        mode=metadata.st_mode,
+        device=_optional_metadata_int(metadata, "st_dev"),
+        inode=_optional_metadata_int(metadata, "st_ino"),
+        ctime_ns=_metadata_timestamp_ns(metadata, "st_ctime_ns", "st_ctime"),
+        birthtime_ns=_metadata_timestamp_ns(
+            metadata,
+            "st_birthtime_ns",
+            "st_birthtime",
+        ),
+        mtime_ns=_metadata_timestamp_ns(metadata, "st_mtime_ns", "st_mtime"),
+        file_attributes=_optional_metadata_int(metadata, "st_file_attributes"),
+        reparse_tag=_optional_metadata_int(metadata, "st_reparse_tag"),
+        size_bytes=_optional_metadata_int(metadata, "st_size"),
+        link_count=_optional_metadata_int(metadata, "st_nlink"),
+    )
+
+
+def _directory_identity_from_lstat(path: Path) -> _DirectoryIdentity:
+    metadata = _require_plain_directory(path, context="staging identity")
+    device = getattr(metadata, "st_dev", None)
+    inode = getattr(metadata, "st_ino", None)
+    if (
+        isinstance(device, bool)
+        or not isinstance(device, int)
+        or isinstance(inode, bool)
+        or not isinstance(inode, int)
+        or inode == 0
+    ):
+        raise RuntimeError("RAR staging directory has no stable filesystem identity")
+    return _DirectoryIdentity(device, inode)
+
+
+def _directory_identity(path: Path) -> _DirectoryIdentity:
+    return _directory_identity_from_lstat(path)
+
+
+def _matches_directory_identity(path: Path, identity: _DirectoryIdentity) -> bool:
+    if not os.path.lexists(path):
+        return False
+    try:
+        return _directory_identity(path) == identity
+    except RuntimeError:
+        return False
+
+
+def _cleanup_owned_rar_tree(
+    temporary: Path,
+    destination: Path,
+    identity: _DirectoryIdentity,
+) -> None:
+    owned = [
+        path
+        for path in (temporary, destination)
+        if _matches_directory_identity(path, identity)
+    ]
+    if len(owned) > 1:
+        raise RuntimeError("RAR cleanup found the staging identity at multiple paths")
+    if owned:
+        shutil.rmtree(owned[0])
+    if any(_matches_directory_identity(path, identity) for path in (temporary, destination)):
+        raise RuntimeError("RAR cleanup did not remove the owned staging tree")
+    if os.path.lexists(temporary):
+        raise RuntimeError("RAR cleanup refused an unowned staging path")
+
+
+def _restore_rar_destination_state(destination: Path, *, was_empty: bool) -> None:
+    if was_empty:
+        if os.path.lexists(destination):
+            _destination_exists_and_is_empty(destination)
+        else:
+            destination.mkdir()
+    elif os.path.lexists(destination):
+        raise RuntimeError("RAR cleanup refused to remove an unowned destination path")
+
+
+def _add_cleanup_note(original: BaseException, action: str, failure: BaseException) -> None:
+    try:
+        original.add_note(
+            f"RAR {action} failed safely ({failure.__class__.__name__}); "
+            "manual cleanup review may be required"
+        )
+    except BaseException:
+        pass
+
+
+def _cleanup_creation_guarded_rar_staging(
+    temporary: Path,
+    creation_guard: _RarStagingCreationGuard,
+) -> None:
+    if not os.path.lexists(temporary):
+        return
+    if _rar_staging_creation_guard(temporary) != creation_guard:
+        raise RuntimeError("RAR cleanup refused a changed creation-guarded staging path")
+    if any(temporary.iterdir()):
+        raise RuntimeError("RAR cleanup refused a non-empty uninitialized staging path")
+    if _rar_staging_creation_guard(temporary) != creation_guard:
+        raise RuntimeError("RAR staging creation guard changed during cleanup")
+    temporary.rmdir()
+    if os.path.lexists(temporary):
+        raise RuntimeError("RAR cleanup did not remove uninitialized staging")
+
+
+def _create_rar_staging_capability(capability: _RarStagingCleanupCapability) -> None:
+    flags = (
+        os.O_WRONLY
+        | os.O_CREAT
+        | os.O_EXCL
+        | getattr(os, "O_BINARY", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+    )
+    descriptor = os.open(capability.marker, flags, 0o600)
+    try:
+        remaining = memoryview(capability.token)
+        while remaining:
+            written = os.write(descriptor, remaining)
+            if written <= 0:
+                raise OSError("RAR staging capability write made no progress")
+            remaining = remaining[written:]
+        os.fsync(descriptor)
+    except BaseException as error:
+        try:
+            os.close(descriptor)
+        except BaseException as close_error:
+            _add_cleanup_note(error, "capability descriptor close", close_error)
+        raise
+    os.close(descriptor)
+
+
+def _read_rar_staging_capability_marker(marker: Path) -> bytes:
+    metadata = marker.lstat()
+    reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+    if (
+        stat.S_ISLNK(metadata.st_mode)
+        or (reparse_flag and getattr(metadata, "st_file_attributes", 0) & reparse_flag)
+        or not stat.S_ISREG(metadata.st_mode)
+    ):
+        raise RuntimeError("RAR staging cleanup marker is not a regular file")
+    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(marker, flags)
+    try:
+        opened_metadata = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(opened_metadata.st_mode)
+            or (
+                reparse_flag
+                and getattr(opened_metadata, "st_file_attributes", 0) & reparse_flag
+            )
+        ):
+            raise RuntimeError("RAR staging cleanup marker changed during validation")
+        chunks: list[bytes] = []
+        remaining = 65
+        while remaining:
+            chunk = os.read(descriptor, remaining)
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        return b"".join(chunks)
+    finally:
+        os.close(descriptor)
+
+
+def _consume_rar_staging_capability(
+    temporary: Path,
+    capability: _RarStagingCleanupCapability,
+) -> None:
+    _require_plain_directory(temporary, context="staging capability path")
+    entries = list(temporary.iterdir())
+    if len(entries) != 1 or entries[0].name != capability.marker.name:
+        raise RuntimeError("RAR staging cleanup capability is not the unique entry")
+    marker_token = _read_rar_staging_capability_marker(capability.marker)
+    if not secrets.compare_digest(marker_token, capability.token):
+        raise RuntimeError("RAR staging cleanup capability token is invalid")
+    capability.marker.unlink()
+    if os.path.lexists(capability.marker):
+        raise RuntimeError("RAR staging cleanup capability marker was not removed")
+    _require_plain_directory(temporary, context="staging path after capability removal")
+    if any(temporary.iterdir()):
+        raise RuntimeError("RAR staging changed while removing cleanup capability")
+
+
+def _cleanup_capability_bound_rar_staging(
+    temporary: Path,
+    capability: _RarStagingCleanupCapability,
+) -> None:
+    _consume_rar_staging_capability(temporary, capability)
+    temporary.rmdir()
+    if os.path.lexists(temporary):
+        raise RuntimeError("RAR cleanup did not remove capability-bound staging")
+
+
+def _cleanup_identity_bound_rar_staging(
+    temporary: Path,
+    identity: _DirectoryIdentity,
+) -> None:
+    if not os.path.lexists(temporary):
+        return
+    if not _matches_directory_identity(temporary, identity):
+        raise RuntimeError("RAR cleanup refused a changed identity-bound staging path")
+    shutil.rmtree(temporary)
+    if os.path.lexists(temporary):
+        raise RuntimeError("RAR cleanup did not remove identity-bound staging")
+
+
+def _cleanup_uninitialized_rar_staging(ownership: _RarStagingOwnership) -> None:
+    if ownership.owned_identity is not None:
+        _cleanup_identity_bound_rar_staging(
+            ownership.temporary,
+            ownership.owned_identity,
+        )
+        return
+    if ownership.phase in {
+        _RarStagingPhase.IDENTITY_ESTABLISHED,
+        _RarStagingPhase.MARKER_CONSUMED,
+    }:
+        raise RuntimeError("RAR staging phase has no owned filesystem identity")
+    if ownership.phase is _RarStagingPhase.MARKER_ESTABLISHED:
+        if ownership.capability is None:
+            raise RuntimeError("RAR staging cleanup capability is unavailable")
+        _cleanup_capability_bound_rar_staging(
+            ownership.temporary,
+            ownership.capability,
+        )
+        return
+    if ownership.capability is not None and os.path.lexists(ownership.capability.marker):
+        _cleanup_capability_bound_rar_staging(
+            ownership.temporary,
+            ownership.capability,
+        )
+        return
+    _cleanup_creation_guarded_rar_staging(
+        ownership.temporary,
+        ownership.creation_guard,
+    )
+
+
+def _create_rar_staging(parent: Path, destination_name: str) -> tuple[Path, _DirectoryIdentity]:
+    temporary: Path | None = None
+    ownership: _RarStagingOwnership | None = None
+    try:
+        temporary = Path(
+            tempfile.mkdtemp(prefix=f".{destination_name}-rar-extract-", dir=parent)
+        )
+        ownership = _RarStagingOwnership(
+            temporary=temporary,
+            creation_guard=_rar_staging_creation_guard(temporary),
+        )
+        capability = _RarStagingCleanupCapability(
+            marker=temporary / _RAR_STAGING_CAPABILITY_MARKER,
+            token=secrets.token_bytes(32),
+        )
+        ownership.capability = capability
+        _create_rar_staging_capability(capability)
+        ownership.phase = _RarStagingPhase.MARKER_ESTABLISHED
+        provisional_identity = _directory_identity_from_lstat(temporary)
+        identity = _directory_identity(temporary)
+        if identity != provisional_identity:
+            raise RuntimeError("RAR staging identity changed during acquisition")
+        ownership.owned_identity = identity
+        ownership.phase = _RarStagingPhase.IDENTITY_ESTABLISHED
+        _consume_rar_staging_capability(temporary, capability)
+        ownership.phase = _RarStagingPhase.MARKER_CONSUMED
+        return temporary, identity
+    except BaseException as error:
+        if temporary is not None:
+            try:
+                if ownership is None:
+                    raise RuntimeError("RAR staging creation guard is unavailable")
+                _cleanup_uninitialized_rar_staging(ownership)
+            except BaseException as cleanup_error:
+                _add_cleanup_note(error, "uninitialized staging cleanup", cleanup_error)
+        raise
+
+
+def safe_extract_rar_archive(
+    parts: Sequence[ArchivePart],
+    destination: str | Path,
+    *,
+    limits: RarExtractionLimits = RarExtractionLimits(),
+    seven_zip_executable: str | Path = "7z",
+) -> RawInventory:
+    """Safely stream an exact RAR volume set into an atomic destination tree."""
+
+    destination_path = Path(destination)
+    destination_was_empty = _destination_exists_and_is_empty(destination_path)
+    initial_destination_identity = (
+        _directory_identity(destination_path) if destination_was_empty else None
+    )
+    executable = os.fspath(seven_zip_executable)
+    if (
+        not isinstance(executable, str)
+        or not executable
+        or any(unicodedata.category(character) == "Cc" for character in executable)
+    ):
+        raise ValueError("seven_zip_executable must be a non-empty filesystem path")
+    inspection = inspect_rar_archive(parts, limits=limits)
+    destination_path.parent.mkdir(parents=True, exist_ok=True)
+    temporary, temporary_identity = _create_rar_staging(
+        destination_path.parent,
+        destination_path.name,
+    )
+    try:
+        for directory in sorted(
+            _expected_rar_directories(inspection),
+            key=lambda item: (len(PurePosixPath(item).parts), item),
+        ):
+            temporary.joinpath(*PurePosixPath(directory).parts).mkdir(exist_ok=True)
+        files: list[RawFile] = []
+        for member in inspection.members:
+            if member.is_directory:
+                continue
+            target = temporary.joinpath(*PurePosixPath(member.relative_path).parts)
+            files.append(
+                _stream_rar_member(
+                    inspection.parts[0].path,
+                    member,
+                    target,
+                    seven_zip_executable=executable,
+                    timeout_seconds=limits.member_timeout_seconds,
+                )
+            )
+        streamed = _inventory(files)
+        for part in inspection.parts:
+            verify_archive(part.path, part.sha256)
+        actual = _validate_rar_filesystem(temporary, inspection, streamed)
+        destination_is_empty = _destination_exists_and_is_empty(
+            destination_path, promotion=True
+        )
+        destination_identity_changed = (
+            destination_is_empty
+            and _directory_identity(destination_path) != initial_destination_identity
+        )
+        if destination_is_empty != destination_was_empty or destination_identity_changed:
+            raise ValueError("extraction destination changed before RAR promotion")
+        if destination_is_empty:
+            destination_path.rmdir()
+        temporary.replace(destination_path)
+        if os.path.lexists(temporary) or not _matches_directory_identity(
+            destination_path, temporary_identity
+        ):
+            raise RuntimeError("RAR atomic promotion did not publish the owned staging tree")
+        return actual
+    except BaseException as error:
+        try:
+            _cleanup_owned_rar_tree(temporary, destination_path, temporary_identity)
+        except BaseException as cleanup_error:
+            _add_cleanup_note(error, "staging cleanup", cleanup_error)
+        try:
+            _restore_rar_destination_state(
+                destination_path,
+                was_empty=destination_was_empty,
+            )
+        except BaseException as restore_error:
+            _add_cleanup_note(error, "destination restore", restore_error)
+        raise
+
+
 def _safe_name(name: str) -> str:
-    if not name or "\\" in name or ":" in name or name.startswith("/"):
+    if not isinstance(name, str) or not name:
+        raise ValueError(f"unsafe archive member path: {name!r}")
+    raw_name = name[:-1] if name.endswith("/") else name
+    raw_parts = raw_name.split("/")
+    if (
+        not raw_name
+        or "\\" in name
+        or name.startswith("/")
+        or any(part in {"", ".", ".."} for part in raw_parts)
+        or any(unicodedata.category(character) == "Cc" for character in name)
+        or any(character in '<>:"|?*[]' for character in name)
+        or any(part.startswith("@") for part in raw_parts)
+    ):
         raise ValueError(f"unsafe archive member path: {name!r}")
     path = PurePosixPath(name)
     if path.is_absolute() or any(part in {"", ".", ".."} for part in path.parts):
@@ -102,24 +924,32 @@ def _safe_name(name: str) -> str:
 
 
 def _check_collisions(paths: list[tuple[str, bool]]) -> None:
-    seen: dict[str, tuple[str, bool]] = {}
-    file_paths: set[str] = set()
+    seen: dict[str, tuple[str, bool, bool]] = {}
     for path, is_dir in paths:
-        folded = path.casefold()
-        if folded in seen:
-            raise ValueError(f"archive member collision: {seen[folded][0]!r} and {path!r}")
-        for parent in PurePosixPath(path).parents:
-            if parent == PurePosixPath("."):
-                continue
-            if parent.as_posix().casefold() in file_paths:
+        parts = PurePosixPath(path).parts
+        for length in range(1, len(parts)):
+            parent = PurePosixPath(*parts[:length]).as_posix()
+            parent_key = parent.casefold()
+            existing_parent = seen.get(parent_key)
+            if existing_parent is None:
+                seen[parent_key] = (parent, True, False)
+            elif not existing_parent[1] or existing_parent[0] != parent:
                 raise ValueError(f"archive file/directory collision at {path!r}")
-        seen[folded] = (path, is_dir)
-        if not is_dir:
-            file_paths.add(folded)
-    all_paths = set(seen)
-    for file_path in file_paths:
-        if any(other.startswith(f"{file_path}/") for other in all_paths):
-            raise ValueError(f"archive file/directory collision at {seen[file_path][0]!r}")
+        folded = path.casefold()
+        existing = seen.get(folded)
+        if existing is not None:
+            existing_path, existing_is_dir, existing_is_explicit = existing
+            promotes_same_implicit_directory = (
+                is_dir
+                and existing_is_dir
+                and not existing_is_explicit
+                and existing_path == path
+            )
+            if not promotes_same_implicit_directory:
+                raise ValueError(f"archive member collision: {existing_path!r} and {path!r}")
+        seen[folded] = (path, is_dir, True)
+        if not is_dir and any(key.startswith(f"{folded}/") for key in seen if key != folded):
+            raise ValueError(f"archive file/directory collision at {path!r}")
 
 
 def _inventory(files: list[RawFile]) -> RawInventory:

@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
-  "status": "not_run_external_data_gate",
-  "generatedAt": "2026-08-20T20:54:02Z",
+  "status": "not_run_semantic_gate",
+  "generatedAt": "2026-08-21T22:43:54Z",
   "config": {
     "datasets": [
       "xjtu-sy",
@@ -22,21 +22,82 @@
   },
   "dataActuallyUsed": [],
   "metrics": null,
+  "preparedEvidence": {
+    "xjtu-sy": {
+      "status": "prepared_semantically_gated",
+      "generationId": "xjtu-sy-v1-8c7e9d8b7c272002a4d44b021931aaf6500f013574db60839bae2af3aa0fee1a",
+      "preparedPath": "xjtu-sy/prepared/xjtu-sy-v1-8c7e9d8b7c272002a4d44b021931aaf6500f013574db60839bae2af3aa0fee1a",
+      "attestation": {
+        "path": "xjtu-sy/prepared/xjtu-sy-v1-8c7e9d8b7c272002a4d44b021931aaf6500f013574db60839bae2af3aa0fee1a/attestation.json",
+        "sha256": "49de3ae74df4de489a966a77ccf6af647a58e60ceb2515934b9c62bf299277a5"
+      },
+      "metadata": {
+        "path": "xjtu-sy/prepared/xjtu-sy-v1-8c7e9d8b7c272002a4d44b021931aaf6500f013574db60839bae2af3aa0fee1a/metadata.json",
+        "sha256": "4876cc6540a8c972c63b890d111d1a4d60322f5addd2a317b0b058246020e8f8"
+      },
+      "rawInventory": {
+        "fileCount": 9217,
+        "csvFileCount": 9216,
+        "totalBytes": 12220812451,
+        "sha256": "42d68aa3fa65c28d0a15fd4bdb969ca7c9cc828827f4ab7a4dda62dfd42bd8db"
+      },
+      "publicationManifest": {
+        "entryCount": 9239,
+        "sha256": "cdb2fa353e88bf9a9329b9c7fab4feb1ee19945f7b0604b5a7ad872dea2e75d9"
+      }
+    },
+    "nasa-ims": {
+      "status": "prepared_semantically_gated",
+      "generationId": "nasa-ims-v1-71cbedb9ec12f18af68eb175ba536c27df9c5de9a96fb4ac36d010f40e70ac0c",
+      "preparedPath": "nasa-ims/prepared/nasa-ims-v1-71cbedb9ec12f18af68eb175ba536c27df9c5de9a96fb4ac36d010f40e70ac0c",
+      "attestation": {
+        "path": "nasa-ims/prepared/nasa-ims-v1-71cbedb9ec12f18af68eb175ba536c27df9c5de9a96fb4ac36d010f40e70ac0c/attestation.json",
+        "sha256": "b0da8f95a9f877e8a04c7c247dd4cbdf9d3ffc4fd93ee43c3c9f01e026253eb6"
+      },
+      "runs": {
+        "run-1": {
+          "metadataPath": "nasa-ims/prepared/nasa-ims-v1-71cbedb9ec12f18af68eb175ba536c27df9c5de9a96fb4ac36d010f40e70ac0c/run-1/metadata.json",
+          "metadataSha256": "21a12273c9575a57a8d816ddf3fd9f134867cfed5fd6af79a2b68138a401bfae",
+          "fileCount": 2156,
+          "totalBytes": 2477767237,
+          "inventorySha256": "347863ccf244fb88d6f89303183bfb5af3405fa93f88f0d2f596baf27bc9b42f"
+        },
+        "run-2": {
+          "metadataPath": "nasa-ims/prepared/nasa-ims-v1-71cbedb9ec12f18af68eb175ba536c27df9c5de9a96fb4ac36d010f40e70ac0c/run-2/metadata.json",
+          "metadataSha256": "3ff3ce76aee53f0aa57aa193ea6a609d7371100a5bef1db6cbaf4a1eef3b2958",
+          "fileCount": 984,
+          "totalBytes": 544618480,
+          "inventorySha256": "94bd9093c2301c16cbae27e2c1695207b91c3acfa6bf90187a2f88ae3070ebff"
+        }
+      },
+      "quarantine": {
+        "runId": "ims-run-3",
+        "status": "quarantined_source_contradiction",
+        "documentedFileCount": 4448,
+        "observedFileCount": 6324,
+        "includedInScientificMetrics": false
+      }
+    }
+  },
   "gate": {
-    "reason": "Explicit approval for official-source downloads and terms is pending.",
-    "missing": [
-      "exact download URLs",
-      "access timestamps",
-      "verified archive SHA-256 hashes",
-      "original extracted numeric signals",
-      "curated adapter metadata for the retrieved archive versions"
+    "reason": "The original numeric data were prepared and audited but were not loaded into an experiment. Execution remains blocked because there is no audited common per-window label, acceleration unit or Forzy measurement contract, and because the current lab loader accepts one pristine ZIP/TAR per source with an empty extraction destination rather than the prepared multipart XJTU and multi-run NASA generations.",
+    "blockers": [
+      "no audited common per-window labels, acceleration unit, or Forzy statistic/window/axis semantics",
+      "the current lab loader does not consume prepared multipart or multi-run generations"
     ],
-    "resumeCommand": "services\\twinops\\.venv\\Scripts\\python.exe scripts/run_public_fault_lab.py --datasets xjtu ims --output artifacts/ml-public --seed 42 --overwrite"
+    "resumeConditions": [
+      "implement and review a read-only prepared-generation loader for the immutable XJTU and NASA generations",
+      "approve an explicit audited scientific policy for labels, units, and Forzy measurement comparability, or separately approve and design an unsupervised lifecycle-drift study"
+    ],
+    "legacyRealRunCommandSafe": false
   },
   "claims": {
     "fullToAggregateDelta": null,
     "aggregateToForzyDelta": null,
     "crossBenchAboveMajorityBaseline": null,
+    "diagnosticPerformance": null,
+    "prognosticPerformance": null,
+    "rulPerformance": null,
     "forzyFailurePrediction": false
   },
   "operationalImpact": "none; artifacts/ml/real-forzy and services/twinops/src/twinops/ml are outside this laboratory"
