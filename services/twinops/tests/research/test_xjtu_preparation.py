@@ -737,6 +737,37 @@ def test_decimal_grammar_whitespace_and_exponents_publish_and_round_trip(
     assert not list(config.destination_root.glob(".xjtu-sy-generation-*"))
 
 
+def test_shared_decimal_parser_publishes_and_consumes_large_finite_integer(
+    tmp_path, monkeypatch
+) -> None:
+    config = _config(tmp_path)
+    compatible_csv = _OFFICIAL_HEADER + b"18446744073709551616,2\n3,4\n"
+    specs, _, _, _ = _install_small_source(
+        monkeypatch, config, bad_csv=compatible_csv
+    )
+
+    result = prepare_xjtu_sy(config)
+    assert result.generation_root.is_dir()
+    metadata = load_metadata(
+        result.metadata_path,
+        expected_sha256=result.metadata_sha256,
+        dataset_id="xjtu-sy",
+        raw_inventory=result.raw_inventory,
+    )
+    target = next(
+        window
+        for window in iter_xjtu(result.raw_root, metadata)
+        if window.bearing_id
+        == f"xjtu-sy-bearing-{specs[0].condition_index}-{specs[0].bearing_index}"
+        and window.sequence_index == 0
+    )
+
+    assert target.acceleration["horizontal"] == pytest.approx(
+        [18_446_744_073_709_551_616.0, 3.0]
+    )
+    assert target.acceleration["vertical"] == pytest.approx([2.0, 4.0])
+
+
 @pytest.mark.parametrize(
     ("bad_content", "reason"),
     [
@@ -750,6 +781,7 @@ def test_decimal_grammar_whitespace_and_exponents_publish_and_round_trip(
         (_OFFICIAL_HEADER + b"1,2\nnot-a-number,3\n", "nonnumeric token"),
         (_OFFICIAL_HEADER + b"1,2\nNaN,3\n", "NaN"),
         (_OFFICIAL_HEADER + b"1,2\nInf,3\n", "infinity"),
+        (_OFFICIAL_HEADER + b"1e309,2\n3,4\n", "float overflow"),
         (_OFFICIAL_HEADER + b'"1,5",2\n3,4\n', "locale decimal comma"),
         (
             _OFFICIAL_HEADER + "\uff11,2\n3,4\n".encode("utf-8"),

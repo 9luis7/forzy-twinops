@@ -9,6 +9,7 @@ from typing import Any
 import pandas as pd
 
 from twinops.research.contracts import SignalWindow
+from twinops.research.datasets._decimal import parse_ascii_decimal
 from twinops.research.datasets.common import nonempty, raw_path, sequence_index, started_at
 from twinops.research.metadata import LoadedMetadata
 
@@ -26,8 +27,14 @@ def _read_axes(
         raise ValueError(f"{context}: columns must explicitly map every source column to an axis")
     if not isinstance(has_header, bool):
         raise ValueError(f"{context}: hasHeader must be boolean")
+    read_options = {
+        "dtype": str,
+        "keep_default_na": False,
+        "na_filter": False,
+        "skip_blank_lines": False,
+    }
     if has_header:
-        frame = pd.read_csv(path)
+        frame = pd.read_csv(path, **read_options)
         source_columns: dict[object, str] = {}
         for source, raw_axis in columns.items():
             if not isinstance(source, str) or not source:
@@ -41,7 +48,7 @@ def _read_axes(
                 f"mapped={sorted(source_columns)}, actual={sorted(map(str, frame.columns))}"
             )
     else:
-        frame = pd.read_csv(path, header=None)
+        frame = pd.read_csv(path, header=None, **read_options)
         source_columns = {}
         for source, raw_axis in columns.items():
             try:
@@ -65,7 +72,11 @@ def _read_axes(
     for source, axis in source_columns.items():
         if not axis.strip() or axis in axes:
             raise ValueError(f"{context}: mapped axes must be unique non-empty strings")
-        axes[axis] = pd.to_numeric(frame[source], errors="raise").to_numpy(dtype=float)
+        parsed = [
+            parse_ascii_decimal(token, context=f"{context}: column {source!r}")
+            for token in frame[source]
+        ]
+        axes[axis] = pd.Series(parsed, dtype=float).to_numpy(dtype=float)
     return axes
 
 

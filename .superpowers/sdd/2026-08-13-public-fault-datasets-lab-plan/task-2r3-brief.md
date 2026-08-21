@@ -244,3 +244,13 @@ Python-only spellings such as digit separators, locale punctuation, and
 Unicode numerals are rejected so every prepared CSV is consumable by the
 metadata-bound pandas adapter. This gate must be proven with synthetic E2E
 publication tests only; it does not authorize access to preserved real staging.
+
+## Shared producer-consumer decimal parser gate -- 2026-08-21
+
+Preparation and the XJTU adapter must call the same internal ASCII-decimal
+parser. The adapter must preserve source lexemes by disabling pandas numeric
+and NA inference before parsing each cell. Any decimal lexeme representable as
+a finite Python float, including integers beyond pandas' native integer range,
+has identical producer/consumer semantics. Non-ASCII syntax, underscores,
+locale punctuation, NaN/Inf, and float overflow fail closed. This correction
+remains synthetic-only and does not authorize a real preparation rerun.

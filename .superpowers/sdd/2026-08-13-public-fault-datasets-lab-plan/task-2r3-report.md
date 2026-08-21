@@ -529,3 +529,42 @@ and joblib physical-core fallback. Header validation, exact 32,768-row count,
 two finite columns, raw byte/hash binding, metadata, adapter identity/count,
 determinism, atomic publication, and preserve-in-place failure behavior remain
 covered. Final diff/tracking gates are recorded against the committed SHA.
+
+## Shared decimal parser correction after `2fad384`
+
+Status: IMPLEMENTED AND LOCALLY VERIFIED; awaiting independent re-review. No
+real archive, extracted CSV, preserved staging, or 7-Zip process was accessed
+or invoked during this correction.
+
+The independent re-review found one remaining producer/consumer mismatch:
+`18446744073709551616` matches the decimal grammar and converts to a finite
+Python float, so preparation published it, but pandas' integer inference made
+`pd.to_numeric(errors="raise")` fail with `Integer out of range`. The fix does
+not add an arbitrary integer range. A single internal parser now owns strip,
+ASCII grammar, float conversion, and finiteness for both preparation and the
+adapter. The adapter reads CSV cells as strings with pandas NA and blank-line
+inference disabled, then parses every preserved lexeme through that helper.
+
+### TDD and fresh verification
+
+- RED on unchanged production code: `1 failed, 13 passed in 2.97s`.
+  Preparation published the synthetic generation and the E2E test then failed
+  at `iter_xjtu` with `ValueError: Integer out of range. at position 0`.
+- First GREEN across the large finite integer, whitespace/exponent,
+  underscore, locale, Unicode, and overflow cases: `16 passed in 2.61s`.
+  The large integer is now published and consumed as a float; `1e309` remains
+  rejected before publication with synthetic staging preserved.
+- final preparation plus adapter rerun: `118 passed, 2 skipped in 8.25s`;
+- research suite: `353 passed, 5 skipped, 1 warning in 35.49s`;
+- full Python suite: `568 passed, 7 skipped, 2 warnings in 43.32s`;
+- the first isolated performance run missed the environment-sensitive gate at
+  `p50=66.92 ms`, `p95=p99=118.11 ms`; no limit or scorer code changed. Its
+  immediate isolated rerun passed at `p50=48.46 ms`, `p95=p99=53.64 ms`,
+  `1 passed in 0.95s`;
+- `compileall` and `pip check` passed; pip reported no broken requirements.
+
+The broad-suite warnings remain the pre-existing Starlette/httpx deprecation
+and joblib physical-core fallback. Header validation, exact 32,768-row count,
+two finite columns, byte/hash binding, metadata, axis/unit/identity behavior,
+determinism, atomic publication, and preserve-in-place error handling remain
+covered. Final diff/tracking gates are recorded against the committed SHA.

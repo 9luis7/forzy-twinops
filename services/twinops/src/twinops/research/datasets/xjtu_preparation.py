@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import math
 import os
 import re
 import stat
@@ -13,6 +12,7 @@ from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+from twinops.research.datasets._decimal import parse_ascii_decimal
 from twinops.research.downloads import (
     ArchivePart,
     RarExtractionLimits,
@@ -69,9 +69,6 @@ _OFFICIAL_CSV_HEADER = (
 _PREPARATION_SCHEMA_VERSION = 1
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _SEQUENCE_NAME = re.compile(r"^[1-9][0-9]*\.csv$")
-_ASCII_DECIMAL = re.compile(
-    r"^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$", re.ASCII
-)
 _AUTHOR_DOI = "10.3901/JME.2019.16.001"
 
 
@@ -653,23 +650,10 @@ def _validate_numeric_csv(
                 raise ValueError(f"XJTU-SY CSV is not ASCII numeric data: {path.name}") from error
             if tuple(tokens) == _OFFICIAL_CSV_HEADER:
                 raise ValueError(f"XJTU-SY CSV contains a duplicate header: {path.name}")
-            normalized_tokens = tuple(token.strip() for token in tokens)
-            if len(normalized_tokens) != 2 or any(
-                not token for token in normalized_tokens
-            ):
+            if len(tokens) != 2:
                 raise ValueError(f"XJTU-SY CSV column count must be 2: {path.name}")
-            if any(
-                _ASCII_DECIMAL.fullmatch(token) is None for token in normalized_tokens
-            ):
-                raise ValueError(
-                    f"XJTU-SY CSV contains a non-decimal numeric token: {path.name}"
-                )
-            try:
-                values = tuple(float(token) for token in normalized_tokens)
-            except ValueError as error:
-                raise ValueError(f"XJTU-SY CSV contains nonnumeric data: {path.name}") from error
-            if not all(math.isfinite(value) for value in values):
-                raise ValueError(f"XJTU-SY CSV contains non-finite data: {path.name}")
+            for token in tokens:
+                parse_ascii_decimal(token, context=f"XJTU-SY CSV {path.name}")
             rows += 1
     if rows != _SAMPLES_PER_WINDOW:
         raise ValueError(
