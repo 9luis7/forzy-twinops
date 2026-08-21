@@ -87,7 +87,10 @@ def test_deploy_settings_keep_complete_ml_trust_anchors():
     settings = SettingsV2.from_env(
         {
             "TWINOPS_UPSTREAM_BASE_URL": "https://example.invalid",
-            "DATABASE_URL": "postgresql://twinops:secret@example.invalid/twinops",
+            "DATABASE_URL": (
+                "postgresql://twinops:secret@example-pooler.invalid/twinops"
+                "?sslmode=require"
+            ),
             "TWINOPS_ML_ARTIFACT_PATH": "artifacts/ml/real-forzy",
             "TWINOPS_ML_MANIFEST_HASH": f"sha256:{'1' * 64}",
             "TWINOPS_ML_MODEL_HASH": f"sha256:{'2' * 64}",
@@ -96,3 +99,58 @@ def test_deploy_settings_keep_complete_ml_trust_anchors():
 
     assert settings.for_deploy() is settings
     assert settings.ml_artifact_path == Path("artifacts/ml/real-forzy")
+
+
+@pytest.mark.parametrize(
+    ("configured", "normalized"),
+    [
+        ("https://example.ngrok-free.app/", "https://example.ngrok-free.app"),
+        ("https://example.ngrok-free.app:8443", "https://example.ngrok-free.app:8443"),
+        ("https://[2001:db8::1]:8443/", "https://[2001:db8::1]:8443"),
+    ],
+)
+def test_settings_normalize_clean_https_upstream_origins(configured, normalized):
+    settings = SettingsV2.from_env({"TWINOPS_UPSTREAM_BASE_URL": configured})
+
+    assert settings.upstream_base_url == normalized
+
+
+@pytest.mark.parametrize(
+    "configured",
+    [
+        "https://user:secret@example.invalid",
+        "https://example.invalid/path",
+        "https://example.invalid?token=secret",
+        "https://example.invalid#fragment",
+        "https://example.invalid\\@attacker.invalid",
+    ],
+)
+def test_settings_reject_upstream_values_that_are_not_clean_https_origins(configured):
+    with pytest.raises(ValueError, match="clean https origin"):
+        SettingsV2.from_env({"TWINOPS_UPSTREAM_BASE_URL": configured})
+
+
+@pytest.mark.parametrize(
+    "database_url",
+    [
+        (
+            "postgresql://user:secret@example-pooler.invalid/db"
+            "?sslmode=require&sslmode=disable"
+        ),
+        (
+            "postgresql://user:secret@example-pooler.invalid/db"
+            "?sslmode=disable&sslmode=require"
+        ),
+        "postgresql://user:secret@example-pooler.invalid/db",
+    ],
+)
+def test_deploy_settings_reject_missing_or_duplicate_sslmode(database_url):
+    settings = SettingsV2.from_env(
+        {
+            "TWINOPS_UPSTREAM_BASE_URL": "https://example.invalid",
+            "DATABASE_URL": database_url,
+        }
+    )
+
+    with pytest.raises(ValueError, match="one safe sslmode"):
+        settings.for_deploy()

@@ -51,6 +51,20 @@ def test_vercel_function_excludes_local_secrets_and_nonruntime_files():
         assert pattern in exclude_files
 
 
+def test_vercel_upload_context_ignores_agent_metadata():
+    repository_root = Path(__file__).parents[4]
+    ignore_patterns = {
+        line.strip()
+        for line in (repository_root / ".vercelignore")
+        .read_text(encoding="utf-8")
+        .splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    }
+
+    assert ".agents/**" in ignore_patterns
+    assert "skills-lock.json" in ignore_patterns
+
+
 def test_real_runtime_assessment_does_not_import_training_dependencies():
     expected = _run_real_runtime_assessment(block_training_dependencies=False)
     runtime_only = _run_real_runtime_assessment(block_training_dependencies=True)
@@ -65,7 +79,10 @@ def test_vercel_entrypoint_exposes_fastapi_without_external_io(monkeypatch):
     monkeypatch.setenv("VERCEL", "1")
     monkeypatch.setenv("TWINOPS_STARTUP_VALIDATE_ONLY", "1")
     monkeypatch.setenv("TWINOPS_UPSTREAM_BASE_URL", "https://upstream.invalid")
-    monkeypatch.setenv("DATABASE_URL", "postgresql://runtime.invalid/twinops")
+    monkeypatch.setenv(
+        "DATABASE_URL",
+        "postgresql://runtime@runtime-pooler.invalid/twinops?sslmode=require",
+    )
     monkeypatch.setenv("TWINOPS_ML_ARTIFACT_PATH", "artifacts/ml/real-forzy")
     monkeypatch.setenv("TWINOPS_ML_MANIFEST_HASH", f"sha256:{'1' * 64}")
     monkeypatch.setenv("TWINOPS_ML_MODEL_HASH", f"sha256:{'2' * 64}")
@@ -96,7 +113,9 @@ print('imported')
         **os.environ,
         "VERCEL": "1",
         "TWINOPS_UPSTREAM_BASE_URL": "https://upstream.invalid",
-        "DATABASE_URL": "postgresql://runtime.invalid/twinops",
+        "DATABASE_URL": (
+            "postgresql://runtime@runtime-pooler.invalid/twinops?sslmode=require"
+        ),
     }
 
     completed = subprocess.run(

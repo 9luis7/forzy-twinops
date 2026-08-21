@@ -517,6 +517,9 @@ def test_environment_factory_selects_sqlite_and_initializes_in_lifespan(
 def test_environment_factory_selects_postgres_when_database_url_exists(
     monkeypatch,
 ):
+    database_url = (
+        "postgresql://runtime@runtime-pooler.invalid/twinops?sslmode=require"
+    )
     repository = _Repository()
     sqlite_factory = Mock()
     postgres_factory = Mock(return_value=repository)
@@ -530,16 +533,14 @@ def test_environment_factory_selects_postgres_when_database_url_exists(
     app = main_v2.create_app_v2_from_env(
         {
             "TWINOPS_UPSTREAM_BASE_URL": "https://upstream.invalid",
-            "DATABASE_URL": "postgresql://runtime.invalid/twinops",
+            "DATABASE_URL": database_url,
             "VERCEL": "1",
         }
     )
 
     assert app.state.repository is repository
     assert repository.initialized is False
-    postgres_factory.assert_called_once_with(
-        "postgresql://runtime.invalid/twinops"
-    )
+    postgres_factory.assert_called_once_with(database_url)
     sqlite_factory.assert_not_called()
 
 

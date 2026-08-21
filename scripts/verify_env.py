@@ -8,7 +8,8 @@ import math
 import os
 from pathlib import Path
 import sys
-from urllib.parse import parse_qs, urlparse
+
+from twinops.config_v2 import is_secure_pooled_database_url, normalize_https_origin
 
 
 _REQUIRED = (
@@ -77,23 +78,13 @@ def verify_deploy_env(env: Mapping[str, str]) -> DeployEnvReport:
 
 
 def _valid_database_url(value: str) -> bool:
-    try:
-        parsed = urlparse(value)
-        ssl_modes = parse_qs(parsed.query).get("sslmode", [])
-        return (
-            parsed.scheme in {"postgres", "postgresql"}
-            and parsed.hostname is not None
-            and "-pooler" in parsed.hostname
-            and any(mode in {"require", "verify-ca", "verify-full"} for mode in ssl_modes)
-        )
-    except ValueError:
-        return False
+    return is_secure_pooled_database_url(value)
 
 
 def _valid_https_url(value: str) -> bool:
     try:
-        parsed = urlparse(value)
-        return parsed.scheme == "https" and parsed.hostname is not None
+        normalize_https_origin(value)
+        return True
     except ValueError:
         return False
 
