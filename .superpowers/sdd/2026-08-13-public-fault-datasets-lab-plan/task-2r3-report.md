@@ -491,3 +491,41 @@ The remaining operational concern is deliberate: the failed real staging must
 stay preserved until the controller explicitly approves its disposition. A
 new real preparation is forbidden until this corrective SHA receives an
 independent 0 Critical / 0 Important review.
+
+## Consumer-compatible numeric grammar correction after `7c8bf34`
+
+Status: IMPLEMENTED AND LOCALLY VERIFIED; awaiting independent re-review. No
+real archive, extracted CSV, preserved staging, or 7-Zip process was accessed
+or invoked during this correction.
+
+The reviewer identified a producer/consumer mismatch: Python `float()` accepts
+digit separators such as `1_0`, allowing preparation to publish bytes that the
+pandas adapter rejects through `pd.to_numeric(errors="raise")`. The validator
+now strips surrounding token whitespace, requires the exact ASCII decimal
+grammar `^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$`, and only then runs
+the existing float and finiteness gates. Underscores, locale punctuation, and
+Unicode numerals fail closed; ordinary surrounding whitespace and exponents
+remain valid.
+
+### TDD and fresh verification
+
+- RED on the unchanged production code: the two-test E2E selection returned
+  `1 failed, 1 passed in 3.47s`; the underscore case failed with
+  `Failed: DID NOT RAISE <class 'ValueError'>`, while the whitespace/exponent
+  publication-and-adapter round trip already passed.
+- First GREEN plus malformed matrix: `14 passed in 3.42s`. The underscore case
+  now raises before final publication, preserves synthetic staging in place,
+  and creates no `xjtu-sy-v1-*` generation. Named locale-comma and Unicode
+  cases also reject.
+- preparation plus adapter: `116 passed, 2 skipped in 9.09s`;
+- research suite: `351 passed, 5 skipped, 1 warning in 38.07s`;
+- full Python suite: `566 passed, 7 skipped, 2 warnings in 44.36s`;
+- isolated performance gate: `p50=49.39 ms`, `p95=p99=58.28 ms`,
+  `1 passed in 1.13s`;
+- `compileall` and `pip check` passed; pip reported no broken requirements.
+
+The broad-suite warnings remain the pre-existing Starlette/httpx deprecation
+and joblib physical-core fallback. Header validation, exact 32,768-row count,
+two finite columns, raw byte/hash binding, metadata, adapter identity/count,
+determinism, atomic publication, and preserve-in-place failure behavior remain
+covered. Final diff/tracking gates are recorded against the committed SHA.

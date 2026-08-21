@@ -69,6 +69,9 @@ _OFFICIAL_CSV_HEADER = (
 _PREPARATION_SCHEMA_VERSION = 1
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _SEQUENCE_NAME = re.compile(r"^[1-9][0-9]*\.csv$")
+_ASCII_DECIMAL = re.compile(
+    r"^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$", re.ASCII
+)
 _AUTHOR_DOI = "10.3901/JME.2019.16.001"
 
 
@@ -650,10 +653,19 @@ def _validate_numeric_csv(
                 raise ValueError(f"XJTU-SY CSV is not ASCII numeric data: {path.name}") from error
             if tuple(tokens) == _OFFICIAL_CSV_HEADER:
                 raise ValueError(f"XJTU-SY CSV contains a duplicate header: {path.name}")
-            if len(tokens) != 2 or any(not token.strip() for token in tokens):
+            normalized_tokens = tuple(token.strip() for token in tokens)
+            if len(normalized_tokens) != 2 or any(
+                not token for token in normalized_tokens
+            ):
                 raise ValueError(f"XJTU-SY CSV column count must be 2: {path.name}")
+            if any(
+                _ASCII_DECIMAL.fullmatch(token) is None for token in normalized_tokens
+            ):
+                raise ValueError(
+                    f"XJTU-SY CSV contains a non-decimal numeric token: {path.name}"
+                )
             try:
-                values = tuple(float(token) for token in tokens)
+                values = tuple(float(token) for token in normalized_tokens)
             except ValueError as error:
                 raise ValueError(f"XJTU-SY CSV contains nonnumeric data: {path.name}") from error
             if not all(math.isfinite(value) for value in values):

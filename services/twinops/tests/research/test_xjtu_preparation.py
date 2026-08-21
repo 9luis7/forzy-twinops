@@ -692,6 +692,51 @@ def test_csv_numeric_body_remains_two_finite_columns(
         _validate_csv_fixture(tmp_path, monkeypatch, content)
 
 
+def test_decimal_grammar_rejects_underscore_before_publication_and_preserves_staging(
+    tmp_path, monkeypatch
+) -> None:
+    config = _config(tmp_path)
+    underscore_csv = _OFFICIAL_HEADER + b"1_0,2\n3,4\n"
+    _install_small_source(monkeypatch, config, bad_csv=underscore_csv)
+
+    with pytest.raises(ValueError, match="decimal|numeric") as caught:
+        prepare_xjtu_sy(config)
+
+    preserved = _assert_preserved_staging_in_place(config, caught.value)
+    assert preserved.name.startswith(".xjtu-sy-generation-")
+    assert not list(config.destination_root.glob("xjtu-sy-v1-*"))
+
+
+def test_decimal_grammar_whitespace_and_exponents_publish_and_round_trip(
+    tmp_path, monkeypatch
+) -> None:
+    config = _config(tmp_path)
+    compatible_csv = _OFFICIAL_HEADER + b" 1.5 ,1e2\n+2.5,-3E-1\n"
+    specs, _, _, _ = _install_small_source(
+        monkeypatch, config, bad_csv=compatible_csv
+    )
+
+    result = prepare_xjtu_sy(config)
+    metadata = load_metadata(
+        result.metadata_path,
+        expected_sha256=result.metadata_sha256,
+        dataset_id="xjtu-sy",
+        raw_inventory=result.raw_inventory,
+    )
+    target = next(
+        window
+        for window in iter_xjtu(result.raw_root, metadata)
+        if window.bearing_id
+        == f"xjtu-sy-bearing-{specs[0].condition_index}-{specs[0].bearing_index}"
+        and window.sequence_index == 0
+    )
+
+    assert target.acceleration["horizontal"] == pytest.approx([1.5, 2.5])
+    assert target.acceleration["vertical"] == pytest.approx([100.0, -0.3])
+    assert result.generation_root.is_dir()
+    assert not list(config.destination_root.glob(".xjtu-sy-generation-*"))
+
+
 @pytest.mark.parametrize(
     ("bad_content", "reason"),
     [
@@ -705,6 +750,11 @@ def test_csv_numeric_body_remains_two_finite_columns(
         (_OFFICIAL_HEADER + b"1,2\nnot-a-number,3\n", "nonnumeric token"),
         (_OFFICIAL_HEADER + b"1,2\nNaN,3\n", "NaN"),
         (_OFFICIAL_HEADER + b"1,2\nInf,3\n", "infinity"),
+        (_OFFICIAL_HEADER + b'"1,5",2\n3,4\n', "locale decimal comma"),
+        (
+            _OFFICIAL_HEADER + "\uff11,2\n3,4\n".encode("utf-8"),
+            "Unicode numeric token",
+        ),
     ],
 )
 def test_csv_shape_or_content_divergence_never_publishes(

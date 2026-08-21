@@ -234,3 +234,13 @@ attestation was published. The ignored staging state remains preserved at
 `data/public/xjtu-sy/prepared/.xjtu-sy-generation-7x6h7sqm/` for explicit
 controller disposition. This corrective implementation must use synthetic
 fixtures and must not re-run, mutate, promote, move, or delete that real state.
+
+## Consumer-compatible numeric grammar gate -- 2026-08-21
+
+Before publication, each stripped data token must match the ASCII decimal
+grammar `^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$` and then convert to
+a finite float. Surrounding whitespace and decimal exponents remain valid.
+Python-only spellings such as digit separators, locale punctuation, and
+Unicode numerals are rejected so every prepared CSV is consumable by the
+metadata-bound pandas adapter. This gate must be proven with synthetic E2E
+publication tests only; it does not authorize access to preserved real staging.
