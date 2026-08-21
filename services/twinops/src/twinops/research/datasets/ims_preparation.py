@@ -10,7 +10,7 @@ import re
 import shutil
 import stat
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import Any
 
@@ -98,6 +98,25 @@ _RUN_SPECS = (
 
 
 @dataclass(frozen=True, slots=True)
+class _PathObjectIdentity:
+    path: Path
+    device: int
+    inode: int
+    mode: int
+    file_attributes: int
+    reparse_tag: int
+
+
+@dataclass(frozen=True, slots=True)
+class _ExecutableAttestation:
+    path: Path
+    ancestors: tuple[_PathObjectIdentity, ...]
+    file_identity: _PathObjectIdentity
+    size_bytes: int
+    sha256: str
+
+
+@dataclass(frozen=True, slots=True)
 class NasaImsPreparationConfig:
     """Caller-authorized inputs for one deterministic NASA IMS publication."""
 
@@ -107,6 +126,9 @@ class NasaImsPreparationConfig:
     seven_zip_executable: Path
     destination_root: Path
     extraction_limits: RarExtractionLimits = RarExtractionLimits()
+    _seven_zip_attestation: _ExecutableAttestation = field(
+        init=False, repr=False, compare=False
+    )
 
     def __post_init__(self) -> None:
         expected = (
@@ -132,10 +154,16 @@ class NasaImsPreparationConfig:
         destination = Path(self.destination_root)
         if not executable.is_absolute() or not destination.is_absolute():
             raise ValueError("seven_zip_executable and destination_root must be absolute paths")
-        if not executable.is_file():
-            raise ValueError("seven_zip_executable must identify a caller-trusted regular file")
+        try:
+            executable_attestation = _attest_executable(executable)
+        except (OSError, ValueError) as error:
+            raise ValueError(
+                "seven_zip_executable must identify a caller-trusted regular "
+                "non-reparse file with regular non-reparse directory ancestors"
+            ) from error
         object.__setattr__(self, "seven_zip_executable", executable)
         object.__setattr__(self, "destination_root", destination)
+        object.__setattr__(self, "_seven_zip_attestation", executable_attestation)
 
 
 @dataclass(frozen=True, slots=True)
@@ -171,7 +199,17 @@ class _OwnedDirectory:
     inode: int
 
 
-def _directory_identity(path: Path) -> tuple[int, int]:
+@dataclass(frozen=True, slots=True)
+class _DirectoryCreationGuard:
+    device: int
+    inode: int
+    mode: int
+    file_attributes: int
+    reparse_tag: int
+    ctime_ns: int | None
+
+
+def _plain_directory_metadata(path: Path):
     metadata = path.lstat()
     reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
     if (
@@ -180,7 +218,50 @@ def _directory_identity(path: Path) -> tuple[int, int]:
         or (reparse_flag and getattr(metadata, "st_file_attributes", 0) & reparse_flag)
     ):
         raise ValueError(f"NASA IMS publication path must be a regular directory: {path.name}")
-    return metadata.st_dev, metadata.st_ino
+    return metadata
+
+
+def _valid_identity(metadata: Any) -> tuple[int, int]:
+    device = getattr(metadata, "st_dev", None)
+    inode = getattr(metadata, "st_ino", None)
+    if (
+        not isinstance(device, int)
+        or isinstance(device, bool)
+        or device <= 0
+        or not isinstance(inode, int)
+        or isinstance(inode, bool)
+        or inode <= 0
+    ):
+        raise ValueError("NASA IMS publication path has an invalid filesystem identity")
+    return device, inode
+
+
+def _directory_identity(path: Path) -> tuple[int, int]:
+    first = _valid_identity(_plain_directory_metadata(path))
+    second = _valid_identity(_plain_directory_metadata(path))
+    if first != second:
+        raise ValueError("NASA IMS publication path filesystem identity is unstable")
+    return first
+
+
+def _directory_creation_guard(path: Path) -> _DirectoryCreationGuard:
+    def snapshot() -> _DirectoryCreationGuard:
+        metadata = _plain_directory_metadata(path)
+        device, inode = _valid_identity(metadata)
+        return _DirectoryCreationGuard(
+            device=device,
+            inode=inode,
+            mode=metadata.st_mode,
+            file_attributes=getattr(metadata, "st_file_attributes", 0),
+            reparse_tag=getattr(metadata, "st_reparse_tag", 0),
+            ctime_ns=getattr(metadata, "st_ctime_ns", None),
+        )
+
+    first = snapshot()
+    second = snapshot()
+    if first != second:
+        raise ValueError("NASA IMS staging creation identity is unstable")
+    return first
 
 
 def _same_identity(path: Path, owned: _OwnedDirectory) -> bool:
@@ -213,6 +294,75 @@ def _hash_file(path: Path) -> tuple[int, str]:
             size += len(chunk)
             digest.update(chunk)
     return size, digest.hexdigest()
+
+
+def _plain_path_identity(path: Path, *, directory: bool) -> _PathObjectIdentity:
+    metadata = path.lstat()
+    reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+    expected_type = stat.S_ISDIR if directory else stat.S_ISREG
+    if (
+        not expected_type(metadata.st_mode)
+        or stat.S_ISLNK(metadata.st_mode)
+        or (reparse_flag and getattr(metadata, "st_file_attributes", 0) & reparse_flag)
+    ):
+        kind = "directory" if directory else "file"
+        raise ValueError(f"trusted 7z path component must be a regular {kind}")
+    device, inode = _valid_identity(metadata)
+    return _PathObjectIdentity(
+        path=path,
+        device=device,
+        inode=inode,
+        mode=metadata.st_mode,
+        file_attributes=getattr(metadata, "st_file_attributes", 0),
+        reparse_tag=getattr(metadata, "st_reparse_tag", 0),
+    )
+
+
+def _stable_plain_path_identity(path: Path, *, directory: bool) -> _PathObjectIdentity:
+    first = _plain_path_identity(path, directory=directory)
+    second = _plain_path_identity(path, directory=directory)
+    if first != second:
+        raise ValueError("trusted 7z path component identity is unstable")
+    return first
+
+
+def _executable_ancestors(path: Path) -> tuple[Path, ...]:
+    ancestors = tuple(reversed(path.parent.parents)) + (path.parent,)
+    return tuple(dict.fromkeys(ancestors))
+
+
+def _attest_executable(path: Path) -> _ExecutableAttestation:
+    ancestors_before = tuple(
+        _stable_plain_path_identity(ancestor, directory=True)
+        for ancestor in _executable_ancestors(path)
+    )
+    file_before = _stable_plain_path_identity(path, directory=False)
+    size_bytes, sha256 = _hash_file(path)
+    file_after = _stable_plain_path_identity(path, directory=False)
+    ancestors_after = tuple(
+        _stable_plain_path_identity(ancestor, directory=True)
+        for ancestor in _executable_ancestors(path)
+    )
+    if file_before != file_after or ancestors_before != ancestors_after:
+        raise ValueError("trusted 7z executable identity changed during attestation")
+    return _ExecutableAttestation(
+        path=path,
+        ancestors=ancestors_before,
+        file_identity=file_before,
+        size_bytes=size_bytes,
+        sha256=sha256,
+    )
+
+
+def _revalidate_executable(config: NasaImsPreparationConfig) -> Path:
+    expected = config._seven_zip_attestation
+    try:
+        observed = _attest_executable(expected.path)
+    except (OSError, ValueError) as error:
+        raise ValueError("trusted 7z executable changed since config attestation") from error
+    if observed != expected:
+        raise ValueError("trusted 7z executable changed since config attestation")
+    return expected.path
 
 
 def _canonical_member_path(value: object) -> str:
@@ -668,27 +818,28 @@ def _tree_manifest(root: Path) -> tuple[tuple[str, int, str], ...]:
     return tuple(manifest)
 
 
-def _cleanup_owned_directory(owned: _OwnedDirectory) -> None:
-    if not os.path.lexists(owned.path):
+def _cleanup_owned_directory(
+    owned: _OwnedDirectory, *, alternate_paths: tuple[Path, ...] = ()
+) -> None:
+    candidates = tuple(dict.fromkeys((owned.path, *alternate_paths)))
+    existing = tuple(path for path in candidates if os.path.lexists(path))
+    matching = tuple(path for path in existing if _same_identity(path, owned))
+    if not existing:
         return
-    if not _same_identity(owned.path, owned):
+    if len(matching) != 1:
         raise RuntimeError("refusing to remove a NASA IMS directory whose identity changed")
-    shutil.rmtree(owned.path)
-    if os.path.lexists(owned.path):
+    target = matching[0]
+    shutil.rmtree(target)
+    if os.path.lexists(target):
         raise RuntimeError("NASA IMS staging cleanup did not remove the owned directory")
 
 
-def _cleanup_new_empty_staging(path: Path) -> None:
+def _cleanup_new_empty_staging(path: Path, guard: _DirectoryCreationGuard) -> None:
     """Clean the just-created empty path before a stable identity was acquired."""
 
-    metadata = path.lstat()
-    reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
-    if (
-        not stat.S_ISDIR(metadata.st_mode)
-        or stat.S_ISLNK(metadata.st_mode)
-        or (reparse_flag and getattr(metadata, "st_file_attributes", 0) & reparse_flag)
-        or any(path.iterdir())
-    ):
+    if _directory_creation_guard(path) != guard or any(path.iterdir()):
+        raise RuntimeError("refusing to remove an unverified NASA IMS staging path")
+    if _directory_creation_guard(path) != guard:
         raise RuntimeError("refusing to remove an unverified NASA IMS staging path")
     path.rmdir()
     if os.path.lexists(path):
@@ -727,6 +878,7 @@ def prepare_nasa_ims(config: NasaImsPreparationConfig) -> NasaImsPreparationResu
     if not isinstance(config, NasaImsPreparationConfig):
         raise TypeError("config must be NasaImsPreparationConfig")
 
+    _revalidate_executable(config)
     inspected_paths: dict[int, tuple[str, ...]] = {}
     for spec in _RUN_SPECS:
         archive = getattr(config, spec.archive_field)
@@ -738,27 +890,32 @@ def prepare_nasa_ims(config: NasaImsPreparationConfig) -> NasaImsPreparationResu
     _directory_identity(destination_root)
     staging: Path | None = None
     owned: _OwnedDirectory | None = None
+    creation_guard: _DirectoryCreationGuard | None = None
+    final: Path | None = None
     try:
         staging = Path(
             tempfile.mkdtemp(prefix=".nasa-ims-generation-", dir=destination_root)
         )
+        creation_guard = _directory_creation_guard(staging)
         device, inode = _directory_identity(staging)
         owned = _OwnedDirectory(staging, device, inode)
         run_1_spec, run_2_spec, run_3_spec = _RUN_SPECS
+        attested_executable = _revalidate_executable(config)
         run_1_inventory = safe_extract_rar_archive(
             [config.run_1_archive],
             staging / "run-1" / "raw",
             limits=config.extraction_limits,
-            seven_zip_executable=config.seven_zip_executable,
+            seven_zip_executable=attested_executable,
         )
         _validate_inventory(run_1_spec, run_1_inventory, inspected_paths[1])
         _validate_run_tree(run_1_spec, staging / "run-1" / "raw", run_1_inventory)
 
+        attested_executable = _revalidate_executable(config)
         run_2_inventory = safe_extract_rar_archive(
             [config.run_2_archive],
             staging / "run-2" / "raw",
             limits=config.extraction_limits,
-            seven_zip_executable=config.seven_zip_executable,
+            seven_zip_executable=attested_executable,
         )
         _validate_inventory(run_2_spec, run_2_inventory, inspected_paths[2])
         _validate_run_tree(run_2_spec, staging / "run-2" / "raw", run_2_inventory)
@@ -804,7 +961,11 @@ def prepare_nasa_ims(config: NasaImsPreparationConfig) -> NasaImsPreparationResu
         expected_manifest = _tree_manifest(staging)
         final = destination_root / generation_id
         if os.path.lexists(final):
-            if _tree_manifest(final) != expected_manifest:
+            existing_identity = _directory_identity(final)
+            existing_manifest = _tree_manifest(final)
+            if _directory_identity(final) != existing_identity:
+                raise ValueError("existing generation root identity is unstable")
+            if existing_manifest != expected_manifest:
                 raise ValueError("existing generation differs from the deterministic publication")
             _cleanup_owned_directory(owned)
             return _result(
@@ -835,9 +996,12 @@ def prepare_nasa_ims(config: NasaImsPreparationConfig) -> NasaImsPreparationResu
     except BaseException as error:
         try:
             if owned is not None:
-                _cleanup_owned_directory(owned)
+                alternate_paths = (final,) if final is not None else ()
+                _cleanup_owned_directory(owned, alternate_paths=alternate_paths)
             elif staging is not None and os.path.lexists(staging):
-                _cleanup_new_empty_staging(staging)
+                if creation_guard is None:
+                    raise RuntimeError("NASA IMS staging identity was never established")
+                _cleanup_new_empty_staging(staging, creation_guard)
         except BaseException as cleanup_error:
             error.add_note(
                 "NASA IMS owned staging cleanup failed safely "

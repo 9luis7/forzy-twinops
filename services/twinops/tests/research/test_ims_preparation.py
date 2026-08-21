@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import stat
 from datetime import datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -73,6 +74,113 @@ def test_preparation_config_rejects_relative_output_or_executable_paths(
 ) -> None:
     with pytest.raises(ValueError, match="absolute"):
         _config(tmp_path, **{field: Path("relative")})
+
+
+@pytest.mark.parametrize("unsafe_part", ["executable", "ancestor"])
+def test_preparation_config_rejects_reparse_executable_or_ancestor(
+    tmp_path, monkeypatch, unsafe_part
+) -> None:
+    trusted_bin = tmp_path / "trusted-bin"
+    trusted_bin.mkdir()
+    executable = trusted_bin / "7z.exe"
+    executable.write_bytes(b"trusted test executable")
+    unsafe_path = executable if unsafe_part == "executable" else trusted_bin
+    metadata = unsafe_path.lstat()
+    real_lstat = Path.lstat
+
+    def reparse_lstat(path):
+        if path != unsafe_path:
+            return real_lstat(path)
+        return SimpleNamespace(
+            st_mode=metadata.st_mode,
+            st_dev=metadata.st_dev,
+            st_ino=metadata.st_ino,
+            st_size=metadata.st_size,
+            st_ctime_ns=metadata.st_ctime_ns,
+            st_mtime_ns=metadata.st_mtime_ns,
+            st_file_attributes=(
+                getattr(metadata, "st_file_attributes", 0)
+                | getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+            ),
+            st_reparse_tag=getattr(metadata, "st_reparse_tag", 0),
+        )
+
+    monkeypatch.setattr(Path, "lstat", reparse_lstat)
+
+    with pytest.raises(ValueError, match="regular"):
+        _config(tmp_path, seven_zip_executable=executable.resolve())
+
+
+def test_preparation_config_attests_the_exact_executable_bytes(tmp_path) -> None:
+    config = _config(tmp_path)
+
+    assert config._seven_zip_attestation.sha256 == hashlib.sha256(
+        b"trusted test executable"
+    ).hexdigest()
+
+
+def test_prepare_rejects_executable_content_changed_since_config(
+    tmp_path, monkeypatch
+) -> None:
+    _install_small_source(monkeypatch)
+    config = _config(tmp_path)
+    config.seven_zip_executable.write_bytes(b"substitute executable")
+
+    with pytest.raises(ValueError, match="executable changed"):
+        prepare_nasa_ims(config)
+
+    assert not config.destination_root.exists()
+
+
+@pytest.mark.parametrize("changed_part", ["file", "parent"])
+def test_prepare_rejects_same_bytes_replacement_of_executable_or_parent(
+    tmp_path, monkeypatch, changed_part
+) -> None:
+    _install_small_source(monkeypatch)
+    trusted_bin = tmp_path / "trusted-bin"
+    trusted_bin.mkdir()
+    executable = trusted_bin / "7z.exe"
+    executable.write_bytes(b"trusted test executable")
+    config = _config(tmp_path, seven_zip_executable=executable.resolve())
+    if changed_part == "file":
+        executable.rename(trusted_bin / "retired-7z.exe")
+        executable.write_bytes(b"trusted test executable")
+    else:
+        trusted_bin.rename(tmp_path / "retired-bin")
+        trusted_bin.mkdir()
+        executable.write_bytes(b"trusted test executable")
+
+    with pytest.raises(ValueError, match="executable changed"):
+        prepare_nasa_ims(config)
+
+    assert not config.destination_root.exists()
+
+
+def test_executable_is_revalidated_immediately_before_each_extract(
+    tmp_path, monkeypatch
+) -> None:
+    _install_small_source(monkeypatch)
+    config = _config(tmp_path)
+    fake_extract = ims_preparation.safe_extract_rar_archive
+    calls = 0
+
+    def mutate_after_first_extract(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        inventory = fake_extract(*args, **kwargs)
+        if calls == 1:
+            config.seven_zip_executable.write_bytes(b"substitute executable")
+        return inventory
+
+    monkeypatch.setattr(
+        ims_preparation, "safe_extract_rar_archive", mutate_after_first_extract
+    )
+
+    with pytest.raises(ValueError, match="executable changed"):
+        prepare_nasa_ims(config)
+
+    assert calls == 1
+    assert not list(config.destination_root.iterdir())
 
 
 def _specs(*, samples_per_window: int = 2):
@@ -406,6 +514,60 @@ def test_existing_mismatched_generation_is_preserved_and_rejected(tmp_path, monk
     assert not list(config.destination_root.glob(".nasa-ims-generation-*"))
 
 
+@pytest.mark.parametrize("unsafe_kind", ["symlink-mode", "reparse-attribute"])
+def test_existing_generation_root_is_validated_before_manifest_or_idempotency(
+    tmp_path, monkeypatch, unsafe_kind
+) -> None:
+    _install_small_source(monkeypatch)
+    config = _config(tmp_path)
+    first = prepare_nasa_ims(config)
+    metadata = first.generation_root.lstat()
+    real_lstat = Path.lstat
+
+    def unsafe_root_lstat(path):
+        if path != first.generation_root:
+            return real_lstat(path)
+        mode = metadata.st_mode
+        attributes = getattr(metadata, "st_file_attributes", 0)
+        if unsafe_kind == "symlink-mode":
+            mode = stat.S_IFLNK | 0o777
+        else:
+            attributes |= getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+        return SimpleNamespace(
+            st_mode=mode,
+            st_dev=metadata.st_dev,
+            st_ino=metadata.st_ino,
+            st_file_attributes=attributes,
+        )
+
+    monkeypatch.setattr(Path, "lstat", unsafe_root_lstat)
+
+    with pytest.raises(ValueError, match="regular directory"):
+        prepare_nasa_ims(config)
+
+    assert first.run_1_metadata_path.is_file()
+    assert not list(config.destination_root.glob(".nasa-ims-generation-*"))
+
+
+def test_existing_generation_symlink_preserves_its_external_target(tmp_path, monkeypatch) -> None:
+    _install_small_source(monkeypatch)
+    config = _config(tmp_path)
+    first = prepare_nasa_ims(config)
+    external = tmp_path / "external-generation"
+    first.generation_root.rename(external)
+    try:
+        first.generation_root.symlink_to(external, target_is_directory=True)
+    except OSError as error:
+        pytest.skip(f"directory symlinks are unavailable: {error.__class__.__name__}")
+
+    with pytest.raises(ValueError, match="regular directory"):
+        prepare_nasa_ims(config)
+
+    assert first.generation_root.is_symlink()
+    assert (external / "run-1" / "metadata.json").is_file()
+    assert not list(config.destination_root.glob(".nasa-ims-generation-*"))
+
+
 @pytest.mark.parametrize("error", [RuntimeError("stop"), KeyboardInterrupt(), SystemExit(7)])
 def test_pair_publication_rolls_back_the_owned_staging_on_base_exception(
     tmp_path, monkeypatch, error
@@ -442,6 +604,111 @@ def test_staging_identity_failure_cleans_the_new_empty_generation(
         prepare_nasa_ims(config)
 
     assert caught.value is error
+    assert not list(config.destination_root.iterdir())
+
+
+@pytest.mark.parametrize(
+    "identities",
+    [
+        ((17, 0), (17, 0)),
+        ((17, 101), (17, 102)),
+    ],
+    ids=["zero-inode", "unstable"],
+)
+def test_directory_identity_rejects_invalid_or_unstable_values(
+    tmp_path, monkeypatch, identities
+) -> None:
+    path = tmp_path / "owned"
+    path.mkdir()
+    metadata = path.lstat()
+    values = iter(identities)
+    real_lstat = Path.lstat
+
+    def controlled_lstat(candidate):
+        if candidate != path:
+            return real_lstat(candidate)
+        device, inode = next(values)
+        return SimpleNamespace(
+            st_mode=metadata.st_mode,
+            st_dev=device,
+            st_ino=inode,
+            st_file_attributes=getattr(metadata, "st_file_attributes", 0),
+        )
+
+    monkeypatch.setattr(Path, "lstat", controlled_lstat)
+
+    with pytest.raises(ValueError, match="identity"):
+        ims_preparation._directory_identity(path)
+
+
+@pytest.mark.parametrize("error", [RuntimeError("identity"), KeyboardInterrupt(), SystemExit(10)])
+def test_staging_swap_before_identity_never_erases_the_replacement(
+    tmp_path, monkeypatch, error
+) -> None:
+    _install_small_source(monkeypatch)
+    config = _config(tmp_path)
+    real_identity = ims_preparation._directory_identity
+    swapped: dict[str, Path] = {}
+
+    def swap_before_identity(path):
+        if path.name.startswith(".nasa-ims-generation-") and not swapped:
+            displaced = path.with_name(f"{path.name}-displaced")
+            path.rename(displaced)
+            path.mkdir()
+            swapped.update(replacement=path, displaced=displaced)
+            raise error
+        return real_identity(path)
+
+    monkeypatch.setattr(ims_preparation, "_directory_identity", swap_before_identity)
+
+    with pytest.raises(type(error)) as caught:
+        prepare_nasa_ims(config)
+
+    assert caught.value is error
+    assert getattr(caught.value, "__notes__", [])
+    assert swapped["replacement"].is_dir()
+    assert swapped["displaced"].is_dir()
+
+
+@pytest.mark.parametrize("error", [RuntimeError("rename"), KeyboardInterrupt(), SystemExit(11)])
+def test_rename_that_promotes_then_raises_rolls_back_the_final_generation(
+    tmp_path, monkeypatch, error
+) -> None:
+    _install_small_source(monkeypatch)
+    config = _config(tmp_path)
+    real_rename = Path.rename
+
+    def rename_then_raise(source, target):
+        real_rename(source, target)
+        raise error
+
+    monkeypatch.setattr(Path, "rename", rename_then_raise)
+
+    with pytest.raises(type(error)) as caught:
+        prepare_nasa_ims(config)
+
+    assert caught.value is error
+    assert not getattr(caught.value, "__notes__", [])
+    assert not list(config.destination_root.iterdir())
+
+
+@pytest.mark.parametrize("error", [RuntimeError("rename"), KeyboardInterrupt(), SystemExit(12)])
+def test_rename_that_raises_before_mutation_cleans_only_staging(
+    tmp_path, monkeypatch, error
+) -> None:
+    _install_small_source(monkeypatch)
+    config = _config(tmp_path)
+
+    def raise_before_rename(_source, _target):
+        raise error
+
+    monkeypatch.setattr(Path, "rename", raise_before_rename)
+
+    with pytest.raises(type(error)) as caught:
+        prepare_nasa_ims(config)
+
+    assert caught.value is error
+    assert not getattr(caught.value, "__notes__", [])
     assert not list(config.destination_root.iterdir())
 
 

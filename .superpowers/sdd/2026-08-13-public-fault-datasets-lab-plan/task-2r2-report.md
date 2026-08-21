@@ -97,3 +97,75 @@ The new read-only smoke requires both `TWINOPS_NASA_RAR_DIRECTORY` and `TWINOPS_
 Message: `feat: prepare attested NASA IMS runs`.
 
 The final SHA is reported by Git after this report is included in the atomic commit.
+
+## Fix wave - independent review closure (2026-08-21)
+
+### Scope and result
+
+This strict TDD wave starts from `504632e4354b45ea327a2962d6114eb43fbe5817`
+and closes the independent review's four Important findings (zero Critical). The
+public constructor and result serialization remain compatible: the executable
+attestation is a private `init=False`, `repr=False`, `compare=False` config field,
+and no executable path or local identity is added to the public attestation.
+
+### RED evidence
+
+- Post-mutation `Path.rename()` fault injection left the promoted final generation
+  behind for `RuntimeError`, `KeyboardInterrupt`, and `SystemExit`: `3 failed, 3
+  passed`. The three pre-mutation cases were the control passes.
+- Zero-inode and unstable-identity tracers were both accepted, and a swapped empty
+  staging replacement was erased for all three BaseException families: `5 failed`.
+- Simulated symlink-mode and reparse-attribute final roots reached manifest/
+  idempotency without root validation: `2 failed, 1 skipped` (the additional real
+  Windows directory-symlink tracer lacked local privilege).
+- The 7-Zip boundary accepted reparse executable/ancestor paths, had no config
+  attestation, accepted changed bytes and same-byte file/parent replacements, and
+  invoked the second extraction after substitution: `7 failed`.
+
+### Corrections and safety decisions
+
+- Cleanup now searches only the known staging/final candidates for the captured
+  filesystem identity. A rename that mutates and then raises rolls back the owned
+  final tree; a pre-mutation raise removes the owned staging tree. The exact original
+  exception object is re-raised, and a sanitized note is added only if cleanup fails.
+- Directory ownership requires positive integer device/inode values observed stably.
+  The just-created path also receives a stable creation guard before ownership. If
+  that path is replaced, cleanup refuses to erase the replacement and records the
+  cleanup failure on the original exception.
+- Any existing final generation root is validated as a stable plain directory (not
+  symlink, junction, or reparse point) before manifest traversal, then revalidated
+  after traversal. Unsafe roots and their external targets are preserved; only the
+  owned staging candidate is eligible for cleanup.
+- The config now attests the absolute 7-Zip path, every directory ancestor from the
+  filesystem root, the regular executable identity, byte size, and SHA-256. Every
+  component is checked with `lstat` and must be stable/non-symlink/non-reparse. The
+  complete attestation is re-created and compared at preflight and immediately before
+  each run-1/run-2 extraction; the extractor receives the path stored in the verified
+  attestation. Same-byte replacements fail on object or ancestor identity. No local
+  7-Zip path is hardcoded.
+
+### Fresh GREEN and gate evidence
+
+- Focused preparation: `43 passed, 2 skipped in 4.44s`.
+- Research suite: `230 passed, 3 skipped, 1 warning in 36.73s`.
+- Full Python suite: `445 passed, 5 skipped, 2 warnings in 46.27s`.
+- Explicit real-source smoke remained read-only and opt-in: `1 skipped in 2.35s`;
+  no real archive was extracted and no prepared generation was written.
+- Performance gate had one concurrent-load outlier at `p95=100.87 ms`; the immediate
+  isolated fresh rerun passed at `p50=50.86 ms`, `p95=p99=52.69 ms`.
+- `compileall`, `pip check`, `git diff --check`, and the tracked raw/archive/prepared
+  query passed. The only emitted diff notices were existing Windows LF/CRLF notices.
+
+### Self-review and remaining boundary
+
+- All new destructive cleanup remains identity-gated and limited to the task-owned
+  staging/final candidates. Ambiguity preserves data and annotates the original error.
+- The attested executable is revalidated with no application operation between that
+  check and the Task 2R1 path-based extraction call. A kernel-handle execution API
+  would be required to eliminate the final OS scheduling interval; changing the
+  reviewed Task 2R1 public boundary is outside this wave's ownership.
+- Full extraction of the 3,140 real run-1/run-2 files remains deliberately unexecuted.
+  No raw, prepared, archive, deployment, CLI, experiment, or `sources.json` change is
+  part of this fix commit.
+
+Commit message: `fix: harden NASA IMS publication ownership`.
