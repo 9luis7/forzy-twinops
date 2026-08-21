@@ -1,6 +1,6 @@
 {
   "schemaVersion": 2,
-  "generatedAt": "2026-08-21T15:33:13Z",
+  "generatedAt": "2026-08-21T16:10:38Z",
   "experimentConfig": {
     "schemaVersion": 1,
     "configId": "public-fault-real-sources-v1-unconfirmed",
@@ -28,22 +28,38 @@
   "sources": [
     {
       "datasetId": "xjtu-sy",
-      "status": "download_blocked_click_through",
+      "status": "downloaded_multipart_preparation_not_run",
       "landingPage": "https://biaowang.tech/xjtu-sy-bearing-datasets/",
-      "downloadUrl": "https://drive.google.com/open?id=1_ycmG46PARiykt82ShfnFfyQsaXv3_VK",
+      "downloadUrl": "https://drive.google.com/drive/folders/1ueg67JZcIoAM6KiOz1a4XDkh6lh2Y8Ii",
       "citation": "Wang et al., A Hybrid Prognostics Approach for Estimating Remaining Useful Life of Rolling Element Bearings, IEEE Transactions on Reliability, 2020.",
       "license": "The author landing page states the datasets are publicly available and requests the listed citation; it does not display an unambiguous data license.",
       "expectedSha256": null,
-      "archivePath": null,
+      "archivePath": "xjtu-sy/downloads",
       "rawPath": "xjtu-sy/raw",
       "metadataPath": null,
       "expectedMetadataSha256": null,
       "accessedAt": "2026-08-21T11:38:49Z",
-      "notes": "The author-published Google Drive folder exposes six RAR parts. Each direct part request displays the Google Drive Virus scan warning and requires the explicit 'Download anyway' click-through; no part was downloaded or hashed."
+      "archiveParts": [
+        {"relativePath": "XJTU-SY_Bearing_Datasets.part01.rar", "sizeBytes": 744488960, "sha256": "c500657353f089a4ab50212ff4ddfc7b982729e92e2b127440c8ad881d80b968"},
+        {"relativePath": "XJTU-SY_Bearing_Datasets.part02.rar", "sizeBytes": 744488960, "sha256": "4dfa6286a8e9c7cec1e925b347642349f36e27ab3f703c90d1d08977b7b4f61f"},
+        {"relativePath": "XJTU-SY_Bearing_Datasets.part03.rar", "sizeBytes": 744488960, "sha256": "6929f531284f79e0209246b4ee23b23dd8d4faac1c0c3ff8fb131cda4a18bd3a"},
+        {"relativePath": "XJTU-SY_Bearing_Datasets.part04.rar", "sizeBytes": 744488960, "sha256": "2245825acd29bed3b95e7a77879a3fbadf20f4ad4f99486384c714174621597d"},
+        {"relativePath": "XJTU-SY_Bearing_Datasets.part05.rar", "sizeBytes": 744488960, "sha256": "e1b0a41a32b865e48ea7981c56f952a960d94335f3496b72eb4a65932f1671bd"},
+        {"relativePath": "XJTU-SY_Bearing_Datasets.part06.rar", "sizeBytes": 722155640, "sha256": "df1854821a9d481104476379f7bc045ea1e101427c6e36145cd7677dc7c4a684"}
+      ],
+      "archiveInspection": {
+        "format": "rar5-multipart",
+        "volumeCount": 6,
+        "regularFileCount": 9217,
+        "directoryCount": 19,
+        "totalUncompressedBytes": 12220812451,
+        "totalCompressedMemberBytes": 4442768975
+      },
+      "notes": "The user explicitly accepted the Google Drive virus-scan warning and all six author-published RAR5 parts were downloaded and hashed. Read-only inspection found 9,216 CSV files plus one source PDF, with member sequences matching the 15 bearing counts published by the authors. Real preparation and CSV content validation have not run; numeric unit, header, timestamps, per-window state/onset/severity and life fraction remain unknown."
     },
     {
       "datasetId": "nasa-ims",
-      "status": "outer_zip_extracted_nested_rars_preparation_not_run",
+      "status": "prepared_semantically_gated",
       "landingPage": "https://data.nasa.gov/dataset/ims-bearings",
       "downloadUrl": "https://data.nasa.gov/docs/legacy/IMS.zip",
       "citation": "Lee et al., IMS Bearing Data, NASA Ames Prognostics Data Repository, University of Cincinnati.",
@@ -69,7 +85,59 @@
           {"relativePath": "__MACOSX/IMS/._Readme Document for IMS Bearing Data.pdf", "sizeBytes": 212, "sha256": "c557c1b16bca2f691d0c8b6ab326d60b00fd2bc64a5860896bbed00e7209410a"}
         ]
       },
-      "notes": "The official NASA ZIP and outer extracted inventory were verified; rawInventory pins the three nested RARs and source PDF. The accepted Task 2R1 safe RAR boundary and Task 2R2 preparation implementation define expected boundaries of run 1: 2,156 regular files/2,157 total members; run 2: 984/985; and run 3: 6,324/6,326. Real Task 2R2 preparation has not run. Run 3 remains inspection-only quarantine (quarantined_source_contradiction): 4,448 documented plus 1,876 undocumented files, excluded from confirmatory, supervised, and RUL metrics. No prepared generation, prepared inventory, curated metadata, generation ID, metadata hash, or preparation attestation is asserted."
+      "preparation": {
+        "preparedPath": "nasa-ims/prepared/nasa-ims-v1-71cbedb9ec12f18af68eb175ba536c27df9c5de9a96fb4ac36d010f40e70ac0c",
+        "attestationPath": "nasa-ims/prepared/nasa-ims-v1-71cbedb9ec12f18af68eb175ba536c27df9c5de9a96fb4ac36d010f40e70ac0c/attestation.json",
+        "attestationSha256": "b0da8f95a9f877e8a04c7c247dd4cbdf9d3ffc4fd93ee43c3c9f01e026253eb6",
+        "attestation": {
+          "schemaVersion": 1,
+          "datasetId": "nasa-ims",
+          "status": "prepared_semantically_gated",
+          "generationId": "nasa-ims-v1-71cbedb9ec12f18af68eb175ba536c27df9c5de9a96fb4ac36d010f40e70ac0c",
+          "runs": {
+            "run-1": {
+              "status": "prepared",
+              "sourceArchiveSha256": "c25241571583948462a3916d97dc11c984a839f38a0da0907fff18c958c0a484",
+              "rawInventory": {"fileCount": 2156, "totalBytes": 2477767237, "firstPath": "1st_test/2003.10.22.12.06.24", "lastPath": "1st_test/2003.11.25.23.39.56", "inventorySha256": "347863ccf244fb88d6f89303183bfb5af3405fa93f88f0d2f596baf27bc9b42f"},
+              "metadata": {"schemaVersion": 1, "sha256": "21a12273c9575a57a8d816ddf3fd9f134867cfed5fd6af79a2b68138a401bfae"}
+            },
+            "run-2": {
+              "status": "prepared",
+              "sourceArchiveSha256": "b154d5ba1ae5f7f01cdd4f1bde5b08cfdc2f3134d51ad2f6614b1270a86ab632",
+              "rawInventory": {"fileCount": 984, "totalBytes": 544618480, "firstPath": "2nd_test/2004.02.12.10.32.39", "lastPath": "2nd_test/2004.02.19.06.22.39", "inventorySha256": "94bd9093c2301c16cbae27e2c1695207b91c3acfa6bf90187a2f88ae3070ebff"},
+              "metadata": {"schemaVersion": 1, "sha256": "3ff3ce76aee53f0aa57aa193ea6a609d7371100a5bef1db6cbaf4a1eef3b2958"}
+            }
+          },
+          "quarantine": {
+            "status": "quarantined_source_contradiction",
+            "runId": "ims-run-3",
+            "sourceArchiveSha256": "01e9ec83c6c55adc0300a20003a261f9a2ac2b714aae4984050325e589252bc8",
+            "documentedFileCount": 4448,
+            "observedFileCount": 6324,
+            "undocumentedExtensionCount": 1876,
+            "documentedPrefixLastPath": "4th_test/txt/2004.04.04.19.01.57",
+            "firstExtensionPath": "4th_test/txt/2004.04.04.19.11.57",
+            "lastObservedPath": "4th_test/txt/2004.04.18.02.42.55",
+            "includedInConfirmatoryMetrics": false,
+            "includedInSupervisedMetrics": false,
+            "includedInRulMetrics": false
+          },
+          "semanticGates": {
+            "accelerationUnit": "unknown",
+            "axes": "opaque_source_channels",
+            "sourceTimezone": "unknown",
+            "windowState": "unknown",
+            "faultOnset": "unknown",
+            "severity": "unknown",
+            "lifeFraction": null,
+            "trueRul": "unknown",
+            "confirmatoryMetricsEnabled": false,
+            "supervisedMetricsEnabled": false,
+            "rulMetricsEnabled": false
+          }
+        }
+      },
+      "notes": "The official NASA ZIP, nested RARs and source PDF were pinned. Real preparation published and independently revalidated runs 1 and 2 as one immutable generation; run 3 was inspected but not extracted and remains quarantined. The prepared metadata intentionally keeps unit, physical axes, source timezone, per-window state/onset/severity, life fraction and true RUL unknown, so this source is not approved for confirmatory, supervised or RUL metrics."
     }
   ]
 }

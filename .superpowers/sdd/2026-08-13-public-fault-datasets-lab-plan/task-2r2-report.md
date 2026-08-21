@@ -232,3 +232,32 @@ closes two further Important findings from independent re-review.
   registry change, push, or merge was performed.
 
 Commit message: `fix: bind NASA IMS staging ownership`.
+
+## Authorized real execution (2026-08-21)
+
+After the implementation reached independent PASS, the controller authorized the
+exact pinned NASA source paths and the versioned trusted 7-Zip executable. The
+real operation published one immutable generation:
+
+- Generation: `nasa-ims-v1-71cbedb9ec12f18af68eb175ba536c27df9c5de9a96fb4ac36d010f40e70ac0c`.
+- Attestation SHA-256: `b0da8f95a9f877e8a04c7c247dd4cbdf9d3ffc4fd93ee43c3c9f01e026253eb6`.
+- Run 1: `2,156` files, `2,477,767,237` bytes, inventory
+  `347863ccf244fb88d6f89303183bfb5af3405fa93f88f0d2f596baf27bc9b42f`,
+  metadata `21a12273c9575a57a8d816ddf3fd9f134867cfed5fd6af79a2b68138a401bfae`.
+- Run 2: `984` files, `544,618,480` bytes, inventory
+  `94bd9093c2301c16cbae27e2c1695207b91c3acfa6bf90187a2f88ae3070ebff`,
+  metadata `3ff3ce76aee53f0aa57aa193ea6a609d7371100a5bef1db6cbaf4a1eef3b2958`.
+- Generation filesystem: `3,143` regular files and `3,026,617,742` bytes.
+- Run 3 was not extracted; its `4,448 + 1,876 = 6,324` quarantine evidence
+  remains path-free and excluded from confirmatory, supervised, and RUL metrics.
+- Preparation took `467.969 s`; the independent read-only verifier took
+  `219.328 s`; no staging directory remained.
+
+Controller verification freshly reconstructed both raw inventories from the
+published filesystem, ran `load_metadata()` against both pinned metadata hashes,
+matched the embedded attestation byte-for-value, rejected any prepared run-3
+tree, and reproduced all counts and hashes above. The generated directory is
+ignored locally and no raw/prepared file is tracked. `sources.json` records the
+path-free attestation but retains `status="prepared_semantically_gated"`, so the
+research gate remains closed until the experiment semantics are explicitly
+approved.
