@@ -138,8 +138,8 @@ def _load_configured_scorer(settings: SettingsV2) -> AssessmentScorer | None:
             expected_model_hash=settings.ml_model_hash,
         )
     except Exception as exc:
-        logging.getLogger("twinops.api").warning(
-            "assessment_scorer_unavailable error_type=%s",
+        logging.getLogger("twinops.api").error(
+            "assessment_scorer_startup_failed error_type=%s",
             type(exc).__name__,
         )
-        return None
+        raise RuntimeError("assessment_scorer_startup_failed") from None

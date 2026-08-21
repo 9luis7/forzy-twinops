@@ -517,6 +517,9 @@ def test_environment_factory_selects_sqlite_and_initializes_in_lifespan(
 def test_environment_factory_selects_postgres_when_database_url_exists(
     monkeypatch,
 ):
+    database_url = (
+        "postgresql://runtime@runtime-pooler.invalid/twinops?sslmode=require"
+    )
     repository = _Repository()
     sqlite_factory = Mock()
     postgres_factory = Mock(return_value=repository)
@@ -530,16 +533,14 @@ def test_environment_factory_selects_postgres_when_database_url_exists(
     app = main_v2.create_app_v2_from_env(
         {
             "TWINOPS_UPSTREAM_BASE_URL": "https://upstream.invalid",
-            "DATABASE_URL": "postgresql://runtime.invalid/twinops",
+            "DATABASE_URL": database_url,
             "VERCEL": "1",
         }
     )
 
     assert app.state.repository is repository
     assert repository.initialized is False
-    postgres_factory.assert_called_once_with(
-        "postgresql://runtime.invalid/twinops"
-    )
+    postgres_factory.assert_called_once_with(database_url)
     sqlite_factory.assert_not_called()
 
 
@@ -632,10 +633,10 @@ def test_runtime_loads_scorer_only_with_all_three_anchors(
         assert app.state.assessment_scorer is scorer
 
 
-def test_runtime_keeps_telemetry_available_when_scorer_loader_fails(
+def test_runtime_fails_closed_when_configured_scorer_loader_fails(
     monkeypatch, tmp_path, caplog
 ):
-    caplog.set_level("WARNING", logger="twinops.api")
+    caplog.set_level("ERROR", logger="twinops.api")
     repository = _Repository()
     scorer_loader = Mock(
         side_effect=RuntimeError(
@@ -663,20 +664,17 @@ def test_runtime_keeps_telemetry_available_when_scorer_loader_fails(
         clock=lambda: NOW_IN_WINDOW,
     )
 
-    with TestClient(app) as client:
-        snapshot = client.get(
-            "/api/v2/assets/forzy-motor-01/snapshot"
-        )
-        health = client.get("/api/v2/integration/health")
+    with pytest.raises(
+        RuntimeError,
+        match="assessment_scorer_startup_failed",
+    ) as captured:
+        with TestClient(app):
+            pass
 
-    assert snapshot.status_code == 200
-    assert snapshot.json()["assessment"] is None
-    assert health.status_code == 200
-    assert health.json()["status"] == "ok"
-    assert "internal.example" not in snapshot.text + health.text
-    assert "Traceback" not in snapshot.text + health.text
-    assert "secret" not in snapshot.text + health.text
-    assert "assessment_scorer_unavailable error_type=RuntimeError" in caplog.text
+    assert "internal.example" not in str(captured.value)
+    assert "Traceback" not in str(captured.value)
+    assert "secret" not in str(captured.value)
+    assert "assessment_scorer_startup_failed error_type=RuntimeError" in caplog.text
     assert "internal.example" not in caplog.text
     assert "Traceback" not in caplog.text
     assert "secret" not in caplog.text

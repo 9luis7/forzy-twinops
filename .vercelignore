@@ -1,7 +1,32 @@
-# Arquivos que não precisam subir no deploy (CLI). O build da Vercel gera o dist.
-node_modules
-dist
-*.local
+# Fontes e saídas locais que não pertencem ao bundle demonstrativo.
+.worktrees/**
+.agents/**
+**/.agents/**
+.superpowers/**
+skills-lock.json
+data/**
+docs/**
+notebooks/**
+node_modules/**
+dist/**
+services/twinops/.venv/**
+**/__pycache__/**
+**/.pytest_cache/**
+**/.ruff_cache/**
+**/*.py[cod]
 .env
 .env.*
 !.env.example
+
+# O runtime usa somente o bundle ML real fixado abaixo.
+artifacts/**
+!artifacts/ml/
+!artifacts/ml/real-forzy/
+!artifacts/ml/real-forzy/pipeline.joblib
+!artifacts/ml/real-forzy/pipeline-config.json
+!artifacts/ml/real-forzy/backtest-report.json
+!artifacts/ml/real-forzy/model-card.md
+!artifacts/ml/real-forzy/feature-manifest.json
+
+# Os recursos web do mesmo conjunto motor-bomba permanecem publicáveis.
+!public/models/**
