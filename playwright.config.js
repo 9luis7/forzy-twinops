@@ -1,5 +1,22 @@
 import { defineConfig, devices } from "@playwright/test";
 
+const rawDeploymentUrl = process.env.DEPLOYMENT_URL?.trim();
+let deploymentUrl;
+if (rawDeploymentUrl) {
+  const candidate = new URL(rawDeploymentUrl);
+  if (
+    candidate.protocol !== "https:"
+    || candidate.username
+    || candidate.password
+    || candidate.pathname !== "/"
+    || candidate.search
+    || candidate.hash
+  ) {
+    throw new Error("DEPLOYMENT_URL must be a credential-free HTTPS origin");
+  }
+  deploymentUrl = candidate.origin;
+}
+
 export default defineConfig({
   testDir: "./tests/e2e",
   timeout: 180_000,
@@ -8,7 +25,7 @@ export default defineConfig({
   workers: 1,
   reporter: "list",
   use: {
-    baseURL: "http://127.0.0.1:4173",
+    baseURL: deploymentUrl || "http://127.0.0.1:4173",
     screenshot: "only-on-failure",
     trace: "retain-on-failure",
   },
@@ -18,7 +35,7 @@ export default defineConfig({
       use: { ...devices["Desktop Chrome"], channel: "chrome" },
     },
   ],
-  webServer: [
+  webServer: deploymentUrl ? undefined : [
     {
       command:
         "services\\twinops\\.venv\\Scripts\\python.exe scripts\\e2e_backend.py",
