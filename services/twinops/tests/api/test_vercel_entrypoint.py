@@ -42,10 +42,10 @@ def test_vercel_function_excludes_local_secrets_and_nonruntime_files():
     exclude_files = config["functions"]["api/index.py"]["excludeFiles"]
 
     for pattern in (
-        ".env",
-        ".env.*",
-        ".agents/**",
-        "services/twinops/tests/**",
+        ".env*",
+        ".superpowers/**",
+        "**/{.agents,test,tests}/**",
+        "{contracts,docs,evals,notebooks,scripts,src,tools}/**",
         "real-forzy/source-summary.json",
     ):
         assert pattern in exclude_files
@@ -62,6 +62,7 @@ def test_vercel_upload_context_ignores_agent_metadata():
     }
 
     assert ".agents/**" in ignore_patterns
+    assert ".superpowers/**" in ignore_patterns
     assert "skills-lock.json" in ignore_patterns
 
 

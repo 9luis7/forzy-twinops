@@ -26,7 +26,11 @@ vercel env run -- services\twinops\.venv\Scripts\python.exe scripts\check_postgr
 ```
 
 O script aceita exclusivamente a migration versionada
-`002_real_twin_v2.sql`, pode ser repetido de forma idempotente e valida:
+`002_real_twin_v2.sql`. Antes de ler ou executar o SQL, runtime e script fazem
+um check read-only dos catálogos. Se o schema estiver incompleto, ambos usam a
+mesma chave fixa de `pg_advisory_xact_lock`, repetem o check dentro da transação
+e só então executam a migration exata. Assim, banco atual não repete DDL ou
+backfill e cold starts concorrentes ficam serializados. O script também valida:
 
 - as cinco tabelas v2;
 - os dois índices operacionais;

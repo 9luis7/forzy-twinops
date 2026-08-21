@@ -7,7 +7,7 @@
   "functions": {
     "api/index.py": {
       "includeFiles": "{services/twinops/{src/twinops/**,migrations/002_real_twin_v2.sql},artifacts/ml/real-forzy/{pipeline.joblib,pipeline-config.json,backtest-report.json,model-card.md,feature-manifest.json}}",
-      "excludeFiles": "{.agents/**,.env,.env.*,artifacts/{ml/{*.json,*.joblib,*.md,real-forzy/source-summary.json},ml-public/**,twin3d/**},contracts/**,docs/**,evals/**,notebooks/**,scripts/**,services/twinops/tests/**,skills-lock.json,src/**,tests/**,tools/**}"
+      "excludeFiles": "{**/{.agents,test,tests}/**,.env*,.superpowers/**,artifacts/{ml/{*.json,*.joblib,*.md,real-forzy/source-summary.json},ml-public/**,twin3d/**},{contracts,docs,evals,notebooks,scripts,src,tools}/**,skills-lock.json}"
     }
   },
   "rewrites": [

@@ -1,6 +1,8 @@
 # Fontes e saídas locais que não pertencem ao bundle demonstrativo.
 .worktrees/**
 .agents/**
+**/.agents/**
+.superpowers/**
 skills-lock.json
 data/**
 docs/**
