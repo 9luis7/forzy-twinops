@@ -325,3 +325,88 @@ retained Git blob hash
 `56a6c9c850366c93f4dbf53bdab6830066a6a6b0`. No downloaded archive,
 prepared directory, operational artifact, production CLI, experiment, NASA,
 or deploy file was changed.
+
+## Independent re-review fix wave 3 on `d7bcfc`
+
+Status: IMPLEMENTED AND LOCALLY VERIFIED; awaiting another independent
+re-review. No real XJTU-SY data, 7-Zip process, extraction, download, push, or
+merge was used.
+
+This section supersedes the cleanup/quarantine disposition described for the
+earlier implementation SHAs. Those sections remain historical evidence only:
+the current contract performs no error-path rename, move, or deletion. Failed
+preparation state is preserved at its current pathname for controller-reviewed
+manual disposal.
+
+### Reviewer reproductions and RED evidence
+
+Before production changed, the focused selection returned `13 failed, 87
+deselected in 4.70s`:
+
+- 12 cases crossed nonempty/empty staging, `RuntimeError`/
+  `KeyboardInterrupt`/`SystemExit`, and `Path.rename`/`os.rename` tracers. The
+  old quarantine path invoked rename and the tracer could move a controller
+  replacement through the cleanup pathname;
+- the idempotent fast path reconstructed files as the private lookalike
+  `_ReconstructedRawFile`, so the second result did not have the exact public
+  `RawFile` values or `RawInventory` equality of the first result.
+
+After the minimum production changes, the identical selection returned `13
+passed, 87 deselected in 3.29s`. The obsolete 12-case matrix whose asserted
+contract required a quarantine rename was removed; the current 12-case matrix
+requires zero calls to both rename APIs. This replaces the prior six-case
+swap tracer and accounts for the net reduction of six collected module cases.
+The final post-migration selection returned `13 passed, 75 deselected in
+2.82s`.
+
+### Error disposition and public inventory type
+
+- Once staging exists, the `BaseException` handler performs no pathname
+  lookup, identity check, rename, move, delete, quarantine, `rmtree`, or
+  `rmdir`. It adds one constant path-free note and uses a bare `raise`, so the
+  observed exception remains the exact primary object by `is`.
+- The note helper catches every `BaseException` from missing or hostile
+  `add_note`; a note failure can never mask the primary. The message exposes no
+  local path, exception detail, host value, or credential.
+- The reviewer tracers prove zero `Path.rename` and zero `os.rename` calls in
+  error handling. The owned directory, its nonempty sentinel (or empty state),
+  the controller replacement, and its sentinel all remain at their original
+  paths for all three exception classes. No cleanup/quarantine path is
+  created.
+- Normal successful publication retains its single atomic staging-to-final
+  rename. If that promotion mutates and then raises, error handling leaves the
+  promoted state exactly where the filesystem placed it and annotates the
+  primary for manual disposition.
+- `RawFile` is now the explicitly authorized sixth public `downloads.py`
+  import. The idempotent fast path constructs `RawInventory.files` from real
+  `RawFile` objects; the second result now has exact file types and dataclass
+  equality with the first result. `_ReconstructedRawFile` was removed, and no
+  private Task 2R1 helper is imported.
+- Exact-generation idempotency still validates the complete generation before
+  returning, performs no second extraction, creates no staging directory, and
+  never enters the error-preservation note path.
+
+### Fresh verification after fix wave 3
+
+- focused preparation module: `87 passed, 1 skipped in 8.54s`;
+- focused preparation plus adapter: `94 passed, 1 skipped in 7.71s`;
+- focused public-fault CLI regression: `14 passed in 21.86s`;
+- research suite: `329 passed, 4 skipped, 1 warning in 39.04s`;
+- first full run on the final test diff had all functional tests pass but the
+  known environment-sensitive performance case missed by 1.93 ms
+  (`p95=101.93 ms`; `1 failed, 543 passed, 6 skipped`); its immediate isolated
+  rerun passed at `p50=48.07 ms`, `p95=p99=49.15 ms` in `0.98s`;
+- fresh full Python rerun: `544 passed, 6 skipped, 2 warnings in 49.70s`;
+- explicit real-source smoke: `1 skipped in 1.91s`; both opt-in environment
+  variables were absent, so no real archive was read and no 7-Zip process or
+  destination was created;
+- `compileall`, `pip check`, `git diff --check`, and tracking gates passed.
+
+The broad-suite warnings remain the pre-existing Starlette/httpx deprecation
+and joblib physical-core fallback. `data/public/sources.json` retained Git blob
+hash `56a6c9c850366c93f4dbf53bdab6830066a6a6b0`. The only current concern is
+intentional and fail-safe: a failed real preparation can preserve a large
+staging or post-promotion tree in place, which requires explicit manual
+disposition after identity and content review. No downloaded archive,
+prepared directory, operational artifact, CLI production code, experiment,
+NASA, or deploy file changed in this wave.

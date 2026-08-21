@@ -7,7 +7,6 @@ import json
 import math
 import os
 import re
-import secrets
 import stat
 import tempfile
 from dataclasses import dataclass, field
@@ -17,6 +16,7 @@ from typing import Any
 from twinops.research.downloads import (
     ArchivePart,
     RarExtractionLimits,
+    RawFile,
     RawInventory,
     inspect_rar_archive,
     safe_extract_rar_archive,
@@ -178,13 +178,6 @@ class _PublicationManifestEntry:
     kind: str
     size_bytes: int | None = None
     sha256: str | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class _ReconstructedRawFile:
-    relative_path: str
-    size_bytes: int
-    sha256: str
 
 
 def _valid_identity_values(device: object, inode: object) -> tuple[int, int]:
@@ -1128,111 +1121,11 @@ def _assert_publication_manifest(
         raise ValueError(f"{context} identity changed during manifest reconciliation")
 
 
-def _locate_owned_directory(
-    owned: _OwnedDirectory, candidates: tuple[Path, ...]
-) -> Path | None:
-    existing = tuple(
-        path for path in dict.fromkeys(candidates) if os.path.lexists(path)
-    )
-    matching = tuple(path for path in existing if _same_identity(path, owned))
-    if not existing:
-        return None
-    if len(matching) != 1:
-        raise RuntimeError("refusing to remove an XJTU-SY directory whose identity changed")
-    return matching[0]
-
-
-def _fresh_cleanup_path(parent: Path) -> Path:
-    for _ in range(16):
-        candidate = parent / f".xjtu-sy-cleanup-{secrets.token_hex(16)}"
-        if not os.path.lexists(candidate):
-            return candidate
-    raise RuntimeError("could not allocate an exclusive XJTU-SY cleanup quarantine")
-
-
-def _quarantine_owned_directory(
-    owned: _OwnedDirectory,
-    *,
-    alternate_paths: tuple[Path, ...] = (),
-) -> Path | None:
-    candidates = tuple(dict.fromkeys((owned.path, *alternate_paths)))
-    source = _locate_owned_directory(owned, candidates)
-    if source is None:
-        return None
-    quarantine = _fresh_cleanup_path(source.parent)
-    all_candidates = (*candidates, quarantine)
-
-    try:
-        source.rename(quarantine)
-    except BaseException:
-        located = _locate_owned_directory(owned, all_candidates)
-        if located == quarantine:
-            return quarantine
-        if located != source:
-            raise RuntimeError(
-                "XJTU-SY cleanup rename left the owned identity in an ambiguous state"
-            )
-        try:
-            os.rename(source, quarantine)
-        except BaseException as fallback_error:
-            located = _locate_owned_directory(owned, all_candidates)
-            if located != quarantine:
-                raise RuntimeError(
-                    "XJTU-SY cleanup could not quarantine the owned identity"
-                ) from fallback_error
-    else:
-        located = _locate_owned_directory(owned, all_candidates)
-        if located != quarantine:
-            raise RuntimeError(
-                "XJTU-SY cleanup rename did not quarantine the owned identity"
-            )
-
-    if not _same_identity(quarantine, owned):
-        raise RuntimeError("XJTU-SY cleanup quarantine identity changed")
-    return quarantine
-
-
-def _cleanup_owned_directory(
-    owned: _OwnedDirectory, *, alternate_paths: tuple[Path, ...] = ()
-) -> None:
-    quarantine = _quarantine_owned_directory(
-        owned, alternate_paths=alternate_paths
-    )
-    if quarantine is None:
-        return
-    if not _same_identity(quarantine, owned):
-        raise RuntimeError("XJTU-SY cleanup quarantine identity changed")
-    raise RuntimeError(
-        "XJTU-SY cleanup quarantine preserved because no identity-bound "
-        "directory removal primitive is available"
-    )
-
-
-def _cleanup_new_empty_staging(path: Path, guard: _DirectoryCreationGuard) -> None:
-    if _directory_creation_guard(path) != guard or any(path.iterdir()):
-        raise RuntimeError("refusing to remove an unverified XJTU-SY staging path")
-    if _directory_creation_guard(path) != guard:
-        raise RuntimeError("refusing to remove an unverified XJTU-SY staging path")
-    owned = _OwnedDirectory(path, guard.device, guard.inode)
-    quarantine = _quarantine_owned_directory(owned)
-    if quarantine is None:
-        return
-    if not _same_identity(quarantine, owned):
-        raise RuntimeError("XJTU-SY empty cleanup quarantine identity changed")
-    raise RuntimeError(
-        "XJTU-SY cleanup quarantine preserved because no identity-bound "
-        "directory removal primitive is available"
-    )
-
-
-def _add_cleanup_failure_note(error: BaseException, cleanup_error: BaseException) -> None:
+def _add_preserved_preparation_state_note(error: BaseException) -> None:
     try:
         add_note = getattr(error, "add_note", None)
         if callable(add_note):
-            add_note(
-                "XJTU-SY owned staging cleanup failed safely "
-                f"({cleanup_error.__class__.__name__})"
-            )
+            add_note("XJTU-SY preparation state preserved in place for manual disposal")
     except BaseException:
         return
 
@@ -1319,7 +1212,7 @@ def _existing_generation_candidate(destination_root: Path) -> Path | None:
 def _inventory_from_publication_manifest(
     manifest: tuple[_PublicationManifestEntry, ...],
 ) -> RawInventory:
-    files: list[_ReconstructedRawFile] = []
+    files: list[RawFile] = []
     for entry in manifest:
         if entry.kind != "file" or not entry.relative_path.startswith("raw/"):
             continue
@@ -1327,7 +1220,7 @@ def _inventory_from_publication_manifest(
             raise ValueError("existing XJTU-SY raw manifest entry is incomplete")
         relative_path = entry.relative_path.removeprefix("raw/")
         files.append(
-            _ReconstructedRawFile(
+            RawFile(
                 relative_path=relative_path,
                 size_bytes=entry.size_bytes,
                 sha256=entry.sha256,
@@ -1435,9 +1328,6 @@ def prepare_xjtu_sy(config: XjtuSyPreparationConfig) -> XjtuSyPreparationResult:
     if existing is not None:
         return existing
     staging: Path | None = None
-    owned: _OwnedDirectory | None = None
-    creation_guard: _DirectoryCreationGuard | None = None
-    final: Path | None = None
     try:
         staging = Path(
             tempfile.mkdtemp(prefix=".xjtu-sy-generation-", dir=destination_root)
@@ -1527,14 +1417,6 @@ def prepare_xjtu_sy(config: XjtuSyPreparationConfig) -> XjtuSyPreparationResult:
         )
         return result
     except BaseException as error:
-        try:
-            if owned is not None:
-                alternate_paths = (final,) if final is not None else ()
-                _cleanup_owned_directory(owned, alternate_paths=alternate_paths)
-            elif staging is not None and os.path.lexists(staging):
-                if creation_guard is None:
-                    raise RuntimeError("XJTU-SY staging identity was never established")
-                _cleanup_new_empty_staging(staging, creation_guard)
-        except BaseException as cleanup_error:
-            _add_cleanup_failure_note(error, cleanup_error)
+        if staging is not None:
+            _add_preserved_preparation_state_note(error)
         raise

@@ -49,8 +49,9 @@ exact order:
 | `part06.rar` | 722155640 | `df1854821a9d481104476379f7bc045ea1e101427c6e36145cd7677dc7c4a684` |
 
 The accepted Task 2R1 public surface is limited to `ArchivePart`,
-`RarExtractionLimits`, `RawInventory`, `inspect_rar_archive`, and
-`safe_extract_rar_archive`. Never import its private helpers.
+`RarExtractionLimits`, `RawFile`, `RawInventory`, `inspect_rar_archive`, and
+`safe_extract_rar_archive`. `RawFile` is used to reconstruct the exact public
+inventory type on the idempotent fast path. Never import private helpers.
 
 Use an explicit task-owned limit with
 `max_total_uncompressed_bytes=64 * 1024**3`; retain the existing member-count,
@@ -105,9 +106,10 @@ xjtu-sy/prepared/<generation-id>/
 Existing exact generations are fully re-attested and returned idempotently.
 Existing divergent generations, links, junctions, reparse roots, or ambiguous
 ownership are preserved and rejected. On any `BaseException`, preserve the
-same exception object; cleanup only paths proven task-owned, and defensive
-notes must never mask the primary exception. Cover rename-before-raise and
-identity swaps explicitly.
+same exception object. After staging exists, error handling must not rename,
+move, or delete any pathname: preserve staging/final state in situ for manual
+disposal and add only a sanitized defensive note that can never mask the
+primary exception. Cover rename-before-raise and identity swaps explicitly.
 
 ## Content validation and metadata
 
@@ -181,7 +183,8 @@ Start with RED tests for:
    life fraction, or RUL.
 6. Cross-root determinism, idempotency, divergent final preservation,
    link/reparse roots, pre/post-rename `RuntimeError`, `KeyboardInterrupt`, and
-   `SystemExit`, identity swaps, cleanup failure, and note failure.
+   `SystemExit`, identity swaps, zero path-mutation error handling, and note
+   failure.
 7. Attestation is path-free and all metric gates stay closed.
 8. Real-source smoke is read-only inspection only, opt-in with explicit archive
    directory and trusted 7-Zip path; it skips otherwise and writes nothing.

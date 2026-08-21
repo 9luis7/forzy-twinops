@@ -9,7 +9,12 @@ from types import SimpleNamespace
 
 import pytest
 
-from twinops.research.downloads import ArchivePart, RarExtractionLimits, RawFile, RawInventory
+from twinops.research.downloads import (
+    ArchivePart,
+    RarExtractionLimits,
+    RawFile,
+    RawInventory,
+)
 from twinops.research.datasets import xjtu_preparation
 from twinops.research.datasets.xjtu import iter_xjtu
 from twinops.research.datasets.xjtu_preparation import (
@@ -427,18 +432,20 @@ def _install_small_source(
     return specs, contents, events, lambda: extract_calls
 
 
-def _assert_preserved_cleanup_quarantine(
+def _assert_preserved_staging_in_place(
     config: XjtuSyPreparationConfig, error: BaseException
 ) -> Path:
-    quarantines = list(config.destination_root.glob(".xjtu-sy-cleanup-*"))
-    assert len(quarantines) == 1
-    assert quarantines[0].is_dir()
+    assert not list(config.destination_root.glob(".xjtu-sy-cleanup-*"))
+    preserved = [
+        path for path in config.destination_root.iterdir() if path.is_dir()
+    ]
+    assert len(preserved) == 1
     notes = getattr(error, "__notes__", [])
     assert notes
     serialized_notes = " ".join(notes)
-    assert "cleanup" in serialized_notes
+    assert "preserved" in serialized_notes
     assert os.fspath(config.destination_root) not in serialized_notes
-    return quarantines[0]
+    return preserved[0]
 
 
 def test_prepare_inspects_before_any_write_and_extracts_all_six_parts_once(
@@ -594,7 +601,7 @@ def test_csv_shape_or_content_divergence_never_publishes(
     with pytest.raises(ValueError, match="CSV") as caught:
         prepare_xjtu_sy(config)
 
-    _assert_preserved_cleanup_quarantine(config, caught.value)
+    _assert_preserved_staging_in_place(config, caught.value)
 
 
 def test_author_registry_drives_exact_condition_totals_and_terminal_evidence() -> None:
@@ -645,7 +652,7 @@ def test_executable_is_revalidated_immediately_before_the_single_extract(
     with pytest.raises(ValueError, match="executable changed") as caught:
         prepare_xjtu_sy(config)
 
-    _assert_preserved_cleanup_quarantine(config, caught.value)
+    _assert_preserved_staging_in_place(config, caught.value)
 
 
 def test_preparation_is_deterministic_across_destination_roots(
@@ -728,7 +735,7 @@ def test_existing_generation_reparse_root_is_rejected_before_manifest(
 
 
 @pytest.mark.parametrize("error", [RuntimeError("extract"), KeyboardInterrupt(), SystemExit(7)])
-def test_extraction_base_exception_preserves_object_and_quarantines_owned_staging(
+def test_extraction_base_exception_preserves_object_and_staging_in_place(
     tmp_path, monkeypatch, error
 ) -> None:
     config = _config(tmp_path)
@@ -738,11 +745,11 @@ def test_extraction_base_exception_preserves_object_and_quarantines_owned_stagin
         prepare_xjtu_sy(config)
 
     assert caught.value is error
-    _assert_preserved_cleanup_quarantine(config, error)
+    _assert_preserved_staging_in_place(config, error)
 
 
 @pytest.mark.parametrize("error", [RuntimeError("rename"), KeyboardInterrupt(), SystemExit(8)])
-def test_rename_that_promotes_then_raises_quarantines_owned_final(
+def test_rename_that_promotes_then_raises_preserves_owned_final_in_place(
     tmp_path, monkeypatch, error
 ) -> None:
     config = _config(tmp_path)
@@ -759,11 +766,11 @@ def test_rename_that_promotes_then_raises_quarantines_owned_final(
         prepare_xjtu_sy(config)
 
     assert caught.value is error
-    _assert_preserved_cleanup_quarantine(config, error)
+    _assert_preserved_staging_in_place(config, error)
 
 
 @pytest.mark.parametrize("error", [RuntimeError("rename"), KeyboardInterrupt(), SystemExit(9)])
-def test_rename_that_raises_before_mutation_quarantines_only_staging(
+def test_rename_that_raises_before_mutation_preserves_only_staging_in_place(
     tmp_path, monkeypatch, error
 ) -> None:
     config = _config(tmp_path)
@@ -778,11 +785,11 @@ def test_rename_that_raises_before_mutation_quarantines_only_staging(
         prepare_xjtu_sy(config)
 
     assert caught.value is error
-    _assert_preserved_cleanup_quarantine(config, error)
+    _assert_preserved_staging_in_place(config, error)
 
 
 @pytest.mark.parametrize("error", [RuntimeError("identity"), KeyboardInterrupt(), SystemExit(10)])
-def test_first_staging_identity_failure_quarantines_only_new_empty_directory(
+def test_first_staging_identity_failure_preserves_new_empty_directory_in_place(
     tmp_path, monkeypatch, error
 ) -> None:
     config = _config(tmp_path)
@@ -803,7 +810,7 @@ def test_first_staging_identity_failure_quarantines_only_new_empty_directory(
         prepare_xjtu_sy(config)
 
     assert caught.value is error
-    _assert_preserved_cleanup_quarantine(config, error)
+    _assert_preserved_staging_in_place(config, error)
 
 
 @pytest.mark.parametrize(
@@ -943,7 +950,7 @@ def test_zero_identity_returned_during_binding_fails_before_extract(
 
     assert events == ["inspect"]
     assert extraction_count() == 0
-    _assert_preserved_cleanup_quarantine(config, caught.value)
+    _assert_preserved_staging_in_place(config, caught.value)
 
 
 class _HostileAddNoteError(RuntimeError):
@@ -958,7 +965,7 @@ class _HostileAddNoteError(RuntimeError):
 @pytest.mark.parametrize(
     "note_error", [RuntimeError("note"), KeyboardInterrupt(), SystemExit(13)]
 )
-def test_cleanup_note_failure_never_masks_original_base_exception(
+def test_preservation_note_failure_never_masks_original_base_exception(
     tmp_path, monkeypatch, note_error
 ) -> None:
     config = _config(tmp_path)
@@ -1048,7 +1055,7 @@ def test_extracted_inventory_byte_total_must_match_the_inspected_archive(
     with pytest.raises(ValueError, match="byte count|inspection") as caught:
         prepare_xjtu_sy(config)
 
-    _assert_preserved_cleanup_quarantine(config, caught.value)
+    _assert_preserved_staging_in_place(config, caught.value)
 
 
 def test_extracted_raw_root_must_be_plain_non_reparse_before_content_reads(
@@ -1090,7 +1097,7 @@ def test_extracted_raw_root_must_be_plain_non_reparse_before_content_reads(
         prepare_xjtu_sy(config)
 
     assert content_reads == 0
-    _assert_preserved_cleanup_quarantine(config, caught.value)
+    _assert_preserved_staging_in_place(config, caught.value)
 
 
 def test_inspection_accepts_public_api_normalization_of_absolute_part_paths(
@@ -1169,7 +1176,7 @@ def test_inventory_rejects_compensated_per_file_sizes_with_same_total(
     with pytest.raises(ValueError, match="size|inspection") as caught:
         prepare_xjtu_sy(config)
 
-    _assert_preserved_cleanup_quarantine(config, caught.value)
+    _assert_preserved_staging_in_place(config, caught.value)
 
 
 def test_mutation_after_content_validation_is_not_adopted_as_expected_manifest(
@@ -1196,87 +1203,7 @@ def test_mutation_after_content_validation_is_not_adopted_as_expected_manifest(
         prepare_xjtu_sy(config)
 
     assert mutated is True
-    _assert_preserved_cleanup_quarantine(config, caught.value)
-
-
-@pytest.mark.parametrize("empty", [False, True], ids=["nonempty", "empty"])
-@pytest.mark.parametrize("phase", ["pre", "post"])
-@pytest.mark.parametrize(
-    "rename_error",
-    [RuntimeError("cleanup rename"), KeyboardInterrupt(), SystemExit(21)],
-)
-def test_cleanup_quarantines_owned_identity_before_deletion_and_handles_rename_faults(
-    tmp_path, monkeypatch, empty, phase, rename_error
-) -> None:
-    config = _config(tmp_path)
-    _install_small_source(monkeypatch, config)
-    primary = RuntimeError("primary preparation failure")
-
-    if empty:
-        real_identity = xjtu_preparation._directory_identity
-        injected = False
-
-        def fail_first_staging_identity(path):
-            nonlocal injected
-            if path.name.startswith(".xjtu-sy-generation-") and not injected:
-                injected = True
-                raise primary
-            return real_identity(path)
-
-        monkeypatch.setattr(
-            xjtu_preparation, "_directory_identity", fail_first_staging_identity
-        )
-    else:
-        def write_partial_then_fail(_parts, destination, **_kwargs):
-            staging = Path(destination).parent
-            partial = staging / "partial" / "sentinel.txt"
-            partial.parent.mkdir()
-            partial.write_text("owned partial", encoding="utf-8")
-            raise primary
-
-        monkeypatch.setattr(
-            xjtu_preparation, "safe_extract_rar_archive", write_partial_then_fail
-        )
-
-    real_rename = Path.rename
-    attempts = 0
-    replacement: dict[str, Path] = {}
-
-    def fault_cleanup_rename(source, target):
-        nonlocal attempts
-        if source.name.startswith(".xjtu-sy-generation-") and target.name.startswith(
-            ".xjtu-sy-cleanup-"
-        ):
-            attempts += 1
-            if attempts == 1 and phase == "pre":
-                raise rename_error
-            if attempts == 1 and phase == "post":
-                real_rename(source, target)
-                source.mkdir()
-                sentinel = source / "replacement-sentinel.txt"
-                sentinel.write_text("controller replacement", encoding="utf-8")
-                replacement.update(path=source, sentinel=sentinel)
-                raise rename_error
-        return real_rename(source, target)
-
-    monkeypatch.setattr(Path, "rename", fault_cleanup_rename)
-
-    observed: BaseException | None = None
-    try:
-        prepare_xjtu_sy(config)
-    except BaseException as error:
-        observed = error
-
-    assert observed is primary
-    assert attempts >= 1
-    _assert_preserved_cleanup_quarantine(config, primary)
-    if phase == "post":
-        assert replacement["path"].is_dir()
-        assert replacement["sentinel"].read_text(encoding="utf-8") == (
-            "controller replacement"
-        )
-    else:
-        assert not list(config.destination_root.glob(".xjtu-sy-generation-*"))
+    _assert_preserved_staging_in_place(config, caught.value)
 
 
 def test_existing_generation_with_undeclared_empty_directory_is_not_idempotent(
@@ -1324,6 +1251,7 @@ def test_attestation_marks_physical_failure_time_unknown(tmp_path, monkeypatch) 
     assert result.to_dict()["semanticGates"]["physicalFailureTime"] == "unknown"
 
 
+@pytest.mark.parametrize("rename_api", ["path", "os"], ids=["path-rename", "os-rename"])
 @pytest.mark.parametrize("empty", [False, True], ids=["nonempty", "empty"])
 @pytest.mark.parametrize(
     ("error_type", "error_args"),
@@ -1334,12 +1262,26 @@ def test_attestation_marks_physical_failure_time_unknown(tmp_path, monkeypatch) 
     ],
     ids=["runtime-error", "keyboard-interrupt", "system-exit"],
 )
-def test_cleanup_never_deletes_replacement_swapped_after_last_identity_check(
-    tmp_path, monkeypatch, empty, error_type, error_args
+def test_error_preservation_never_calls_rename_or_moves_owned_and_replacement_paths(
+    tmp_path, monkeypatch, rename_api, empty, error_type, error_args
 ) -> None:
     config = _config(tmp_path)
     _install_small_source(monkeypatch, config)
     primary = error_type(*error_args)
+
+    state: dict[str, Path] = {}
+
+    def install_controller_replacement(staging: Path) -> None:
+        replacement = staging.parent / "controller-replacement"
+        replacement.mkdir()
+        sentinel = replacement / "replacement-sentinel.txt"
+        sentinel.write_text("controller replacement", encoding="utf-8")
+        state.update(
+            owned=staging,
+            replacement=replacement,
+            sentinel=sentinel,
+            displaced=staging.with_name(f"{staging.name}-owned-displaced"),
+        )
 
     if empty:
         real_identity = xjtu_preparation._directory_identity
@@ -1349,6 +1291,7 @@ def test_cleanup_never_deletes_replacement_swapped_after_last_identity_check(
             nonlocal injected
             if path.name.startswith(".xjtu-sy-generation-") and not injected:
                 injected = True
+                install_controller_replacement(path)
                 raise primary
             return real_identity(path)
 
@@ -1359,41 +1302,42 @@ def test_cleanup_never_deletes_replacement_swapped_after_last_identity_check(
 
         def write_owned_then_fail(_parts, destination, **_kwargs):
             staging = Path(destination).parent
-            sentinel = staging / "owned" / "sentinel.txt"
-            sentinel.parent.mkdir()
-            sentinel.write_text("owned tree", encoding="utf-8")
+            owned_sentinel = staging / "owned" / "sentinel.txt"
+            owned_sentinel.parent.mkdir()
+            owned_sentinel.write_text("owned tree", encoding="utf-8")
+            install_controller_replacement(staging)
+            state["owned_sentinel"] = owned_sentinel
             raise primary
 
         monkeypatch.setattr(
             xjtu_preparation, "safe_extract_rar_archive", write_owned_then_fail
         )
 
-    real_same_identity = xjtu_preparation._same_identity
-    cleanup_checks = 0
-    swapped: dict[str, Path] = {}
+    real_path_rename = Path.rename
+    real_os_rename = os.rename
+    path_rename_calls = 0
+    os_rename_calls = 0
 
-    def swap_after_last_check(path, owned):
-        nonlocal cleanup_checks
-        matches = real_same_identity(path, owned)
-        if path.name.startswith(".xjtu-sy-cleanup-") and matches:
-            cleanup_checks += 1
-            if cleanup_checks == 3:
-                displaced = path.with_name(f"{path.name}-owned-preserved")
-                path.rename(displaced)
-                path.mkdir()
-                if empty:
-                    sentinel = path.parent / f"{path.name}-replacement-sentinel.txt"
-                else:
-                    sentinel = path / "replacement-sentinel.txt"
-                sentinel.write_text("controller replacement", encoding="utf-8")
-                swapped.update(
-                    replacement=path,
-                    sentinel=sentinel,
-                    owned=displaced,
-                )
-        return matches
+    def move_replacement_through_error_path(source, target) -> None:
+        real_path_rename(source, state["displaced"])
+        real_path_rename(state["replacement"], source)
+        real_os_rename(source, target)
 
-    monkeypatch.setattr(xjtu_preparation, "_same_identity", swap_after_last_check)
+    def traced_path_rename(source, target):
+        nonlocal path_rename_calls
+        path_rename_calls += 1
+        if rename_api == "path":
+            move_replacement_through_error_path(source, target)
+            return target
+        raise RuntimeError("force os.rename fallback")
+
+    def traced_os_rename(source, target):
+        nonlocal os_rename_calls
+        os_rename_calls += 1
+        move_replacement_through_error_path(Path(source), Path(target))
+
+    monkeypatch.setattr(Path, "rename", traced_path_rename)
+    monkeypatch.setattr(os, "rename", traced_os_rename)
 
     observed: BaseException | None = None
     try:
@@ -1402,44 +1346,59 @@ def test_cleanup_never_deletes_replacement_swapped_after_last_identity_check(
         observed = error
 
     assert observed is primary
-    assert cleanup_checks == 3
-    assert swapped["owned"].is_dir()
-    assert swapped["replacement"].is_dir()
-    assert swapped["sentinel"].read_text(encoding="utf-8") == (
+    assert path_rename_calls == 0
+    assert os_rename_calls == 0
+    assert state["owned"].is_dir()
+    assert state["replacement"].is_dir()
+    assert state["sentinel"].read_text(encoding="utf-8") == (
         "controller replacement"
     )
+    if empty:
+        assert not any(state["owned"].iterdir())
+    else:
+        assert state["owned_sentinel"].read_text(encoding="utf-8") == "owned tree"
+    assert not state["displaced"].exists()
+    assert not list(config.destination_root.glob(".xjtu-sy-cleanup-*"))
     notes = getattr(primary, "__notes__", [])
     assert notes
     assert os.fspath(tmp_path) not in " ".join(notes)
 
 
-def test_exact_generation_has_no_second_extract_or_cleanup_mutation_window(
+def test_exact_generation_has_no_second_extract_or_error_preservation_window(
     tmp_path, monkeypatch
 ) -> None:
     config = _config(tmp_path)
     _, _, _, extraction_count = _install_small_source(monkeypatch, config)
     first = prepare_xjtu_sy(config)
     original_attestation = (first.generation_root / "attestation.json").read_bytes()
-    real_cleanup = xjtu_preparation._cleanup_owned_directory
-    cleanup_calls = 0
+    real_note = xjtu_preparation._add_preserved_preparation_state_note
+    error_preservation_calls = 0
 
-    def mutate_final_during_cleanup(*args, **kwargs):
-        nonlocal cleanup_calls
-        cleanup_calls += 1
-        real_cleanup(*args, **kwargs)
+    def mutate_final_during_error_preservation(error):
+        nonlocal error_preservation_calls
+        error_preservation_calls += 1
+        real_note(error)
         (first.generation_root / "attestation.json").write_bytes(
-            b"controller mutation during cleanup"
+            b"controller mutation during error preservation"
         )
 
     monkeypatch.setattr(
-        xjtu_preparation, "_cleanup_owned_directory", mutate_final_during_cleanup
+        xjtu_preparation,
+        "_add_preserved_preparation_state_note",
+        mutate_final_during_error_preservation,
     )
 
     second = prepare_xjtu_sy(config)
 
     assert second.generation_root == first.generation_root
     assert extraction_count() == 1
-    assert cleanup_calls == 0
+    assert error_preservation_calls == 0
+    assert second.raw_inventory == first.raw_inventory
+    assert second.raw_inventory.files == first.raw_inventory.files
+    assert all(type(item) is RawFile for item in second.raw_inventory.files)
+    assert tuple(type(item) for item in second.raw_inventory.files) == tuple(
+        type(item) for item in first.raw_inventory.files
+    )
     assert (first.generation_root / "attestation.json").read_bytes() == (
         original_attestation
     )
