@@ -46,6 +46,7 @@ def test_vercel_function_excludes_local_secrets_and_nonruntime_files():
         ".superpowers/**",
         "**/{.agents,test,tests}/**",
         "{contracts,docs,evals,notebooks,scripts,src,tools}/**",
+        "dist/**",
         "real-forzy/source-summary.json",
     ):
         assert pattern in exclude_files
