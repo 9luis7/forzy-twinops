@@ -225,3 +225,74 @@ DONE
 - If even the provisional identity cannot be established, deletion is deliberately refused because ownership cannot be proven; the original exception receives a sanitized cleanup note and the empty path is left for manual review.
 - The expected Starlette/httpx deprecation and joblib physical-core fallback warnings remain unchanged.
 - No real RAR extraction was requested or performed; the required real-source smoke inspected the authorized NASA RAR read-only.
+
+## Fix wave - capability-bound first identity cleanup
+
+### Status
+
+DONE
+
+### Decisions
+
+- Bound cleanup to a capability created immediately after `mkdtemp` and before the first stable-inode observation: an `O_EXCL`, mode-0600 marker containing a random 32-byte token.
+- Used optional `O_BINARY`/`O_NOFOLLOW` flags portably and flushed the marker before treating it as established.
+- Required the staging path to remain a regular, non-reparse directory and the marker to be its unique regular, non-link entry with the exact token before unlinking it.
+- Removed the marker, verified its absence and rechecked an empty plain staging directory before returning control to extraction, so the marker cannot enter streaming, filesystem attestation, `RawInventory`, or the promoted destination.
+- On failures before a marker exists, attempted only `rmdir` of the exact newly created path after proving it is a plain empty directory; no recursive cleanup or path search is used.
+- Preserved the exact original `RuntimeError`, `KeyboardInterrupt`, or `SystemExit`; cleanup failures add only a sanitized exception-class note.
+
+### Files
+
+- `services/twinops/src/twinops/research/downloads.py`
+- `services/twinops/tests/research/test_rar_downloads.py`
+- `.superpowers/sdd/2026-08-13-public-fault-datasets-lab-plan/task-2r1-report.md` (append only)
+
+`data/public/sources.json` remains separately owned and is excluded from this commit.
+
+### RED
+
+- First-identity-observation tracer for `RuntimeError`, `KeyboardInterrupt`, and `SystemExit`:
+  - `3 failed, 85 deselected`; all three retained an empty staging directory and added a cleanup note because no ownership identity had been captured.
+
+### GREEN
+
+- First-observation matrix after capability binding: `3 passed, 85 deselected`.
+- Token-generation and pre-marker `O_EXCL` open failures: `3 passed, 88 deselected`.
+- Partial marker-write refusal: `1 passed, 99 deselected`; the invalid marker/path survived with a sanitized note because ownership could not be proven.
+- Pre-marker throwing/no-op `rmdir` plus symlink/reparse/swapped-non-empty/non-empty refusal: `6 passed, 100 deselected`.
+- Missing/swapped/symlink/reparse/non-regular/unreadable marker, invalid token, and extra-entry refusal: `8 passed, 91 deselected`.
+- Final focused RAR suite: `105 passed, 1 skipped in 2.40s`.
+- Real NASA inspection smoke with `TWINOPS_NASA_RAR_PATH=C:\Users\Luis\Documents\ChatGPT\forzy twinops\data\public\nasa-ims\raw\IMS\1st_test.rar`:
+  - `1 passed in 4.14s`; read-only inspection, no extraction or data modification.
+
+### Suites
+
+- Existing ZIP/TAR provenance: `17 passed in 1.83s`.
+- Research suite: `163 passed, 1 skipped, 1 warning in 29.29s`.
+- Full Python suite: `378 passed, 3 skipped, 2 warnings in 41.32s`.
+- Performance check immediately after the full suite: `p50=54.81 ms`, `p95=75.68 ms`, `p99=75.68 ms`; `1 passed in 1.26s`.
+- `python -m compileall -q services/twinops/src services/twinops/tests`: passed.
+- `python -m pip check`: `No broken requirements found.`
+- `git diff --check`: passed; only LF-to-CRLF notices were emitted.
+- Raw/archive tracking query: no tracked ZIP, RAR, 7z, downloads, or raw files.
+
+### Security self-review
+
+- Cleanup after either identity observation fails no longer depends on that observation succeeding; the random marker capability is already established.
+- Marker validation rejects a changed path, missing/replaced marker, symlink, reparse point, non-regular marker, invalid token, unreadable marker, or any additional entry without deleting the uncertain tree.
+- An incomplete marker is not promoted to a capability. It remains for manual review with a sanitized note instead of being recursively removed.
+- Before marker establishment, cleanup uses only non-following empty-directory semantics and verifies disappearance; throwing or no-op `rmdir` remains secondary to the original exception.
+- The exact successful inventory and promoted tree contain only the inspected archive member, explicitly proving that the capability marker was consumed before extraction.
+- Final focused and full suites retain coverage for source re-hash ordering, post-rename rollback, verified cleanup, and destination identity races closed in earlier waves.
+
+### Commit
+
+- Message: `fix: bind rar staging cleanup capability`
+- Scope: the three fix-wave files listed above; Git reports the SHA after committing this append.
+
+### Concerns
+
+- The expected Starlette/httpx deprecation and joblib physical-core fallback warnings remain unchanged.
+- The isolated performance p95 was 75.68 ms, below the 100 ms gate but above the prior low-contention samples.
+- When marker contents are incomplete or any path/capability fact is unprovable, fail-closed behavior deliberately leaves the path for manual review and annotates the original exception.
+- No real RAR extraction was requested or performed; the required real-source smoke inspected the authorized NASA RAR read-only.

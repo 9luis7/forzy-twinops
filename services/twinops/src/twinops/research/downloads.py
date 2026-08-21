@@ -8,6 +8,7 @@ import json
 import math
 import os
 import re
+import secrets
 import shutil
 import stat
 import subprocess
@@ -21,6 +22,7 @@ from typing import BinaryIO, Sequence
 
 
 _SHA256 = re.compile(r"^[0-9a-fA-F]{64}$")
+_RAR_STAGING_CAPABILITY_MARKER = ".twinops-rar-staging-capability"
 _WINDOWS_RESERVED_NAMES = frozenset(
     {
         "con",
@@ -457,7 +459,13 @@ class _DirectoryIdentity:
     inode: int
 
 
-def _directory_identity_from_lstat(path: Path) -> _DirectoryIdentity:
+@dataclass(frozen=True, slots=True)
+class _RarStagingCleanupCapability:
+    marker: Path
+    token: bytes
+
+
+def _require_plain_directory(path: Path, *, context: str) -> os.stat_result:
     metadata = path.lstat()
     reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
     if (
@@ -465,7 +473,12 @@ def _directory_identity_from_lstat(path: Path) -> _DirectoryIdentity:
         or (reparse_flag and getattr(metadata, "st_file_attributes", 0) & reparse_flag)
         or not stat.S_ISDIR(metadata.st_mode)
     ):
-        raise RuntimeError("RAR staging identity is not a regular directory")
+        raise RuntimeError(f"RAR {context} is not a regular directory")
+    return metadata
+
+
+def _directory_identity_from_lstat(path: Path) -> _DirectoryIdentity:
+    metadata = _require_plain_directory(path, context="staging identity")
     device = getattr(metadata, "st_dev", None)
     inode = getattr(metadata, "st_ino", None)
     if (
@@ -532,14 +545,10 @@ def _add_cleanup_note(original: BaseException, action: str, failure: BaseExcepti
         pass
 
 
-def _cleanup_uninitialized_rar_staging(
-    temporary: Path,
-    provisional_identity: _DirectoryIdentity,
-) -> None:
+def _cleanup_empty_uninitialized_rar_staging(temporary: Path) -> None:
     if not os.path.lexists(temporary):
         return
-    if _directory_identity_from_lstat(temporary) != provisional_identity:
-        raise RuntimeError("RAR cleanup refused an unowned uninitialized staging path")
+    _require_plain_directory(temporary, context="uninitialized staging cleanup path")
     if any(temporary.iterdir()):
         raise RuntimeError("RAR cleanup refused a non-empty uninitialized staging path")
     temporary.rmdir()
@@ -547,24 +556,141 @@ def _cleanup_uninitialized_rar_staging(
         raise RuntimeError("RAR cleanup did not remove uninitialized staging")
 
 
+def _create_rar_staging_capability(capability: _RarStagingCleanupCapability) -> None:
+    flags = (
+        os.O_WRONLY
+        | os.O_CREAT
+        | os.O_EXCL
+        | getattr(os, "O_BINARY", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+    )
+    descriptor = os.open(capability.marker, flags, 0o600)
+    try:
+        remaining = memoryview(capability.token)
+        while remaining:
+            written = os.write(descriptor, remaining)
+            if written <= 0:
+                raise OSError("RAR staging capability write made no progress")
+            remaining = remaining[written:]
+        os.fsync(descriptor)
+    except BaseException as error:
+        try:
+            os.close(descriptor)
+        except BaseException as close_error:
+            _add_cleanup_note(error, "capability descriptor close", close_error)
+        raise
+    os.close(descriptor)
+
+
+def _read_rar_staging_capability_marker(marker: Path) -> bytes:
+    metadata = marker.lstat()
+    reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+    if (
+        stat.S_ISLNK(metadata.st_mode)
+        or (reparse_flag and getattr(metadata, "st_file_attributes", 0) & reparse_flag)
+        or not stat.S_ISREG(metadata.st_mode)
+    ):
+        raise RuntimeError("RAR staging cleanup marker is not a regular file")
+    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(marker, flags)
+    try:
+        opened_metadata = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(opened_metadata.st_mode)
+            or (
+                reparse_flag
+                and getattr(opened_metadata, "st_file_attributes", 0) & reparse_flag
+            )
+        ):
+            raise RuntimeError("RAR staging cleanup marker changed during validation")
+        chunks: list[bytes] = []
+        remaining = 65
+        while remaining:
+            chunk = os.read(descriptor, remaining)
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        return b"".join(chunks)
+    finally:
+        os.close(descriptor)
+
+
+def _consume_rar_staging_capability(
+    temporary: Path,
+    capability: _RarStagingCleanupCapability,
+) -> None:
+    _require_plain_directory(temporary, context="staging capability path")
+    entries = list(temporary.iterdir())
+    if len(entries) != 1 or entries[0].name != capability.marker.name:
+        raise RuntimeError("RAR staging cleanup capability is not the unique entry")
+    marker_token = _read_rar_staging_capability_marker(capability.marker)
+    if not secrets.compare_digest(marker_token, capability.token):
+        raise RuntimeError("RAR staging cleanup capability token is invalid")
+    capability.marker.unlink()
+    if os.path.lexists(capability.marker):
+        raise RuntimeError("RAR staging cleanup capability marker was not removed")
+    _require_plain_directory(temporary, context="staging path after capability removal")
+    if any(temporary.iterdir()):
+        raise RuntimeError("RAR staging changed while removing cleanup capability")
+
+
+def _cleanup_capability_bound_rar_staging(
+    temporary: Path,
+    capability: _RarStagingCleanupCapability,
+) -> None:
+    _consume_rar_staging_capability(temporary, capability)
+    temporary.rmdir()
+    if os.path.lexists(temporary):
+        raise RuntimeError("RAR cleanup did not remove capability-bound staging")
+
+
+def _cleanup_uninitialized_rar_staging(
+    temporary: Path,
+    capability: _RarStagingCleanupCapability | None,
+    *,
+    marker_established: bool,
+) -> None:
+    if marker_established:
+        if capability is None:
+            raise RuntimeError("RAR staging cleanup capability is unavailable")
+        _cleanup_capability_bound_rar_staging(temporary, capability)
+        return
+    if capability is not None and os.path.lexists(capability.marker):
+        _cleanup_capability_bound_rar_staging(temporary, capability)
+        return
+    _cleanup_empty_uninitialized_rar_staging(temporary)
+
+
 def _create_rar_staging(parent: Path, destination_name: str) -> tuple[Path, _DirectoryIdentity]:
     temporary: Path | None = None
-    provisional_identity: _DirectoryIdentity | None = None
+    capability: _RarStagingCleanupCapability | None = None
+    marker_established = False
     try:
         temporary = Path(
             tempfile.mkdtemp(prefix=f".{destination_name}-rar-extract-", dir=parent)
         )
+        capability = _RarStagingCleanupCapability(
+            marker=temporary / _RAR_STAGING_CAPABILITY_MARKER,
+            token=secrets.token_bytes(32),
+        )
+        _create_rar_staging_capability(capability)
+        marker_established = True
         provisional_identity = _directory_identity_from_lstat(temporary)
         identity = _directory_identity(temporary)
         if identity != provisional_identity:
             raise RuntimeError("RAR staging identity changed during acquisition")
+        _consume_rar_staging_capability(temporary, capability)
+        marker_established = False
         return temporary, identity
     except BaseException as error:
         if temporary is not None:
             try:
-                if provisional_identity is None:
-                    raise RuntimeError("RAR staging ownership was not established")
-                _cleanup_uninitialized_rar_staging(temporary, provisional_identity)
+                _cleanup_uninitialized_rar_staging(
+                    temporary,
+                    capability,
+                    marker_established=marker_established,
+                )
             except BaseException as cleanup_error:
                 _add_cleanup_note(error, "uninitialized staging cleanup", cleanup_error)
         raise
