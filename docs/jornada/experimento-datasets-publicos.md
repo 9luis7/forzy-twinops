@@ -28,6 +28,13 @@ independente passou em 433,312 s. O fast path idempotente terminou com exit 0
 em 1.065,401 s e foi observado externamente a 10 Hz por 7.205 amostras, sem
 processo 7-Zip e sem novo staging; a auditoria posterior passou em 148,031 s.
 
+A attestation imutável conserva o valor histórico
+`semanticGates.headerNames: "unknown"`. A metadata ligada pelo SHA-256 acima e
+a auditoria independente posterior confirmam o header exato nas 9.216 janelas
+e supersedem somente esse campo de nome. A attestation não foi reescrita; a
+reconciliação não confirma unidade, label por janela, semântica Forzy nem abre
+qualquer métrica.
+
 A geração NASA IMS
 `nasa-ims-v1-71cbedb9ec12f18af68eb175ba536c27df9c5de9a96fb4ac36d010f40e70ac0c`
 tem attestation SHA-256

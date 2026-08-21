@@ -107,3 +107,52 @@ Plan05, or script change was made.
   `not_run_semantic_gate` without changing production code in this task.
 - A future supervised comparison is scientifically blocked until authoritative
   semantics and a prepared-generation loader are reviewed.
+
+## Independent-review reconciliation after `d9e73b7`
+
+Status: BOTH REVIEW FINDINGS ADDRESSED AND LOCALLY VERIFIED; awaiting
+independent re-review on the new exact SHA.
+
+### Finding ledger
+
+| Severity | Finding | Resolution |
+| --- | --- | --- |
+| Important | Immutable XJTU attestation says `semanticGates.headerNames: "unknown"` while later bound evidence confirms the header. | Added identical machine-readable `headerNameEvidenceReconciliation` objects to `sources.json` and `dataset-manifest.json`. The attestation value is retained as historical/unchanged; metadata plus subsequent audit supersede only the header-name field. |
+| Minor | README characterized NASA IMS as a US government dataset. | Reworded it as a NASA Open Data Portal record with `other-license-specified`, payload supplied by IMS/University of Cincinnati, and stated that `government-works` alone does not determine payload license. |
+
+### Evidence reconciliation
+
+The immutable attestation SHA-256 remains
+`49de3ae74df4de489a966a77ccf6af647a58e60ceb2515934b9c62bf299277a5`
+and its historical `headerNames` value remains `unknown`. It was not edited or
+republished. Metadata SHA-256
+`4876cc6540a8c972c63b890d111d1a4d60322f5addd2a317b0b058246020e8f8`
+binds `files.*.columns` across 9,216 windows, and the subsequent independent
+audit passed on those 9,216 windows with exact ordered header
+`Horizontal_vibration_signals,Vertical_vibration_signals`.
+
+The resolution is explicitly `superseded_for_header_names_only`. Acceleration
+unit and per-window labels remain `unknown`; acceleration RMS and temperature
+semantics remain unconfirmed; confirmatory, supervised, transfer, and RUL
+metrics remain disabled. Dataset statuses, null metrics, empty
+`dataActuallyUsed`, and all operational boundaries are unchanged.
+
+### RED/GREEN and regressions
+
+- RED reconciliation assertion: exit 1 because the machine-readable object did
+  not exist on `d9e73b7`;
+- RED NASA assertion: exit 1 because README still contained
+  `Dataset governamental dos EUA`;
+- GREEN expanded factual gate: `FACT_ASSERTIONS=PASS`; it verifies identical
+  reconciliation objects, immutable/historical attestation, bound metadata,
+  9,216-window audit, exact header, header-only scope, every closed gate, and
+  the corrected NASA terms language;
+- public-fault CLI regression: `14 passed in 29.78s`;
+- research suite: `364 passed, 5 skipped, 1 warning in 41.46s`;
+- warning: pre-existing joblib physical-core fallback.
+
+No real/downloaded/prepared data, either XJTU staging, script, production ML,
+Plan05, deployment file, or operational artifact was read as an experiment,
+mutated, moved, deleted, extracted, rehashed, or executed. The failed staging
+remains intact. The residual scientific and loader blockers from Task 2R4 are
+unchanged.

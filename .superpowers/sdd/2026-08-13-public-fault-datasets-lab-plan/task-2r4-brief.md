@@ -152,3 +152,64 @@ Run only read-only/lightweight checks; never rehash the real trees:
 - Create one atomic commit: `docs: publish real public dataset gate evidence`.
 - Return the SHA, exact changed files, test/dry-run output, and any residual concern.
 - No push, merge, deploy, download, extraction, cleanup, or real lab execution.
+
+## Independent-review fix wave after `d9e73b7`
+
+Review verdict on exact SHA
+`d9e73b72d454c9ea1457dc8f61b3c26b22ea6389`: BLOCK, with one Important and
+one Minor finding. This section is the authoritative addendum for the fix
+wave; all original ownership and no-touch boundaries remain in force.
+
+### Finding ledger
+
+1. **Important — XJTU header-name evidence reconciliation.** The immutable
+   attestation retains the historical field
+   `semanticGates.headerNames: "unknown"`, while the bound metadata and a
+   subsequent independent audit confirm the exact ordered header across all
+   9,216 windows. Add the same machine-readable reconciliation to
+   `sources.json` and `dataset-manifest.json`. It must mark the attestation
+   value as historical and unchanged, identify the metadata hash and audit as
+   superseding evidence, and resolve only that one header-name field. No unit,
+   per-window label, Forzy-semantic, confirmatory, supervised, transfer, or RUL
+   gate may open.
+2. **Minor — NASA license characterization.** Do not describe the payload as a
+   US government dataset. Describe it as a record hosted by the NASA Open Data
+   Portal with `other-license-specified`, whose payload was supplied by the
+   Center for Intelligent Maintenance Systems (IMS), University of Cincinnati.
+   The linked `government-works` page does not by itself determine the payload
+   license.
+
+### Machine-readable assertion contract
+
+- `headerNameEvidenceReconciliation.scope` is
+  `semanticGates.headerNames`;
+- immutable attestation SHA remains
+  `49de3ae74df4de489a966a77ccf6af647a58e60ceb2515934b9c62bf299277a5`,
+  recorded value remains `unknown`, and status is
+  `historical_retained_unchanged`;
+- metadata SHA remains
+  `4876cc6540a8c972c63b890d111d1a4d60322f5addd2a317b0b058246020e8f8`
+  and binds `files.*.columns` for 9,216 windows;
+- subsequent independent audit is `PASS` for 9,216 windows with ordered header
+  `Horizontal_vibration_signals,Vertical_vibration_signals`;
+- resolution is `superseded_for_header_names_only`;
+- both JSON reconciliation objects are identical, and all unit, label, Forzy,
+  and scientific-metric flags remain unknown/false.
+
+### Fix-wave verification and delivery
+
+- RED 1: machine-readable reconciliation missing, exit 1;
+- RED 2: README still characterized NASA as a government dataset, exit 1;
+- GREEN: expanded `FACT_ASSERTIONS=PASS`, including cross-file equality,
+  evidence hashes/counts/header, closed gates, source/artifact status, null
+  metrics, empty `dataActuallyUsed`, and NASA wording;
+- public-fault CLI regression: `14 passed in 29.78s`;
+- research suite: `364 passed, 5 skipped, 1 warning in 41.46s`; warning is the
+  pre-existing joblib physical-core fallback;
+- base for this fix wave is exact SHA
+  `d9e73b72d454c9ea1457dc8f61b3c26b22ea6389`;
+- create one atomic commit:
+  `docs: reconcile public dataset evidence`;
+- request independent re-review on the resulting exact SHA. No data-tree read,
+  mutation, rehash, extraction, cleanup, real lab run, script change, deploy,
+  merge, or push is authorized.

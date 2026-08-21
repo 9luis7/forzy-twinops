@@ -20,6 +20,47 @@
         "path": "xjtu-sy/prepared/xjtu-sy-v1-8c7e9d8b7c272002a4d44b021931aaf6500f013574db60839bae2af3aa0fee1a/attestation.json",
         "sha256": "49de3ae74df4de489a966a77ccf6af647a58e60ceb2515934b9c62bf299277a5"
       },
+      "headerNameEvidenceReconciliation": {
+        "scope": "semanticGates.headerNames",
+        "immutableAttestation": {
+          "path": "xjtu-sy/prepared/xjtu-sy-v1-8c7e9d8b7c272002a4d44b021931aaf6500f013574db60839bae2af3aa0fee1a/attestation.json",
+          "sha256": "49de3ae74df4de489a966a77ccf6af647a58e60ceb2515934b9c62bf299277a5",
+          "recordedValue": "unknown",
+          "status": "historical_retained_unchanged"
+        },
+        "supersedingEvidence": {
+          "metadata": {
+            "path": "xjtu-sy/prepared/xjtu-sy-v1-8c7e9d8b7c272002a4d44b021931aaf6500f013574db60839bae2af3aa0fee1a/metadata.json",
+            "sha256": "4876cc6540a8c972c63b890d111d1a4d60322f5addd2a317b0b058246020e8f8",
+            "evidenceField": "files.*.columns",
+            "validatedWindowCount": 9216
+          },
+          "subsequentIndependentAudit": {
+            "status": "PASS",
+            "validatedWindowCount": 9216,
+            "orderedHeader": [
+              "Horizontal_vibration_signals",
+              "Vertical_vibration_signals"
+            ]
+          }
+        },
+        "resolution": "superseded_for_header_names_only",
+        "effectiveOrderedHeader": [
+          "Horizontal_vibration_signals",
+          "Vertical_vibration_signals"
+        ],
+        "unchangedScientificGates": {
+          "accelerationUnit": "unknown",
+          "windowState": "unknown",
+          "perWindowLabels": "unknown",
+          "accelerationRmsSemanticsConfirmed": false,
+          "temperatureSemanticsConfirmed": false,
+          "confirmatoryMetricsEnabled": false,
+          "supervisedMetricsEnabled": false,
+          "transferMetricsEnabled": false,
+          "rulMetricsEnabled": false
+        }
+      },
       "metadata": {
         "path": "xjtu-sy/prepared/xjtu-sy-v1-8c7e9d8b7c272002a4d44b021931aaf6500f013574db60839bae2af3aa0fee1a/metadata.json",
         "schemaVersion": 1,

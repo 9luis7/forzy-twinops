@@ -62,6 +62,47 @@
         "attestationSha256": "49de3ae74df4de489a966a77ccf6af647a58e60ceb2515934b9c62bf299277a5",
         "metadataPath": "xjtu-sy/prepared/xjtu-sy-v1-8c7e9d8b7c272002a4d44b021931aaf6500f013574db60839bae2af3aa0fee1a/metadata.json",
         "metadataSha256": "4876cc6540a8c972c63b890d111d1a4d60322f5addd2a317b0b058246020e8f8",
+        "headerNameEvidenceReconciliation": {
+          "scope": "semanticGates.headerNames",
+          "immutableAttestation": {
+            "path": "xjtu-sy/prepared/xjtu-sy-v1-8c7e9d8b7c272002a4d44b021931aaf6500f013574db60839bae2af3aa0fee1a/attestation.json",
+            "sha256": "49de3ae74df4de489a966a77ccf6af647a58e60ceb2515934b9c62bf299277a5",
+            "recordedValue": "unknown",
+            "status": "historical_retained_unchanged"
+          },
+          "supersedingEvidence": {
+            "metadata": {
+              "path": "xjtu-sy/prepared/xjtu-sy-v1-8c7e9d8b7c272002a4d44b021931aaf6500f013574db60839bae2af3aa0fee1a/metadata.json",
+              "sha256": "4876cc6540a8c972c63b890d111d1a4d60322f5addd2a317b0b058246020e8f8",
+              "evidenceField": "files.*.columns",
+              "validatedWindowCount": 9216
+            },
+            "subsequentIndependentAudit": {
+              "status": "PASS",
+              "validatedWindowCount": 9216,
+              "orderedHeader": [
+                "Horizontal_vibration_signals",
+                "Vertical_vibration_signals"
+              ]
+            }
+          },
+          "resolution": "superseded_for_header_names_only",
+          "effectiveOrderedHeader": [
+            "Horizontal_vibration_signals",
+            "Vertical_vibration_signals"
+          ],
+          "unchangedScientificGates": {
+            "accelerationUnit": "unknown",
+            "windowState": "unknown",
+            "perWindowLabels": "unknown",
+            "accelerationRmsSemanticsConfirmed": false,
+            "temperatureSemanticsConfirmed": false,
+            "confirmatoryMetricsEnabled": false,
+            "supervisedMetricsEnabled": false,
+            "transferMetricsEnabled": false,
+            "rulMetricsEnabled": false
+          }
+        },
         "rawInventory": {
           "fileCount": 9217,
           "csvFileCount": 9216,
@@ -129,7 +170,7 @@
           "rulMetricsEnabled": false
         }
       },
-      "notes": "All six author-published RAR5 parts were downloaded and hash-pinned. Real preparation published one immutable, independently audited generation containing 9,216 validated CSV windows and one source PDF. The exact H/V header, two author-confirmed orientations, 32,768 numeric rows, 25.6 kHz sampling and one-minute cadence are factual. Acceleration unit, absolute timestamps/timezone, per-window state/onset/severity, physical failure time, life fraction and true RUL remain unknown; terminal outcomes are bearing-scope evidence only. This source is not approved for confirmatory, supervised, transfer or RUL metrics."
+      "notes": "All six author-published RAR5 parts were downloaded and hash-pinned. Real preparation published one immutable, independently audited generation containing 9,216 validated CSV windows and one source PDF. The exact H/V header is established by bound metadata plus the subsequent independent audit; the immutable attestation retains its historical headerNames=unknown field, superseded only for the header name. Two author-confirmed orientations, 32,768 numeric rows, 25.6 kHz sampling and one-minute cadence are factual. Acceleration unit, absolute timestamps/timezone, per-window state/onset/severity, physical failure time, life fraction and true RUL remain unknown; terminal outcomes are bearing-scope evidence only. This source is not approved for confirmatory, supervised, transfer or RUL metrics."
     },
     {
       "datasetId": "nasa-ims",

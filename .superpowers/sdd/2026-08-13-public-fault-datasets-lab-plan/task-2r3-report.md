@@ -701,3 +701,37 @@ publish the more precise `not_run_semantic_gate` state.
 - the warning is the existing joblib physical-core fallback;
 - no real lab execution, extraction, download, cleanup, deploy, production ML,
   or operational artifact mutation occurred.
+
+## Task 2R4 independent-review evidence reconciliation after `d9e73b7`
+
+Status: IMPORTANT AND MINOR REVIEW FINDINGS ADDRESSED; awaiting independent
+re-review. This append-only section clarifies the evidence hierarchy without
+rewriting any immutable generation or historical section above.
+
+The XJTU attestation retains
+`semanticGates.headerNames: "unknown"` and SHA-256
+`49de3ae74df4de489a966a77ccf6af647a58e60ceb2515934b9c62bf299277a5`.
+That value is now recorded explicitly as historical and unchanged. Bound
+metadata SHA-256
+`4876cc6540a8c972c63b890d111d1a4d60322f5addd2a317b0b058246020e8f8`
+plus the subsequent independent PASS across 9,216 windows supersede only the
+header-name field with exact ordered header
+`Horizontal_vibration_signals,Vertical_vibration_signals`. Unit, per-window
+labels, Forzy measurement semantics, and all scientific metric gates remain
+unknown/false.
+
+The NASA README now states the narrower provenance and terms evidence: the
+record is hosted by the NASA Open Data Portal with
+`other-license-specified`; the payload was supplied by IMS/University of
+Cincinnati; the linked `government-works` page does not determine the payload
+license by itself.
+
+Fresh evidence for this correction:
+
+- RED missing-reconciliation assertion: exit 1;
+- RED NASA-characterization assertion: exit 1;
+- GREEN expanded factual assertion: `FACT_ASSERTIONS=PASS`;
+- public-fault CLI regression: `14 passed in 29.78s`;
+- research suite: `364 passed, 5 skipped, 1 warning in 41.46s`;
+- no real data/staging, script, production, Plan05, deployment, or operational
+  artifact changed; the old staging remains intact.

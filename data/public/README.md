@@ -9,7 +9,7 @@ baseline Forzy nem aparece na interface operacional.
 | Dataset | Fonte numérica primária | Termos/licença antes do download | Uso nesta entrega |
 | --- | --- | --- | --- |
 | XJTU-SY | [Página mantida pelos autores](https://biaowang.tech/xjtu-sy-bearing-datasets/) | A página fornece citação e links de download; não declara uma licença de software/dados inequívoca. Os termos observados no acesso estão preservados no manifesto. | Preparado e auditado; retido em `prepared_semantically_gated`. |
-| NASA IMS | [NASA Open Data Portal](https://data.nasa.gov/dataset/ims-bearings) | Dataset governamental dos EUA; os termos e a proveniência observados no acesso estão preservados no manifesto. | Runs 1/2 preparados e auditados; run 3 em quarentena; retido em `prepared_semantically_gated`. |
+| NASA IMS | [NASA Open Data Portal](https://data.nasa.gov/dataset/ims-bearings) | Registro hospedado no portal com `other-license-specified`; o payload foi fornecido pelo Center for Intelligent Maintenance Systems (IMS), University of Cincinnati. A página `government-works` vinculada pelo portal não determina sozinha a licença do payload. | Runs 1/2 preparados e auditados; run 3 em quarentena; retido em `prepared_semantically_gated`. |
 | PRONOSTIA/FEMTO-ST | [FEMTO-ST — IEEE PHM 2012](https://publiweb.femto-st.fr/tntnet/entries/1528/documents/author/data) | Confirmar os termos exibidos pela fonte original antes do download. | Condicional à acessibilidade da fonte original. |
 | Paderborn | [KAt Bearing Data Center](https://mb.uni-paderborn.de/en/kat/research/bearing-datacenter/data-sets-and-download) | **CC BY-NC 4.0**; uso somente após aceite explícito da restrição não comercial. | Fora desta primeira execução. |
 | CWRU | [Case Western Reserve University Bearing Data Center](https://engineering.case.edu/bearingdatacenter/welcome) | Confirmar os termos da página de origem. | Sanity check opcional; falhas artificiais. |
@@ -91,6 +91,13 @@ simultaneamente `TWINOPS_XJTU_RAR_DIRECTORY` e `TWINOPS_TRUSTED_7Z_PATH`; sem
 ambos ele é ignorado e nenhum destino é criado. O smoke opcional de conteúdo
 aceita apenas `TWINOPS_XJTU_SAMPLE_CSV_COPY`, apontando para uma cópia de um
 CSV oficial fora de qualquer staging preparada, e também não escreve dados.
+
+A attestation XJTU-SY é imutável e conserva o campo histórico
+`semanticGates.headerNames: "unknown"`. A metadata hash-pinned e a auditoria
+independente posterior confirmam o header ordenado acima nas 9.216 janelas e
+supersedem **somente** esse campo de nome do header. A reconciliação não altera
+a attestation nem abre unidade, label por janela, semântica Forzy ou qualquer
+gate de métrica.
 
 Para a preparação NASA IMS em camadas, `raw/IMS/` preserva o ZIP já
 expandido, os três RARs internos e o PDF oficial sem modificação. Runs 1 e 2
