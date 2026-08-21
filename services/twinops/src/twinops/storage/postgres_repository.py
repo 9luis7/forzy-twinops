@@ -1,5 +1,6 @@
 """PostgreSQL implementation of the TwinOps telemetry v2 boundary."""
 
+from collections.abc import Callable, Mapping
 from contextlib import contextmanager
 from datetime import datetime, timezone
 import json
@@ -24,6 +25,69 @@ from twinops.storage.v2_repository import (
 
 _MIGRATION_PATH = Path(__file__).parents[3] / "migrations" / "002_real_twin_v2.sql"
 _OUTCOMES = {"stored", "unchanged", "failed"}
+POSTGRES_V2_REQUIRED_TABLES = frozenset(
+    {
+        "collection_attempts_v2",
+        "latest_readings_v2",
+        "raw_readings_v2",
+        "refresh_cycles_v2",
+        "telemetry_samples_v2",
+    }
+)
+POSTGRES_V2_REQUIRED_INDEXES = frozenset(
+    {
+        "ix_raw_readings_v2_slot",
+        "ix_telemetry_samples_v2_history",
+    }
+)
+POSTGRES_SCHEMA_MIGRATION_LOCK_KEY = 0x5457494E4F505332
+_POSTGRES_SCHEMA_CURRENT_SQL = (
+    "SELECT "
+    "(SELECT COUNT(*) FROM pg_catalog.pg_tables "
+    "WHERE schemaname='public' AND tablename = ANY(%s)) = %s "
+    "AS tables_current, "
+    "(SELECT COUNT(*) FROM pg_catalog.pg_indexes "
+    "WHERE schemaname='public' AND indexname = ANY(%s)) = %s "
+    "AS indexes_current"
+)
+_POSTGRES_SCHEMA_MIGRATION_LOCK_SQL = "SELECT pg_advisory_xact_lock(%s)"
+
+
+def postgres_schema_is_current(connection) -> bool:
+    """Check the v2 schema using only the PostgreSQL catalogs."""
+
+    row = connection.execute(
+        _POSTGRES_SCHEMA_CURRENT_SQL,
+        (
+            sorted(POSTGRES_V2_REQUIRED_TABLES),
+            len(POSTGRES_V2_REQUIRED_TABLES),
+            sorted(POSTGRES_V2_REQUIRED_INDEXES),
+            len(POSTGRES_V2_REQUIRED_INDEXES),
+        ),
+    ).fetchone()
+    if row is None:
+        return False
+    if isinstance(row, Mapping):
+        return bool(row["tables_current"] and row["indexes_current"])
+    return bool(row[0] and row[1])
+
+
+def ensure_postgres_schema(
+    connection,
+    migration_loader: Callable[[], str],
+) -> bool:
+    """Apply migration 002 once while the caller owns a DB transaction."""
+
+    if postgres_schema_is_current(connection):
+        return False
+    connection.execute(
+        _POSTGRES_SCHEMA_MIGRATION_LOCK_SQL,
+        (POSTGRES_SCHEMA_MIGRATION_LOCK_KEY,),
+    )
+    if postgres_schema_is_current(connection):
+        return False
+    connection.execute(migration_loader(), prepare=False)
+    return True
 
 
 def _timestamp(value: datetime | str) -> datetime:
@@ -90,11 +154,11 @@ class PostgresTelemetryRepository:
             yield connection
 
     def initialize(self) -> None:
-        migration = _MIGRATION_PATH.read_text(encoding="utf-8")
         with self._connection() as connection:
-            for statement in migration.split(";"):
-                if statement.strip():
-                    connection.execute(statement)
+            ensure_postgres_schema(
+                connection,
+                lambda: _MIGRATION_PATH.read_text(encoding="utf-8"),
+            )
 
     def _insert_distinct_sample(
         self,

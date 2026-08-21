@@ -21,11 +21,12 @@ class _Rows:
 
 
 class _SuccessfulConnection:
-    def __init__(self, migration, *, indexes=None):
+    def __init__(self, migration, *, indexes=None, schema_checks=(False, False)):
         self.migration = migration
         self.calls = []
         self.probe_id = None
         self.pgconn = SimpleNamespace(ssl_in_use=True)
+        self.schema_checks = iter(schema_checks)
         self.indexes = indexes or (
             "ix_raw_readings_v2_slot",
             "ix_telemetry_samples_v2_history",
@@ -39,6 +40,11 @@ class _SuccessfulConnection:
 
     def execute(self, query, params=None, **kwargs):
         self.calls.append((query, params, kwargs))
+        if "AS tables_current" in query:
+            current = next(self.schema_checks)
+            return _Rows([(current, current)])
+        if "pg_advisory_xact_lock" in query:
+            return _Rows()
         if query == self.migration:
             return _Rows()
         if "FROM pg_catalog.pg_tables" in query:
@@ -102,12 +108,63 @@ def test_check_postgres_applies_exact_migration_and_verifies_runtime_contract(ca
     captured = capsys.readouterr()
     assert result == 0
     assert connected_with == [database_url]
-    assert connection.calls[0] == (migration, None, {"prepare": False})
+    assert [
+        "schema" if "AS tables_current" in query else "lock"
+        if "pg_advisory_xact_lock" in query
+        else "migration"
+        if query == migration
+        else "probe"
+        for query, _, _ in connection.calls[:4]
+    ] == ["schema", "lock", "schema", "migration"]
+    assert connection.calls[1][1] == (
+        check_postgres.POSTGRES_SCHEMA_MIGRATION_LOCK_KEY,
+    )
+    assert connection.calls[3] == (migration, None, {"prepare": False})
     assert captured.out.strip() == (
         "postgres_check_ok tables=5 indexes=2 ssl=true probe=passed"
     )
     assert captured.err == ""
     assert database_url not in captured.out + captured.err
+
+
+def test_check_postgres_skips_migration_and_lock_for_current_schema(capsys):
+    migration = MIGRATION_PATH.read_text(encoding="utf-8")
+    connection = _SuccessfulConnection(migration, schema_checks=(True,))
+
+    result = check_postgres.main(
+        ["--migrate", str(MIGRATION_PATH)],
+        env={"DATABASE_URL": "postgresql://redacted.invalid/twinops"},
+        connect=lambda dsn: connection,
+    )
+
+    assert result == 0
+    assert not any(query == migration for query, _, _ in connection.calls)
+    assert not any(
+        "pg_advisory_xact_lock" in query for query, _, _ in connection.calls
+    )
+    assert capsys.readouterr().err == ""
+
+
+def test_check_postgres_skips_ddl_after_recheck_under_shared_lock(capsys):
+    migration = MIGRATION_PATH.read_text(encoding="utf-8")
+    connection = _SuccessfulConnection(migration, schema_checks=(False, True))
+
+    result = check_postgres.main(
+        ["--migrate", str(MIGRATION_PATH)],
+        env={"DATABASE_URL": "postgresql://redacted.invalid/twinops"},
+        connect=lambda dsn: connection,
+    )
+
+    assert result == 0
+    assert not any(query == migration for query, _, _ in connection.calls)
+    lock_calls = [
+        call for call in connection.calls if "pg_advisory_xact_lock" in call[0]
+    ]
+    assert len(lock_calls) == 1
+    assert lock_calls[0][1] == (
+        check_postgres.POSTGRES_SCHEMA_MIGRATION_LOCK_KEY,
+    )
+    assert capsys.readouterr().err == ""
 
 
 def test_check_postgres_reports_safe_validation_stage_without_dsn(capsys):

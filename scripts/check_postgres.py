@@ -10,24 +10,18 @@ from uuid import uuid4
 
 import psycopg
 
+from twinops.storage.postgres_repository import (
+    POSTGRES_SCHEMA_MIGRATION_LOCK_KEY,
+    POSTGRES_V2_REQUIRED_INDEXES,
+    POSTGRES_V2_REQUIRED_TABLES,
+    ensure_postgres_schema,
+)
+
 
 _REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 _EXPECTED_MIGRATION = (
     _REPOSITORY_ROOT / "services" / "twinops" / "migrations" / "002_real_twin_v2.sql"
 )
-_EXPECTED_TABLES = {
-    "collection_attempts_v2",
-    "latest_readings_v2",
-    "raw_readings_v2",
-    "refresh_cycles_v2",
-    "telemetry_samples_v2",
-}
-_EXPECTED_INDEXES = {
-    "ix_raw_readings_v2_slot",
-    "ix_telemetry_samples_v2_history",
-}
-
-
 class PostgresCheckError(RuntimeError):
     def __init__(self, stage: str):
         super().__init__(stage)
@@ -44,22 +38,24 @@ def _migration_path(argv: Sequence[str] | None) -> Path:
 
 
 def _verify_database(database_url: str, migration_path: Path, connect) -> None:
-    migration = migration_path.read_text(encoding="utf-8")
     probe_id = f"twinops-deploy-probe-{uuid4()}"
     now = datetime.now(timezone.utc)
 
     with connect(database_url) as connection:
-        connection.execute(migration, prepare=False)
+        ensure_postgres_schema(
+            connection,
+            lambda: migration_path.read_text(encoding="utf-8"),
+        )
 
         tables = {
             row[0]
             for row in connection.execute(
                 "SELECT tablename FROM pg_catalog.pg_tables "
                 "WHERE schemaname='public' AND tablename = ANY(%s)",
-                (sorted(_EXPECTED_TABLES),),
+                (sorted(POSTGRES_V2_REQUIRED_TABLES),),
             ).fetchall()
         }
-        if tables != _EXPECTED_TABLES:
+        if tables != POSTGRES_V2_REQUIRED_TABLES:
             raise PostgresCheckError("tables")
 
         indexes = {
@@ -67,10 +63,10 @@ def _verify_database(database_url: str, migration_path: Path, connect) -> None:
             for row in connection.execute(
                 "SELECT indexname FROM pg_catalog.pg_indexes "
                 "WHERE schemaname='public' AND indexname = ANY(%s)",
-                (sorted(_EXPECTED_INDEXES),),
+                (sorted(POSTGRES_V2_REQUIRED_INDEXES),),
             ).fetchall()
         }
-        if indexes != _EXPECTED_INDEXES:
+        if indexes != POSTGRES_V2_REQUIRED_INDEXES:
             raise PostgresCheckError("indexes")
 
         if connection.pgconn.ssl_in_use is not True:
