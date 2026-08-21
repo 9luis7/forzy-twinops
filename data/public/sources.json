@@ -1,15 +1,15 @@
 {
   "schemaVersion": 2,
-  "generatedAt": "2026-08-21T16:10:38Z",
+  "generatedAt": "2026-08-21T22:43:54Z",
   "experimentConfig": {
     "schemaVersion": 1,
-    "configId": "public-fault-real-sources-v1-unconfirmed",
+    "configId": "public-fault-real-sources-v1-semantic-gated",
     "featurePolicy": {
       "policyId": "forzy-semantics-unconfirmed-v1",
       "selectedAccelerationAxis": null,
       "accelerationRmsSemanticsConfirmed": false,
       "temperatureSemanticsConfirmed": false,
-      "evidence": "Forzy acceleration statistic, axis and internal window remain unconfirmed; execution must stay blocked until an audited policy is supplied."
+      "evidence": "The Forzy GET payload exposes values, but no audited acceleration statistic, physical axis or internal window contract. Acceleration RMS and temperature comparability remain disabled until an explicit reviewed policy is supplied."
     },
     "labelMapping": {
       "version": "canonical-bearing-window-state-v1",
@@ -28,7 +28,7 @@
   "sources": [
     {
       "datasetId": "xjtu-sy",
-      "status": "downloaded_multipart_preparation_not_run",
+      "status": "prepared_semantically_gated",
       "landingPage": "https://biaowang.tech/xjtu-sy-bearing-datasets/",
       "downloadUrl": "https://drive.google.com/drive/folders/1ueg67JZcIoAM6KiOz1a4XDkh6lh2Y8Ii",
       "citation": "Wang et al., A Hybrid Prognostics Approach for Estimating Remaining Useful Life of Rolling Element Bearings, IEEE Transactions on Reliability, 2020.",
@@ -36,8 +36,8 @@
       "expectedSha256": null,
       "archivePath": "xjtu-sy/downloads",
       "rawPath": "xjtu-sy/raw",
-      "metadataPath": null,
-      "expectedMetadataSha256": null,
+      "metadataPath": "xjtu-sy/prepared/xjtu-sy-v1-8c7e9d8b7c272002a4d44b021931aaf6500f013574db60839bae2af3aa0fee1a/metadata.json",
+      "expectedMetadataSha256": "4876cc6540a8c972c63b890d111d1a4d60322f5addd2a317b0b058246020e8f8",
       "accessedAt": "2026-08-21T11:38:49Z",
       "archiveParts": [
         {"relativePath": "XJTU-SY_Bearing_Datasets.part01.rar", "sizeBytes": 744488960, "sha256": "c500657353f089a4ab50212ff4ddfc7b982729e92e2b127440c8ad881d80b968"},
@@ -55,7 +55,81 @@
         "totalUncompressedBytes": 12220812451,
         "totalCompressedMemberBytes": 4442768975
       },
-      "notes": "The user explicitly accepted the Google Drive virus-scan warning and all six author-published RAR5 parts were downloaded and hashed. Read-only inspection found 9,216 CSV files plus one source PDF, with member sequences matching the 15 bearing counts published by the authors. Real preparation and CSV content validation have not run; numeric unit, header, timestamps, per-window state/onset/severity and life fraction remain unknown."
+      "preparation": {
+        "generationId": "xjtu-sy-v1-8c7e9d8b7c272002a4d44b021931aaf6500f013574db60839bae2af3aa0fee1a",
+        "preparedPath": "xjtu-sy/prepared/xjtu-sy-v1-8c7e9d8b7c272002a4d44b021931aaf6500f013574db60839bae2af3aa0fee1a",
+        "attestationPath": "xjtu-sy/prepared/xjtu-sy-v1-8c7e9d8b7c272002a4d44b021931aaf6500f013574db60839bae2af3aa0fee1a/attestation.json",
+        "attestationSha256": "49de3ae74df4de489a966a77ccf6af647a58e60ceb2515934b9c62bf299277a5",
+        "metadataPath": "xjtu-sy/prepared/xjtu-sy-v1-8c7e9d8b7c272002a4d44b021931aaf6500f013574db60839bae2af3aa0fee1a/metadata.json",
+        "metadataSha256": "4876cc6540a8c972c63b890d111d1a4d60322f5addd2a317b0b058246020e8f8",
+        "rawInventory": {
+          "fileCount": 9217,
+          "csvFileCount": 9216,
+          "sourceDocumentCount": 1,
+          "totalBytes": 12220812451,
+          "inventorySha256": "42d68aa3fa65c28d0a15fd4bdb969ca7c9cc828827f4ab7a4dda62dfd42bd8db"
+        },
+        "sourceDocument": {
+          "relativePath": "XJTU-SY_Bearing_Datasets/Introduction_to_XJTU-SY_Bearing_Dataset.pdf",
+          "sha256": "b0e0fa3548e531a7b6570954190050d70019d3eeebfca172edca707a126d724f"
+        },
+        "publicationManifest": {
+          "entryCount": 9239,
+          "sha256": "cdb2fa353e88bf9a9329b9c7fab4feb1ee19945f7b0604b5a7ad872dea2e75d9"
+        },
+        "verification": {
+          "prepareExitCode": 0,
+          "prepareElapsedSeconds": 2061.44,
+          "independentAuditStatus": "PASS",
+          "independentAuditElapsedSeconds": 433.312,
+          "idempotentFastPathExitCode": 0,
+          "idempotentFastPathElapsedSeconds": 1065.401,
+          "externalMonitorHz": 10,
+          "externalMonitorSamples": 7205,
+          "observedSevenZipProcesses": 0,
+          "observedNewStagingPaths": 0,
+          "postFastAuditStatus": "PASS",
+          "postFastAuditElapsedSeconds": 148.031
+        },
+        "contentContract": {
+          "orderedHeader": [
+            "Horizontal_vibration_signals",
+            "Vertical_vibration_signals"
+          ],
+          "numericRowsPerWindow": 32768,
+          "axisCount": 2,
+          "axes": [
+            "horizontal",
+            "vertical"
+          ],
+          "samplingHz": 25600,
+          "observationCadenceMinutes": 1,
+          "conditionCount": 3,
+          "bearingCount": 15,
+          "sequenceCountsByCondition": [
+            616,
+            1566,
+            7034
+          ]
+        },
+        "semanticGates": {
+          "accelerationUnit": "unknown",
+          "absoluteTimestamps": "unknown",
+          "sourceTimezone": "unknown",
+          "windowState": "unknown",
+          "faultOnset": "unknown",
+          "severity": "unknown",
+          "lifeFraction": null,
+          "physicalFailureTime": "unknown",
+          "trueRul": "unknown",
+          "terminalOutcomesScope": "bearing_terminal_evidence",
+          "confirmatoryMetricsEnabled": false,
+          "supervisedMetricsEnabled": false,
+          "transferMetricsEnabled": false,
+          "rulMetricsEnabled": false
+        }
+      },
+      "notes": "All six author-published RAR5 parts were downloaded and hash-pinned. Real preparation published one immutable, independently audited generation containing 9,216 validated CSV windows and one source PDF. The exact H/V header, two author-confirmed orientations, 32,768 numeric rows, 25.6 kHz sampling and one-minute cadence are factual. Acceleration unit, absolute timestamps/timezone, per-window state/onset/severity, physical failure time, life fraction and true RUL remain unknown; terminal outcomes are bearing-scope evidence only. This source is not approved for confirmatory, supervised, transfer or RUL metrics."
     },
     {
       "datasetId": "nasa-ims",
@@ -86,6 +160,7 @@
         ]
       },
       "preparation": {
+        "generationId": "nasa-ims-v1-71cbedb9ec12f18af68eb175ba536c27df9c5de9a96fb4ac36d010f40e70ac0c",
         "preparedPath": "nasa-ims/prepared/nasa-ims-v1-71cbedb9ec12f18af68eb175ba536c27df9c5de9a96fb4ac36d010f40e70ac0c",
         "attestationPath": "nasa-ims/prepared/nasa-ims-v1-71cbedb9ec12f18af68eb175ba536c27df9c5de9a96fb4ac36d010f40e70ac0c/attestation.json",
         "attestationSha256": "b0da8f95a9f877e8a04c7c247dd4cbdf9d3ffc4fd93ee43c3c9f01e026253eb6",
@@ -99,13 +174,13 @@
               "status": "prepared",
               "sourceArchiveSha256": "c25241571583948462a3916d97dc11c984a839f38a0da0907fff18c958c0a484",
               "rawInventory": {"fileCount": 2156, "totalBytes": 2477767237, "firstPath": "1st_test/2003.10.22.12.06.24", "lastPath": "1st_test/2003.11.25.23.39.56", "inventorySha256": "347863ccf244fb88d6f89303183bfb5af3405fa93f88f0d2f596baf27bc9b42f"},
-              "metadata": {"schemaVersion": 1, "sha256": "21a12273c9575a57a8d816ddf3fd9f134867cfed5fd6af79a2b68138a401bfae"}
+              "metadata": {"path": "nasa-ims/prepared/nasa-ims-v1-71cbedb9ec12f18af68eb175ba536c27df9c5de9a96fb4ac36d010f40e70ac0c/run-1/metadata.json", "schemaVersion": 1, "sha256": "21a12273c9575a57a8d816ddf3fd9f134867cfed5fd6af79a2b68138a401bfae"}
             },
             "run-2": {
               "status": "prepared",
               "sourceArchiveSha256": "b154d5ba1ae5f7f01cdd4f1bde5b08cfdc2f3134d51ad2f6614b1270a86ab632",
               "rawInventory": {"fileCount": 984, "totalBytes": 544618480, "firstPath": "2nd_test/2004.02.12.10.32.39", "lastPath": "2nd_test/2004.02.19.06.22.39", "inventorySha256": "94bd9093c2301c16cbae27e2c1695207b91c3acfa6bf90187a2f88ae3070ebff"},
-              "metadata": {"schemaVersion": 1, "sha256": "3ff3ce76aee53f0aa57aa193ea6a609d7371100a5bef1db6cbaf4a1eef3b2958"}
+              "metadata": {"path": "nasa-ims/prepared/nasa-ims-v1-71cbedb9ec12f18af68eb175ba536c27df9c5de9a96fb4ac36d010f40e70ac0c/run-2/metadata.json", "schemaVersion": 1, "sha256": "3ff3ce76aee53f0aa57aa193ea6a609d7371100a5bef1db6cbaf4a1eef3b2958"}
             }
           },
           "quarantine": {

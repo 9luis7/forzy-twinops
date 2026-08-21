@@ -1,96 +1,101 @@
 # Experimento com datasets públicos de falhas
 
-## Objetivo e fronteira
-
-Este laboratório mede quanto conhecimento de falhas de rolamentos sobrevive à
-redução do sinal completo para estatísticas agregadas e, finalmente, para o
-subconjunto semanticamente compatível com a API Forzy. Ele é científico e
-separado do modelo operacional: não altera `artifacts/ml/real-forzy`, não
-calibra o ativo `forzy-motor-01` e não alimenta a UI.
-
-As três vistas congeladas são:
-
-1. **Full:** estatísticas do waveform, energia espectral e envelope em bandas
-   normalizadas por Nyquist.
-2. **Aggregate:** estatísticas da janela e apenas contexto realmente medido.
-3. **Forzy-compatible:** aceleração RMS e temperatura somente quando medidas
-   com semântica reproduzível. Velocidade RMS não é derivada da aceleração sem
-   filtro e integrador validados; RPM e temperatura ausentes não são inventados.
-
 ## Evidência
 
-O código de contrato, adapters, integridade SHA-256, features, splits por
-rolamento, baselines, métricas e bootstrap por rolamento foi executado contra
-fixtures numéricas pequenas. Essas fixtures testam o pipeline; elas **não** são
-evidência científica e não entram nas métricas do relatório versionado.
+Este laboratório é uma fronteira científica separada do modelo operacional:
+não altera `artifacts/ml/real-forzy`, não calibra o ativo `forzy-motor-01` e
+não alimenta a UI. As fixtures sintéticas continuam provando apenas o pipeline;
+nenhum número delas é publicado como resultado científico.
 
-As fontes registradas são as páginas dos autores do XJTU-SY e o portal NASA
-para IMS. Nesta execução, a autorização explícita para baixar os arquivos
-originais e aceitar/verificar seus termos ainda estava pendente. Por isso não
-há URL exata de arquivo, data de acesso nem hash do archive realmente usado.
+Os sinais originais XJTU-SY e NASA IMS foram baixados, fixados por hash,
+preparados em gerações imutáveis e auditados. A geração XJTU-SY
+`xjtu-sy-v1-8c7e9d8b7c272002a4d44b021931aaf6500f013574db60839bae2af3aa0fee1a`
+contém 9.217 arquivos: 9.216 CSVs e um PDF, totalizando 12.220.812.451 bytes.
+O inventário bruto tem SHA-256
+`42d68aa3fa65c28d0a15fd4bdb969ca7c9cc828827f4ab7a4dda62dfd42bd8db`;
+a metadata e a attestation têm, respectivamente,
+`4876cc6540a8c972c63b890d111d1a4d60322f5addd2a317b0b058246020e8f8`
+e `49de3ae74df4de489a966a77ccf6af647a58e60ceb2515934b9c62bf299277a5`.
+O manifesto independente de publicação tem 9.239 entradas e SHA-256
+`cdb2fa353e88bf9a9329b9c7fab4feb1ee19945f7b0604b5a7ad872dea2e75d9`.
+
+Cada CSV XJTU-SY tem o header ASCII ordenado
+`Horizontal_vibration_signals,Vertical_vibration_signals`, seguido por 32.768
+linhas numéricas em dois eixos. A amostragem é 25,6 kHz e há uma observação por
+minuto. São 15 rolamentos em três condições, com 616, 1.566 e 7.034 janelas por
+condição. A preparação real terminou com exit 0 em 2.061,44 s; a auditoria
+independente passou em 433,312 s. O fast path idempotente terminou com exit 0
+em 1.065,401 s e foi observado externamente a 10 Hz por 7.205 amostras, sem
+processo 7-Zip e sem novo staging; a auditoria posterior passou em 148,031 s.
+
+A geração NASA IMS
+`nasa-ims-v1-71cbedb9ec12f18af68eb175ba536c27df9c5de9a96fb4ac36d010f40e70ac0c`
+tem attestation SHA-256
+`b0da8f95a9f877e8a04c7c247dd4cbdf9d3ffc4fd93ee43c3c9f01e026253eb6`.
+O run 1 contém 2.156 arquivos e 2.477.767.237 bytes, com inventário
+`347863ccf244fb88d6f89303183bfb5af3405fa93f88f0d2f596baf27bc9b42f`
+e metadata
+`21a12273c9575a57a8d816ddf3fd9f134867cfed5fd6af79a2b68138a401bfae`.
+O run 2 contém 984 arquivos e 544.618.480 bytes, com inventário
+`94bd9093c2301c16cbae27e2c1695207b91c3acfa6bf90187a2f88ae3070ebff`
+e metadata
+`3ff3ce76aee53f0aa57aa193ea6a609d7371100a5bef1db6cbaf4a1eef3b2958`.
+O run 3 permanece em quarentena: a fonte documenta 4.448 arquivos, mas o
+archive contém 6.324; ele não foi extraído nem incluído em métricas. O contrato
+factual do NASA IMS confirma 20 kHz e 20.480 linhas por janela.
 
 ## Resultado
 
-Status: `not_run_external_data_gate`.
+Status: `not_run_semantic_gate`.
 
-Nenhum arquivo bruto XJTU-SY ou NASA IMS foi usado. Consequentemente:
+Os dados foram preparados e auditados, mas não foram carregados em um
+experimento: `dataActuallyUsed` permanece vazio e `metrics` permanece `null`.
+Logo, não existem nesta entrega:
 
-- delta `full -> aggregate -> Forzy-compatible`: **não calculado**;
-- XJTU-SY → NASA IMS: **não executado**;
-- NASA IMS → XJTU-SY: **não executado**;
-- comparação com baseline majoritário: **não calculada**;
-- métricas diagnósticas, prognósticas e intervalos de confiança: **ausentes**.
+- deltas `full -> aggregate -> Forzy-compatible`;
+- XJTU-SY → NASA IMS ou NASA IMS → XJTU-SY;
+- comparação cross-bench com baseline majoritário;
+- métricas diagnósticas, prognósticas, de transferência ou de RUL;
+- evidência de que o modelo Forzy prevê falha.
 
-Não existe, portanto, base para dizer que “o modelo Forzy prevê falha”. O
-resultado desta entrega é um protocolo reproduzível e com gates, não uma
-alegação de desempenho.
+O CLI de laboratório não foi executado em modo real. O resultado publicado é
+o gate científico reproduzível, não uma alegação de desempenho.
 
 ## Limitação
 
-Os adapters exigem um `metadata.json` curado junto ao raw extraído. Labels,
-identidade de canais, frequência de amostragem e unidade vêm desse mapa; não
-são adivinhados por nome de arquivo. Uma retomada deve confrontar esse mapa com
-a documentação da versão exata baixada.
+Há dois bloqueios independentes. Primeiro, não existe política auditada comum
+para labels por janela, unidade de aceleração e semântica da medição Forzy. Os
+desfechos XJTU-SY são evidência terminal no escopo do rolamento; não rotulam
+todas as janelas. Unidade de aceleração, instante físico de falha, estado,
+onset, severidade, `lifeFraction` e RUL verdadeiro continuam desconhecidos. No
+NASA IMS, os canais físicos e o timezone também permanecem opacos. Os endpoints
+GET da Forzy expõem valores, mas ainda não documentam de forma auditada a
+estatística de aceleração, o eixo ou a janela interna usados no payload.
 
-Mesmo após a execução, resultados públicos continuarão limitados por diferenças
-de bancada, montagem, carga, rotação, posição do sensor, banda e estatística
-interna. A vista Forzy-compatible não prova equivalência física com S1/S2 e não
-é calibrada para o conjunto motor-bomba real.
+Segundo, o loader atual do laboratório aceita um único ZIP/TAR íntegro por
+fonte e exige um destino de extração vazio. Ele não consome a geração XJTU-SY
+preparada a partir de RAR multipart nem a geração NASA com dois runs preparados
+e um terceiro run em quarentena. Por isso o comando real legado não é uma rota
+segura de retomada e não deve ser executado para contornar o gate.
+
+Diferenças entre bancada, montagem, carga, rotação, sensor, banda e estatística
+interna permanecem limitações mesmo após uma futura execução. A vista
+Forzy-compatible nunca provará equivalência física apenas por compartilhar o
+nome de uma feature.
 
 ## Próximo experimento
 
-Após autorização explícita de rede e termos:
+A retomada honesta exige primeiro um loader read-only revisado que consuma as
+duas gerações preparadas e preserve seus hashes. Em seguida é preciso escolher
+explicitamente uma das duas linhas científicas:
 
-1. registrar a URL exata de cada archive, termos/licença e `accessedAt`;
-2. baixar para a árvore ignorada sem sobrescrever arquivo existente;
-3. calcular e fixar SHA-256 antes de extrair em diretório vazio;
-4. curar os mapas de bearings/canais contra a documentação original;
-5. executar o comando abaixo, que falha em hash divergente, overlap de bearing,
-   labels não mapeáveis ou fronteira operacional inválida;
-6. revisar os deltas das três vistas e exigir cross-bench acima do baseline
-   majoritário antes de qualquer claim de transferência.
+1. obter labels por janela, unidade e semântica Forzy autoritativos e auditados
+   para executar a comparação supervisionada e cross-bench originalmente
+   planejada; ou
+2. aprovar e desenhar separadamente um estudo não supervisionado de drift ao
+   longo do ciclo de vida, com hipóteses, métricas e limites próprios.
 
-```powershell
-services\twinops\.venv\Scripts\python.exe scripts/run_public_fault_lab.py `
-  --datasets xjtu ims `
-  --output artifacts/ml-public `
-  --seed 42 `
-  --overwrite
-```
-
-O preflight sem escrita pode ser repetido com `--dry-run`. Quando os dados
-verificados existirem, o CLI produzirá contagens, hashes, splits, tempos,
-métricas das três vistas e intervalos de confiança por bootstrap de bearings.
-
-O caminho de sucesso foi exercitado sem rede com dois archives sintéticos
-pequenos, metadata hash-pinned e bearings/labels distintos. Esse teste cobre
-extração segura, inventário raw, ambas as direções cross-bench, deltas e
-verdicts; seus números permanecem somente no diretório temporário de teste. Os
-JSON versionados continuam com `metrics: null` até a execução com sinais
-originais realmente autorizados.
-
-A execução real também exige uma `featurePolicy` auditada. O arquivo atual
-mantém aceleração e temperatura como semântica não confirmada, pois eixo,
-estatística e janela interna da API Forzy ainda não foram demonstrados como
-equivalentes. Alterar apenas o status da fonte não é suficiente para liberar
-uma alegação Forzy-compatible.
+A segunda alternativa muda a pergunta científica e não pode ser tratada como
+execução silenciosa deste plano. Até que loader e política sejam revisados, os
+dois datasets permanecem `prepared_semantically_gated`, todas as métricas
+continuam indisponíveis e nenhum artefato é promovido para produção.

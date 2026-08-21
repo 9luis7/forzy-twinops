@@ -1,34 +1,183 @@
 {
   "schemaVersion": 1,
-  "status": "not_run_external_data_gate",
-  "generatedAt": "2026-08-20T20:54:02Z",
+  "status": "not_run_semantic_gate",
+  "generatedAt": "2026-08-21T22:43:54Z",
+  "dataActuallyUsed": [],
+  "metrics": null,
   "datasets": {
     "xjtu-sy": {
-      "landingPage": "https://biaowang.tech/xjtu-sy-bearing-datasets/",
-      "downloadUrl": null,
-      "accessedAt": null,
-      "verifiedSha256": null,
-      "metadataSchemaVersion": null,
-      "metadataSha256": null,
-      "rawInventorySha256": null,
+      "status": "prepared_semantically_gated",
+      "source": {
+        "landingPage": "https://biaowang.tech/xjtu-sy-bearing-datasets/",
+        "downloadUrl": "https://drive.google.com/drive/folders/1ueg67JZcIoAM6KiOz1a4XDkh6lh2Y8Ii",
+        "accessedAt": "2026-08-21T11:38:49Z",
+        "format": "rar5-multipart",
+        "volumeCount": 6
+      },
+      "generationId": "xjtu-sy-v1-8c7e9d8b7c272002a4d44b021931aaf6500f013574db60839bae2af3aa0fee1a",
+      "preparedPath": "xjtu-sy/prepared/xjtu-sy-v1-8c7e9d8b7c272002a4d44b021931aaf6500f013574db60839bae2af3aa0fee1a",
+      "attestation": {
+        "path": "xjtu-sy/prepared/xjtu-sy-v1-8c7e9d8b7c272002a4d44b021931aaf6500f013574db60839bae2af3aa0fee1a/attestation.json",
+        "sha256": "49de3ae74df4de489a966a77ccf6af647a58e60ceb2515934b9c62bf299277a5"
+      },
+      "metadata": {
+        "path": "xjtu-sy/prepared/xjtu-sy-v1-8c7e9d8b7c272002a4d44b021931aaf6500f013574db60839bae2af3aa0fee1a/metadata.json",
+        "schemaVersion": 1,
+        "sha256": "4876cc6540a8c972c63b890d111d1a4d60322f5addd2a317b0b058246020e8f8"
+      },
+      "rawInventory": {
+        "fileCount": 9217,
+        "csvFileCount": 9216,
+        "sourceDocumentCount": 1,
+        "totalBytes": 12220812451,
+        "sha256": "42d68aa3fa65c28d0a15fd4bdb969ca7c9cc828827f4ab7a4dda62dfd42bd8db"
+      },
+      "sourceDocument": {
+        "sha256": "b0e0fa3548e531a7b6570954190050d70019d3eeebfca172edca707a126d724f"
+      },
+      "publicationManifest": {
+        "entryCount": 9239,
+        "sha256": "cdb2fa353e88bf9a9329b9c7fab4feb1ee19945f7b0604b5a7ad872dea2e75d9"
+      },
+      "preparationVerification": {
+        "prepareExitCode": 0,
+        "prepareElapsedSeconds": 2061.44,
+        "independentAuditStatus": "PASS",
+        "independentAuditElapsedSeconds": 433.312,
+        "idempotentFastPathExitCode": 0,
+        "idempotentFastPathElapsedSeconds": 1065.401,
+        "externalMonitorHz": 10,
+        "externalMonitorSamples": 7205,
+        "observedSevenZipProcesses": 0,
+        "observedNewStagingPaths": 0,
+        "postFastAuditStatus": "PASS",
+        "postFastAuditElapsedSeconds": 148.031
+      },
+      "contentEvidence": {
+        "orderedHeader": [
+          "Horizontal_vibration_signals",
+          "Vertical_vibration_signals"
+        ],
+        "numericRowsPerWindow": 32768,
+        "axes": [
+          "horizontal",
+          "vertical"
+        ],
+        "samplingHz": 25600,
+        "observationCadenceMinutes": 1,
+        "conditionCount": 3,
+        "bearingCount": 15,
+        "sequenceCountsByCondition": [
+          616,
+          1566,
+          7034
+        ]
+      },
+      "semanticGates": {
+        "accelerationUnit": "unknown",
+        "absoluteTimestamps": "unknown",
+        "sourceTimezone": "unknown",
+        "windowState": "unknown",
+        "faultOnset": "unknown",
+        "severity": "unknown",
+        "lifeFraction": null,
+        "physicalFailureTime": "unknown",
+        "trueRul": "unknown",
+        "terminalOutcomesScope": "bearing_terminal_evidence",
+        "confirmatoryMetricsEnabled": false,
+        "supervisedMetricsEnabled": false,
+        "transferMetricsEnabled": false,
+        "rulMetricsEnabled": false
+      },
+      "originalNumericDataPrepared": true,
       "originalNumericDataUsed": false,
       "windowCount": null,
-      "bearingCount": null,
       "split": null
     },
     "nasa-ims": {
-      "landingPage": "https://data.nasa.gov/dataset/ims-bearings",
-      "downloadUrl": null,
-      "accessedAt": null,
-      "verifiedSha256": null,
-      "metadataSchemaVersion": null,
-      "metadataSha256": null,
-      "rawInventorySha256": null,
+      "status": "prepared_semantically_gated",
+      "source": {
+        "landingPage": "https://data.nasa.gov/dataset/ims-bearings",
+        "downloadUrl": "https://data.nasa.gov/docs/legacy/IMS.zip",
+        "accessedAt": "2026-08-21T11:38:49Z",
+        "archiveSha256": "6cb42c263b0281c725abf99f4b9fcf49915c949f31dbd2333877dc2e06ce9ec2"
+      },
+      "generationId": "nasa-ims-v1-71cbedb9ec12f18af68eb175ba536c27df9c5de9a96fb4ac36d010f40e70ac0c",
+      "preparedPath": "nasa-ims/prepared/nasa-ims-v1-71cbedb9ec12f18af68eb175ba536c27df9c5de9a96fb4ac36d010f40e70ac0c",
+      "attestation": {
+        "path": "nasa-ims/prepared/nasa-ims-v1-71cbedb9ec12f18af68eb175ba536c27df9c5de9a96fb4ac36d010f40e70ac0c/attestation.json",
+        "sha256": "b0da8f95a9f877e8a04c7c247dd4cbdf9d3ffc4fd93ee43c3c9f01e026253eb6"
+      },
+      "runs": {
+        "run-1": {
+          "status": "prepared",
+          "metadata": {
+            "path": "nasa-ims/prepared/nasa-ims-v1-71cbedb9ec12f18af68eb175ba536c27df9c5de9a96fb4ac36d010f40e70ac0c/run-1/metadata.json",
+            "schemaVersion": 1,
+            "sha256": "21a12273c9575a57a8d816ddf3fd9f134867cfed5fd6af79a2b68138a401bfae"
+          },
+          "rawInventory": {
+            "fileCount": 2156,
+            "totalBytes": 2477767237,
+            "sha256": "347863ccf244fb88d6f89303183bfb5af3405fa93f88f0d2f596baf27bc9b42f"
+          }
+        },
+        "run-2": {
+          "status": "prepared",
+          "metadata": {
+            "path": "nasa-ims/prepared/nasa-ims-v1-71cbedb9ec12f18af68eb175ba536c27df9c5de9a96fb4ac36d010f40e70ac0c/run-2/metadata.json",
+            "schemaVersion": 1,
+            "sha256": "3ff3ce76aee53f0aa57aa193ea6a609d7371100a5bef1db6cbaf4a1eef3b2958"
+          },
+          "rawInventory": {
+            "fileCount": 984,
+            "totalBytes": 544618480,
+            "sha256": "94bd9093c2301c16cbae27e2c1695207b91c3acfa6bf90187a2f88ae3070ebff"
+          }
+        }
+      },
+      "quarantine": {
+        "runId": "ims-run-3",
+        "status": "quarantined_source_contradiction",
+        "documentedFileCount": 4448,
+        "observedFileCount": 6324,
+        "extracted": false,
+        "includedInConfirmatoryMetrics": false,
+        "includedInSupervisedMetrics": false,
+        "includedInTransferMetrics": false,
+        "includedInRulMetrics": false
+      },
+      "contentEvidence": {
+        "samplingHz": 20000,
+        "numericRowsPerWindow": 20480
+      },
+      "semanticGates": {
+        "accelerationUnit": "unknown",
+        "axes": "opaque_source_channels",
+        "sourceTimezone": "unknown",
+        "windowState": "unknown",
+        "faultOnset": "unknown",
+        "severity": "unknown",
+        "lifeFraction": null,
+        "trueRul": "unknown",
+        "confirmatoryMetricsEnabled": false,
+        "supervisedMetricsEnabled": false,
+        "transferMetricsEnabled": false,
+        "rulMetricsEnabled": false
+      },
+      "originalNumericDataPrepared": true,
       "originalNumericDataUsed": false,
       "windowCount": null,
-      "bearingCount": null,
       "split": null
     }
+  },
+  "experimentGate": {
+    "reason": "The immutable prepared generations were audited but not loaded into the experiment because common per-window labels, acceleration unit and Forzy measurement semantics are not audited, and the current lab loader cannot consume prepared multipart or multi-run generations.",
+    "loaderCompatibility": "legacy_zip_tar_only",
+    "resumeConditions": [
+      "reviewed prepared-generation loader",
+      "explicit audited scientific policy for labels, units, and Forzy comparability, or a separately approved unsupervised lifecycle-drift design"
+    ]
   },
   "syntheticFixtures": {
     "usedForPipelineTests": true,
