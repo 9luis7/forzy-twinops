@@ -451,6 +451,83 @@ def _destination_exists_and_is_empty(destination: Path, *, promotion: bool = Fal
     return True
 
 
+@dataclass(frozen=True, slots=True)
+class _DirectoryIdentity:
+    device: int
+    inode: int
+
+
+def _directory_identity(path: Path) -> _DirectoryIdentity:
+    metadata = path.lstat()
+    reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+    if (
+        stat.S_ISLNK(metadata.st_mode)
+        or (reparse_flag and getattr(metadata, "st_file_attributes", 0) & reparse_flag)
+        or not stat.S_ISDIR(metadata.st_mode)
+    ):
+        raise RuntimeError("RAR staging identity is not a regular directory")
+    device = getattr(metadata, "st_dev", None)
+    inode = getattr(metadata, "st_ino", None)
+    if (
+        isinstance(device, bool)
+        or not isinstance(device, int)
+        or isinstance(inode, bool)
+        or not isinstance(inode, int)
+        or inode == 0
+    ):
+        raise RuntimeError("RAR staging directory has no stable filesystem identity")
+    return _DirectoryIdentity(device, inode)
+
+
+def _matches_directory_identity(path: Path, identity: _DirectoryIdentity) -> bool:
+    if not os.path.lexists(path):
+        return False
+    try:
+        return _directory_identity(path) == identity
+    except RuntimeError:
+        return False
+
+
+def _cleanup_owned_rar_tree(
+    temporary: Path,
+    destination: Path,
+    identity: _DirectoryIdentity,
+) -> None:
+    owned = [
+        path
+        for path in (temporary, destination)
+        if _matches_directory_identity(path, identity)
+    ]
+    if len(owned) > 1:
+        raise RuntimeError("RAR cleanup found the staging identity at multiple paths")
+    if owned:
+        shutil.rmtree(owned[0])
+    if any(_matches_directory_identity(path, identity) for path in (temporary, destination)):
+        raise RuntimeError("RAR cleanup did not remove the owned staging tree")
+    if os.path.lexists(temporary):
+        raise RuntimeError("RAR cleanup refused an unowned staging path")
+
+
+def _restore_rar_destination_state(destination: Path, *, was_empty: bool) -> None:
+    if was_empty:
+        if os.path.lexists(destination):
+            _destination_exists_and_is_empty(destination)
+        else:
+            destination.mkdir()
+    elif os.path.lexists(destination):
+        raise RuntimeError("RAR cleanup refused to remove an unowned destination path")
+
+
+def _add_cleanup_note(original: BaseException, action: str, failure: BaseException) -> None:
+    try:
+        original.add_note(
+            f"RAR {action} failed safely ({failure.__class__.__name__}); "
+            "manual cleanup review may be required"
+        )
+    except BaseException:
+        pass
+
+
 def safe_extract_rar_archive(
     parts: Sequence[ArchivePart],
     destination: str | Path,
@@ -461,7 +538,10 @@ def safe_extract_rar_archive(
     """Safely stream an exact RAR volume set into an atomic destination tree."""
 
     destination_path = Path(destination)
-    _destination_exists_and_is_empty(destination_path)
+    destination_was_empty = _destination_exists_and_is_empty(destination_path)
+    initial_destination_identity = (
+        _directory_identity(destination_path) if destination_was_empty else None
+    )
     executable = os.fspath(seven_zip_executable)
     if (
         not isinstance(executable, str)
@@ -474,6 +554,7 @@ def safe_extract_rar_archive(
     temporary = Path(
         tempfile.mkdtemp(prefix=f".{destination_path.name}-rar-extract-", dir=destination_path.parent)
     )
+    temporary_identity = _directory_identity(temporary)
     try:
         for directory in sorted(
             _expected_rar_directories(inspection),
@@ -495,15 +576,38 @@ def safe_extract_rar_archive(
                 )
             )
         streamed = _inventory(files)
-        actual = _validate_rar_filesystem(temporary, inspection, streamed)
         for part in inspection.parts:
             verify_archive(part.path, part.sha256)
-        if _destination_exists_and_is_empty(destination_path, promotion=True):
+        actual = _validate_rar_filesystem(temporary, inspection, streamed)
+        destination_is_empty = _destination_exists_and_is_empty(
+            destination_path, promotion=True
+        )
+        destination_identity_changed = (
+            destination_is_empty
+            and _directory_identity(destination_path) != initial_destination_identity
+        )
+        if destination_is_empty != destination_was_empty or destination_identity_changed:
+            raise ValueError("extraction destination changed before RAR promotion")
+        if destination_is_empty:
             destination_path.rmdir()
         temporary.replace(destination_path)
+        if os.path.lexists(temporary) or not _matches_directory_identity(
+            destination_path, temporary_identity
+        ):
+            raise RuntimeError("RAR atomic promotion did not publish the owned staging tree")
         return actual
-    except BaseException:
-        shutil.rmtree(temporary, ignore_errors=True)
+    except BaseException as error:
+        try:
+            _cleanup_owned_rar_tree(temporary, destination_path, temporary_identity)
+        except BaseException as cleanup_error:
+            _add_cleanup_note(error, "staging cleanup", cleanup_error)
+        try:
+            _restore_rar_destination_state(
+                destination_path,
+                was_empty=destination_was_empty,
+            )
+        except BaseException as restore_error:
+            _add_cleanup_note(error, "destination restore", restore_error)
         raise
 
 

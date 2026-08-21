@@ -568,6 +568,178 @@ def test_safe_extract_rar_rehashes_parts_before_promotion(tmp_path, monkeypatch)
     assert not destination.exists()
 
 
+def test_safe_extract_rar_revalidates_staging_after_source_rehash(
+    tmp_path, monkeypatch
+) -> None:
+    first = _single_file_rar(tmp_path, monkeypatch)
+    _install_fake_process(monkeypatch, calls=[], content={"bearing/a.csv": b"data"})
+    real_verify = downloads.verify_archive
+    verify_count = 0
+
+    def tampering_verify(path, expected_sha256):
+        nonlocal verify_count
+        result = real_verify(path, expected_sha256)
+        verify_count += 1
+        if verify_count == 3:
+            staging = next(tmp_path.glob(".raw-rar-extract-*"))
+            (staging / "bearing" / "a.csv").write_bytes(b"evil")
+        return result
+
+    monkeypatch.setattr(downloads, "verify_archive", tampering_verify)
+    destination = tmp_path / "raw"
+
+    with pytest.raises(ValueError, match="streamed RAR inventory"):
+        safe_extract_rar_archive([ArchivePart(first, _sha256(first))], destination)
+
+    assert not destination.exists()
+    assert not list(tmp_path.glob(".raw-rar-extract-*"))
+
+
+@pytest.mark.parametrize("error_type", [RuntimeError, KeyboardInterrupt, SystemExit])
+@pytest.mark.parametrize("rename_happened", [False, True])
+def test_safe_extract_rar_rolls_back_when_replace_raises(
+    tmp_path, monkeypatch, error_type, rename_happened
+) -> None:
+    first = _single_file_rar(tmp_path, monkeypatch)
+    _install_fake_process(monkeypatch, calls=[], content={"bearing/a.csv": b"data"})
+    destination = tmp_path / "raw"
+    real_replace = downloads.Path.replace
+    original = error_type("replace failed")
+
+    def failing_replace(path, target):
+        if rename_happened:
+            real_replace(path, target)
+        raise original
+
+    monkeypatch.setattr(downloads.Path, "replace", failing_replace)
+
+    with pytest.raises(error_type) as captured:
+        safe_extract_rar_archive([ArchivePart(first, _sha256(first))], destination)
+
+    assert captured.value is original
+    assert not getattr(original, "__notes__", [])
+    assert not destination.exists()
+    assert not list(tmp_path.glob(".raw-rar-extract-*"))
+
+
+@pytest.mark.parametrize("rename_happened", [False, True])
+def test_safe_extract_rar_restores_preexisting_empty_destination_after_replace_error(
+    tmp_path, monkeypatch, rename_happened
+) -> None:
+    first = _single_file_rar(tmp_path, monkeypatch)
+    _install_fake_process(monkeypatch, calls=[], content={"bearing/a.csv": b"data"})
+    destination = tmp_path / "raw"
+    destination.mkdir()
+    real_replace = downloads.Path.replace
+    original = SystemExit("interrupted after rename")
+
+    def failing_replace(path, target):
+        if rename_happened:
+            real_replace(path, target)
+        raise original
+
+    monkeypatch.setattr(downloads.Path, "replace", failing_replace)
+
+    with pytest.raises(SystemExit) as captured:
+        safe_extract_rar_archive([ArchivePart(first, _sha256(first))], destination)
+
+    assert captured.value is original
+    assert destination.is_dir()
+    assert not any(destination.iterdir())
+    assert not getattr(original, "__notes__", [])
+    assert not list(tmp_path.glob(".raw-rar-extract-*"))
+
+
+def test_safe_extract_rar_does_not_remove_replaced_empty_destination(
+    tmp_path, monkeypatch
+) -> None:
+    first = _single_file_rar(tmp_path, monkeypatch)
+    _install_fake_process(monkeypatch, calls=[], content={"bearing/a.csv": b"data"})
+    destination = tmp_path / "raw"
+    destination.mkdir()
+    replacement_identity = None
+    real_validate = downloads._validate_rar_filesystem
+
+    def replace_empty_destination(*args, **kwargs):
+        nonlocal replacement_identity
+        result = real_validate(*args, **kwargs)
+        destination.rmdir()
+        destination.mkdir()
+        metadata = destination.lstat()
+        replacement_identity = (metadata.st_dev, metadata.st_ino)
+        return result
+
+    monkeypatch.setattr(downloads, "_validate_rar_filesystem", replace_empty_destination)
+
+    with pytest.raises(ValueError, match="destination changed"):
+        safe_extract_rar_archive([ArchivePart(first, _sha256(first))], destination)
+
+    metadata = destination.lstat()
+    assert (metadata.st_dev, metadata.st_ino) == replacement_identity
+    assert not any(destination.iterdir())
+    assert not list(tmp_path.glob(".raw-rar-extract-*"))
+
+
+@pytest.mark.parametrize("cleanup_behavior", ["raises", "no_op"])
+def test_safe_extract_rar_notes_failed_or_no_op_cleanup_without_masking_original(
+    tmp_path, monkeypatch, cleanup_behavior
+) -> None:
+    first = _single_file_rar(tmp_path, monkeypatch)
+    _install_fake_process(monkeypatch, calls=[], content={"bearing/a.csv": b"data"})
+    destination = tmp_path / "raw"
+    original = RuntimeError("primary replace failure")
+    monkeypatch.setattr(
+        downloads.Path,
+        "replace",
+        lambda _path, _target: (_ for _ in ()).throw(original),
+    )
+
+    if cleanup_behavior == "raises":
+        monkeypatch.setattr(
+            downloads.shutil,
+            "rmtree",
+            lambda _path: (_ for _ in ()).throw(OSError("cleanup failed")),
+        )
+    else:
+        monkeypatch.setattr(downloads.shutil, "rmtree", lambda _path: None)
+
+    with pytest.raises(RuntimeError) as captured:
+        safe_extract_rar_archive([ArchivePart(first, _sha256(first))], destination)
+
+    assert captured.value is original
+    assert any("staging cleanup failed safely" in note for note in original.__notes__)
+    assert len(list(tmp_path.glob(".raw-rar-extract-*"))) == 1
+    assert not destination.exists()
+
+
+def test_safe_extract_rar_does_not_remove_staging_path_after_identity_changes(
+    tmp_path, monkeypatch
+) -> None:
+    first = _single_file_rar(tmp_path, monkeypatch)
+    _install_fake_process(monkeypatch, calls=[], content={"bearing/a.csv": b"data"})
+    destination = tmp_path / "raw"
+    original_replace = downloads.Path.replace
+    original = SystemExit("identity changed during replace")
+    displaced = tmp_path / "displaced-owned-tree"
+
+    def displace_and_replace_with_unowned(path, _target):
+        original_replace(path, displaced)
+        path.mkdir()
+        (path / "do-not-delete.txt").write_text("unowned", encoding="utf-8")
+        raise original
+
+    monkeypatch.setattr(downloads.Path, "replace", displace_and_replace_with_unowned)
+
+    with pytest.raises(SystemExit) as captured:
+        safe_extract_rar_archive([ArchivePart(first, _sha256(first))], destination)
+
+    assert captured.value is original
+    staging = next(tmp_path.glob(".raw-rar-extract-*"))
+    assert (staging / "do-not-delete.txt").read_text(encoding="utf-8") == "unowned"
+    assert displaced.is_dir()
+    assert any("staging cleanup failed safely" in note for note in original.__notes__)
+
+
 def test_safe_extract_rar_rejects_extra_empty_directory_after_streaming(
     tmp_path, monkeypatch
 ) -> None:
