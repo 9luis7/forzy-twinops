@@ -21,7 +21,12 @@ def normalize_https_origin(value: str) -> str:
         not value
         or value != value.strip()
         or "\\" in value
-        or any(ord(character) <= 0x20 or ord(character) == 0x7F for character in value)
+        or "?" in value
+        or "#" in value
+        or any(
+            ord(character) <= 0x20 or ord(character) == 0x7F
+            for character in value
+        )
     ):
         raise ValueError("TWINOPS_UPSTREAM_BASE_URL must be a clean https origin")
 
@@ -68,7 +73,11 @@ def normalize_https_origin(value: str) -> str:
             )
         authority = canonical_hostname
     else:
-        authority = f"[{address.compressed}]" if address.version == 6 else address.compressed
+        authority = (
+            f"[{address.compressed}]"
+            if address.version == 6
+            else address.compressed
+        )
 
     if port is not None:
         authority = f"{authority}:{port}"
@@ -82,7 +91,11 @@ def is_secure_pooled_database_url(value: str) -> bool:
         not value
         or value != value.strip()
         or "\\" in value
-        or any(ord(character) <= 0x20 or ord(character) == 0x7F for character in value)
+        or "#" in value
+        or any(
+            ord(character) <= 0x20 or ord(character) == 0x7F
+            for character in value
+        )
     ):
         return False
     try:

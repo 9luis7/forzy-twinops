@@ -10,6 +10,8 @@ ou produção, push, nova migration Neon, leitura de env ou contato com upstream
 - Env/origens/upload: RED com 20 falhas e 29 passes; GREEN focado com 77 passes.
   O contrato rejeita `sslmode` ausente/duplicado nos dois ordenamentos e com
   percent-encoding, valida origem HTTPS limpa e exclui metadata local do upload.
+- Self-review de delimitadores vazios: RED com 5 falhas; GREEN combinado com 82
+  passes. Origens com `?`/`#` vazios e DSN com fragmento vazio também falham.
 - Scorer/smokes: RED com 8 falhas e 33 passes; GREEN com 41 passes. Artefato ML
   configurado e inválido aborta startup com erro sanitizado. Refresh S1/S2
   bem-sucedido exige assessment estruturado, aceitando `insufficient_data`.

@@ -121,7 +121,9 @@ def test_settings_normalize_clean_https_upstream_origins(configured, normalized)
         "https://user:secret@example.invalid",
         "https://example.invalid/path",
         "https://example.invalid?token=secret",
+        "https://example.invalid?",
         "https://example.invalid#fragment",
+        "https://example.invalid#",
         "https://example.invalid\\@attacker.invalid",
     ],
 )

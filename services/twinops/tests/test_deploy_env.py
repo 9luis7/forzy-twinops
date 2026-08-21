@@ -84,6 +84,10 @@ def test_deploy_accepts_pooled_tls_neon_and_exact_runtime_anchors():
             "postgresql://user:secret@ep-demo-pooler.example.neon.tech/db"
             "?ssl%6dode=require&sslmode=disable"
         ),
+        (
+            "postgresql://user:secret@ep-demo-pooler.example.neon.tech/db"
+            "?sslmode=require#"
+        ),
         "postgresql://user:secret@ep-demo-pooler.example.neon.tech/db",
     ],
 )
@@ -112,7 +116,9 @@ def test_deploy_accepts_one_percent_encoded_safe_sslmode():
         "https://user:secret@example.ngrok-free.app",
         "https://example.ngrok-free.app/path",
         "https://example.ngrok-free.app?token=secret",
+        "https://example.ngrok-free.app?",
         "https://example.ngrok-free.app#fragment",
+        "https://example.ngrok-free.app#",
         "https://example.ngrok-free.app\\@attacker.invalid",
         "https://example.ngrok-free.app:0",
         "https://example.ngrok-free.app:70000",
