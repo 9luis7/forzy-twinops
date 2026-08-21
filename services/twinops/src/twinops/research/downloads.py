@@ -457,7 +457,7 @@ class _DirectoryIdentity:
     inode: int
 
 
-def _directory_identity(path: Path) -> _DirectoryIdentity:
+def _directory_identity_from_lstat(path: Path) -> _DirectoryIdentity:
     metadata = path.lstat()
     reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
     if (
@@ -477,6 +477,10 @@ def _directory_identity(path: Path) -> _DirectoryIdentity:
     ):
         raise RuntimeError("RAR staging directory has no stable filesystem identity")
     return _DirectoryIdentity(device, inode)
+
+
+def _directory_identity(path: Path) -> _DirectoryIdentity:
+    return _directory_identity_from_lstat(path)
 
 
 def _matches_directory_identity(path: Path, identity: _DirectoryIdentity) -> bool:
@@ -528,6 +532,44 @@ def _add_cleanup_note(original: BaseException, action: str, failure: BaseExcepti
         pass
 
 
+def _cleanup_uninitialized_rar_staging(
+    temporary: Path,
+    provisional_identity: _DirectoryIdentity,
+) -> None:
+    if not os.path.lexists(temporary):
+        return
+    if _directory_identity_from_lstat(temporary) != provisional_identity:
+        raise RuntimeError("RAR cleanup refused an unowned uninitialized staging path")
+    if any(temporary.iterdir()):
+        raise RuntimeError("RAR cleanup refused a non-empty uninitialized staging path")
+    temporary.rmdir()
+    if os.path.lexists(temporary):
+        raise RuntimeError("RAR cleanup did not remove uninitialized staging")
+
+
+def _create_rar_staging(parent: Path, destination_name: str) -> tuple[Path, _DirectoryIdentity]:
+    temporary: Path | None = None
+    provisional_identity: _DirectoryIdentity | None = None
+    try:
+        temporary = Path(
+            tempfile.mkdtemp(prefix=f".{destination_name}-rar-extract-", dir=parent)
+        )
+        provisional_identity = _directory_identity_from_lstat(temporary)
+        identity = _directory_identity(temporary)
+        if identity != provisional_identity:
+            raise RuntimeError("RAR staging identity changed during acquisition")
+        return temporary, identity
+    except BaseException as error:
+        if temporary is not None:
+            try:
+                if provisional_identity is None:
+                    raise RuntimeError("RAR staging ownership was not established")
+                _cleanup_uninitialized_rar_staging(temporary, provisional_identity)
+            except BaseException as cleanup_error:
+                _add_cleanup_note(error, "uninitialized staging cleanup", cleanup_error)
+        raise
+
+
 def safe_extract_rar_archive(
     parts: Sequence[ArchivePart],
     destination: str | Path,
@@ -551,10 +593,10 @@ def safe_extract_rar_archive(
         raise ValueError("seven_zip_executable must be a non-empty filesystem path")
     inspection = inspect_rar_archive(parts, limits=limits)
     destination_path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = Path(
-        tempfile.mkdtemp(prefix=f".{destination_path.name}-rar-extract-", dir=destination_path.parent)
+    temporary, temporary_identity = _create_rar_staging(
+        destination_path.parent,
+        destination_path.name,
     )
-    temporary_identity = _directory_identity(temporary)
     try:
         for directory in sorted(
             _expected_rar_directories(inspection),

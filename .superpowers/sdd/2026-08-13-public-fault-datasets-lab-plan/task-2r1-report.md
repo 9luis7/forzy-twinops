@@ -158,3 +158,70 @@ DONE
 - The expected Starlette/httpx deprecation and joblib physical-core fallback warnings remain unchanged.
 - The parallel performance sample approached the 100 ms limit under contention; the immediate isolated rerun returned to 49.15 ms p95, matching the ledger's prior environmental ruling.
 - No real RAR extraction was requested or performed; the required real-source smoke inspected the authorized NASA RAR read-only.
+
+## Fix wave - uninitialized staging cleanup
+
+### Status
+
+DONE
+
+### Decisions
+
+- Wrapped RAR staging creation and both identity observations in a dedicated acquisition handler so `RuntimeError`, `KeyboardInterrupt`, and `SystemExit` cannot bypass cleanup handling.
+- Captured a provisional `st_dev`/`st_ino` identity immediately after `mkdtemp`, then required the normal identity observation to match before returning the staging directory.
+- Limited pre-extraction cleanup to `Path.rmdir()` after proving the path still has the provisional identity and is empty; no recursive deletion is used in this window.
+- Verified that `rmdir` actually removed the staging path. A thrown or no-op cleanup remains secondary, is recorded with a sanitized `BaseException.add_note()`, and never masks the exact original exception object.
+- Refused cleanup when the path is a symlink, reparse point, identity replacement, or non-empty directory.
+
+### Files
+
+- `services/twinops/src/twinops/research/downloads.py`
+- `services/twinops/tests/research/test_rar_downloads.py`
+- `.superpowers/sdd/2026-08-13-public-fault-datasets-lab-plan/task-2r1-report.md` (append only)
+
+`data/public/sources.json` remains separately owned and is excluded from this commit.
+
+### RED
+
+- Initial-identity failure tracer for `RuntimeError`, `KeyboardInterrupt`, and `SystemExit`:
+  - `3 failed, 76 deselected`; each failure left an empty `.raw-rar-extract-*` staging directory.
+
+### GREEN
+
+- Initial-identity cleanup matrix: `3 passed, 76 deselected`.
+- Throwing/no-op `rmdir` regressions: `2 passed, 79 deselected`.
+- Symlink/reparse/unowned/non-empty refusal regressions: `4 passed, 81 deselected`.
+- Final focused RAR suite: `84 passed, 1 skipped in 1.97s`.
+- Real NASA inspection smoke with `TWINOPS_NASA_RAR_PATH=C:\Users\Luis\Documents\ChatGPT\forzy twinops\data\public\nasa-ims\raw\IMS\1st_test.rar`:
+  - `1 passed in 4.44s`; read-only inspection, no extraction or data modification.
+
+### Suites
+
+- Existing ZIP/TAR provenance: `17 passed in 1.67s`.
+- Research suite: `142 passed, 1 skipped, 1 warning in 27.98s`.
+- Full Python suite: `357 passed, 3 skipped, 2 warnings in 35.97s`.
+- Performance check immediately after the full suite: `p50=48.37 ms`, `p95=49.31 ms`, `p99=49.31 ms`; `1 passed in 0.93s`.
+- `python -m compileall -q services/twinops/src services/twinops/tests`: passed.
+- `python -m pip check`: `No broken requirements found.`
+- `git diff --check`: passed; only LF-to-CRLF notices were emitted.
+- Raw/archive tracking query: no tracked ZIP, RAR, 7z, downloads, or raw files.
+
+### Security self-review
+
+- Cleanup covers ordinary exceptions and process-control `BaseException` subclasses while re-raising the exact original object.
+- A successful cleanup removes only the newly created, still-empty directory with the captured filesystem identity and verifies absence afterward.
+- Cleanup failure details are reduced to the exception class in the note; sensitive exception text and paths are not propagated.
+- Symlink, reparse, identity-replaced, and non-empty paths survive for manual review and receive a sanitized cleanup note.
+- The three publication-race fixes from the prior wave remain covered by the final focused and full suites.
+- The legacy ZIP/TAR path and downloaded data were not changed.
+
+### Commit
+
+- Message: `fix: clean uninitialized rar staging`
+- Scope: the three fix-wave files listed above; Git reports the SHA after committing this append.
+
+### Concerns
+
+- If even the provisional identity cannot be established, deletion is deliberately refused because ownership cannot be proven; the original exception receives a sanitized cleanup note and the empty path is left for manual review.
+- The expected Starlette/httpx deprecation and joblib physical-core fallback warnings remain unchanged.
+- No real RAR extraction was requested or performed; the required real-source smoke inspected the authorized NASA RAR read-only.

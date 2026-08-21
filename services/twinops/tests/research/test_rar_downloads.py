@@ -740,6 +740,123 @@ def test_safe_extract_rar_does_not_remove_staging_path_after_identity_changes(
     assert any("staging cleanup failed safely" in note for note in original.__notes__)
 
 
+@pytest.mark.parametrize("error_type", [RuntimeError, KeyboardInterrupt, SystemExit])
+def test_safe_extract_rar_cleans_empty_staging_when_initial_identity_raises(
+    tmp_path, monkeypatch, error_type
+) -> None:
+    first = _single_file_rar(tmp_path, monkeypatch)
+    destination = tmp_path / "raw"
+    original = error_type("initial identity failed")
+    monkeypatch.setattr(
+        downloads,
+        "_directory_identity",
+        lambda _path: (_ for _ in ()).throw(original),
+    )
+
+    with pytest.raises(error_type) as captured:
+        safe_extract_rar_archive([ArchivePart(first, _sha256(first))], destination)
+
+    assert captured.value is original
+    assert not getattr(original, "__notes__", [])
+    assert not destination.exists()
+    assert not list(tmp_path.glob(".raw-rar-extract-*"))
+
+
+@pytest.mark.parametrize("cleanup_behavior", ["raises", "no_op"])
+def test_safe_extract_rar_notes_uninitialized_rmdir_failure_without_masking_original(
+    tmp_path, monkeypatch, cleanup_behavior
+) -> None:
+    first = _single_file_rar(tmp_path, monkeypatch)
+    destination = tmp_path / "raw"
+    original = KeyboardInterrupt("initial identity failed")
+    monkeypatch.setattr(
+        downloads,
+        "_directory_identity",
+        lambda _path: (_ for _ in ()).throw(original),
+    )
+    if cleanup_behavior == "raises":
+        monkeypatch.setattr(
+            downloads.Path,
+            "rmdir",
+            lambda _path: (_ for _ in ()).throw(OSError("SECRET cleanup path")),
+        )
+    else:
+        monkeypatch.setattr(downloads.Path, "rmdir", lambda _path: None)
+
+    with pytest.raises(KeyboardInterrupt) as captured:
+        safe_extract_rar_archive([ArchivePart(first, _sha256(first))], destination)
+
+    assert captured.value is original
+    assert any(
+        "uninitialized staging cleanup failed safely" in note
+        for note in original.__notes__
+    )
+    assert all("SECRET" not in note for note in original.__notes__)
+    assert len(list(tmp_path.glob(".raw-rar-extract-*"))) == 1
+    assert not destination.exists()
+
+
+@pytest.mark.parametrize("changed_state", ["symlink", "reparse", "unowned", "non_empty"])
+def test_safe_extract_rar_never_deletes_unsafe_uninitialized_staging(
+    tmp_path, monkeypatch, changed_state
+) -> None:
+    reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+    if changed_state == "reparse" and not reparse_flag:
+        pytest.skip("platform does not expose the reparse-point flag")
+    first = _single_file_rar(tmp_path, monkeypatch)
+    destination = tmp_path / "raw"
+    original = SystemExit("SECRET initial identity failure")
+    state_changed = False
+    real_lstat = downloads.Path.lstat
+
+    def guarded_lstat(path):
+        metadata = real_lstat(path)
+        if state_changed and "rar-extract" in path.name:
+            if changed_state == "symlink":
+                return SimpleNamespace(
+                    st_mode=stat.S_IFLNK,
+                    st_file_attributes=0,
+                    st_dev=metadata.st_dev,
+                    st_ino=metadata.st_ino,
+                )
+            if changed_state == "reparse":
+                return SimpleNamespace(
+                    st_mode=metadata.st_mode,
+                    st_file_attributes=reparse_flag,
+                    st_dev=metadata.st_dev,
+                    st_ino=metadata.st_ino,
+                )
+        return metadata
+
+    def mutate_then_fail(path):
+        nonlocal state_changed
+        if changed_state == "unowned":
+            path.rmdir()
+            path.mkdir()
+        elif changed_state == "non_empty":
+            (path / "do-not-delete.txt").write_text("unowned", encoding="utf-8")
+        state_changed = True
+        raise original
+
+    monkeypatch.setattr(downloads.Path, "lstat", guarded_lstat)
+    monkeypatch.setattr(downloads, "_directory_identity", mutate_then_fail)
+
+    with pytest.raises(SystemExit) as captured:
+        safe_extract_rar_archive([ArchivePart(first, _sha256(first))], destination)
+
+    assert captured.value is original
+    staging = next(tmp_path.glob(".raw-rar-extract-*"))
+    assert staging.is_dir()
+    if changed_state == "non_empty":
+        assert (staging / "do-not-delete.txt").read_text(encoding="utf-8") == "unowned"
+    assert any(
+        "uninitialized staging cleanup failed safely" in note
+        for note in original.__notes__
+    )
+    assert all("SECRET" not in note for note in original.__notes__)
+    assert not destination.exists()
+
+
 def test_safe_extract_rar_rejects_extra_empty_directory_after_streaming(
     tmp_path, monkeypatch
 ) -> None:
