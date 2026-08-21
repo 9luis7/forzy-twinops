@@ -106,6 +106,7 @@ def _dataset_fixture(data_root: Path, dataset_id: str) -> dict[str, object]:
                 "datasetId": dataset_id,
                 "metadataId": f"synthetic-{dataset_id}-v1",
                 "samplingHz": 1_024,
+                **({"samplesPerWindow": 128} if dataset_id == "nasa-ims" else {}),
                 "accelerationUnit": "g",
                 "files": metadata_files,
             }

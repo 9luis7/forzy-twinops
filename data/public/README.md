@@ -30,6 +30,7 @@ data/public/
   xjtu-sy/raw/
   nasa-ims/downloads/
   nasa-ims/raw/
+  nasa-ims/prepared/
   pronostia/raw/
 ```
 
@@ -39,6 +40,41 @@ A extração também exige um executável 7-Zip confiável informado explicitame
 ao helper; ele é chamado sem shell e transmite um membro validado por vez para
 um arquivo criado pelo Python. O smoke real opcional usa
 `TWINOPS_NASA_RAR_PATH`; sem essa variável, o teste é ignorado explicitamente.
+
+Para a preparação NASA IMS em camadas, `raw/IMS/` preserva o ZIP já
+expandido, os três RARs internos e o PDF oficial sem modificação. Runs 1 e 2
+são publicados juntos, nunca parcialmente, em uma geração imutável:
+
+```text
+nasa-ims/prepared/<generation-id>/
+  attestation.json
+  run-1/raw/1st_test/<source-timestamp>
+  run-1/metadata.json
+  run-2/raw/2nd_test/<source-timestamp>
+  run-2/metadata.json
+```
+
+O terceiro RAR é somente inspecionado. Ele não é extraído nem recebe uma
+árvore `run-3`: o prefixo documentado de 4.448 arquivos e a extensão não
+documentada de 1.876 arquivos permanecem unidos em uma attestation de
+quarentena e fora de métricas confirmatórias, supervisionadas e de RUL. O
+smoke 2R2 read-only exige simultaneamente `TWINOPS_NASA_RAR_DIRECTORY` (a
+pasta explicitamente autorizada com os três RARs) e
+`TWINOPS_TRUSTED_7Z_PATH`; sem ambos ele é ignorado e nenhum caminho é
+procurado no disco.
+
+Mesmo depois da preparação, a unidade numérica de aceleração, o timezone, os
+eixos físicos, o estado/fault onset/severidade de cada janela, `lifeFraction`
+e RUL continuam desconhecidos. Os canais são apenas `source-channel-1/2`;
+RPM e carga pertencem ao contexto da bancada, e os desfechos terminais ficam
+em evidência de run/bearing fora dos labels. O conflito de descrição do
+bearing 4 no run 1 é preservado como duas observações com proveniências
+distintas, nunca colapsado em uma classe exclusiva. O `sourceRef`
+`nasa-ims-internal-readme-cf46d37c` identifica
+`IMS/Readme Document for IMS Bearing Data.pdf` (SHA-256
+`cf46d37c21f7f292c11bbbdd4695d876c417ed1d6425e3d87c962ae2182ae6ed`);
+`qiu-et-al-jsv-2006` identifica Qiu et al., *Journal of Sound and Vibration*,
+DOI `10.1016/j.jsv.2005.03.007`.
 
 Cada adapter produz `SignalWindow` sem concatenar os brutos. As unidades da
 fonte são preservadas e qualquer conversão precisa ser explícita e documentada.
