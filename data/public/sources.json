@@ -1,6 +1,6 @@
 {
   "schemaVersion": 2,
-  "generatedAt": "2026-08-20T00:00:00Z",
+  "generatedAt": "2026-08-21T15:33:13Z",
   "experimentConfig": {
     "schemaVersion": 1,
     "configId": "public-fault-real-sources-v1-unconfirmed",
@@ -28,33 +28,48 @@
   "sources": [
     {
       "datasetId": "xjtu-sy",
-      "status": "external_download_gate",
+      "status": "download_blocked_click_through",
       "landingPage": "https://biaowang.tech/xjtu-sy-bearing-datasets/",
-      "downloadUrl": null,
+      "downloadUrl": "https://drive.google.com/open?id=1_ycmG46PARiykt82ShfnFfyQsaXv3_VK",
       "citation": "Wang et al., A Hybrid Prognostics Approach for Estimating Remaining Useful Life of Rolling Element Bearings, IEEE Transactions on Reliability, 2020.",
-      "license": "No unambiguous data license recorded on the landing page; terms must be confirmed before download.",
+      "license": "The author landing page states the datasets are publicly available and requests the listed citation; it does not display an unambiguous data license.",
       "expectedSha256": null,
       "archivePath": null,
       "rawPath": "xjtu-sy/raw",
       "metadataPath": null,
       "expectedMetadataSha256": null,
-      "accessedAt": null,
-      "notes": "Record exact approved URL, archive hash, metadata path/hash and access time before execution."
+      "accessedAt": "2026-08-21T11:38:49Z",
+      "notes": "The author-published Google Drive folder exposes six RAR parts. Each direct part request displays the Google Drive Virus scan warning and requires the explicit 'Download anyway' click-through; no part was downloaded or hashed."
     },
     {
       "datasetId": "nasa-ims",
-      "status": "external_download_gate",
+      "status": "outer_zip_extracted_nested_rars_preparation_not_run",
       "landingPage": "https://data.nasa.gov/dataset/ims-bearings",
-      "downloadUrl": null,
+      "downloadUrl": "https://data.nasa.gov/docs/legacy/IMS.zip",
       "citation": "Lee et al., IMS Bearing Data, NASA Ames Prognostics Data Repository, University of Cincinnati.",
-      "license": "Confirm the terms and provenance displayed by the NASA portal before download.",
-      "expectedSha256": null,
-      "archivePath": null,
+      "license": "NASA Open Data Portal displays other-license-specified and links to https://www.usa.gov/government-works; the portal says the data set was provided by the Center for Intelligent Maintenance Systems (IMS), University of Cincinnati.",
+      "expectedSha256": "6cb42c263b0281c725abf99f4b9fcf49915c949f31dbd2333877dc2e06ce9ec2",
+      "archivePath": "nasa-ims/downloads/IMS.zip",
       "rawPath": "nasa-ims/raw",
       "metadataPath": null,
       "expectedMetadataSha256": null,
-      "accessedAt": null,
-      "notes": "Do not treat a mirror as an official source; pin archive and curated metadata independently."
+      "accessedAt": "2026-08-21T11:38:49Z",
+      "rawInventory": {
+        "inventorySha256": "302bf1891e4f3fdfee34728ca4693d38af838999220f3aba54d1bcced69908c2",
+        "totalBytes": 1061597139,
+        "files": [
+          {"relativePath": "IMS/1st_test.rar", "sizeBytes": 366567310, "sha256": "c25241571583948462a3916d97dc11c984a839f38a0da0907fff18c958c0a484"},
+          {"relativePath": "IMS/2nd_test.rar", "sizeBytes": 85581092, "sha256": "b154d5ba1ae5f7f01cdd4f1bde5b08cfdc2f3134d51ad2f6614b1270a86ab632"},
+          {"relativePath": "IMS/3rd_test.rar", "sizeBytes": 609047134, "sha256": "01e9ec83c6c55adc0300a20003a261f9a2ac2b714aae4984050325e589252bc8"},
+          {"relativePath": "IMS/Readme Document for IMS Bearing Data.pdf", "sizeBytes": 400443, "sha256": "cf46d37c21f7f292c11bbbdd4695d876c417ed1d6425e3d87c962ae2182ae6ed"},
+          {"relativePath": "__MACOSX/._IMS", "sizeBytes": 312, "sha256": "5aceee57a0f49188ba0566f5da3f5a8be7968bff7f4174984c526f05900dc489"},
+          {"relativePath": "__MACOSX/IMS/._1st_test.rar", "sizeBytes": 212, "sha256": "c557c1b16bca2f691d0c8b6ab326d60b00fd2bc64a5860896bbed00e7209410a"},
+          {"relativePath": "__MACOSX/IMS/._2nd_test.rar", "sizeBytes": 212, "sha256": "c557c1b16bca2f691d0c8b6ab326d60b00fd2bc64a5860896bbed00e7209410a"},
+          {"relativePath": "__MACOSX/IMS/._3rd_test.rar", "sizeBytes": 212, "sha256": "c557c1b16bca2f691d0c8b6ab326d60b00fd2bc64a5860896bbed00e7209410a"},
+          {"relativePath": "__MACOSX/IMS/._Readme Document for IMS Bearing Data.pdf", "sizeBytes": 212, "sha256": "c557c1b16bca2f691d0c8b6ab326d60b00fd2bc64a5860896bbed00e7209410a"}
+        ]
+      },
+      "notes": "The official NASA ZIP and outer extracted inventory were verified; rawInventory pins the three nested RARs and source PDF. The accepted Task 2R1 safe RAR boundary and Task 2R2 preparation implementation define expected boundaries of run 1: 2,156 regular files/2,157 total members; run 2: 984/985; and run 3: 6,324/6,326. Real Task 2R2 preparation has not run. Run 3 remains inspection-only quarantine (quarantined_source_contradiction): 4,448 documented plus 1,876 undocumented files, excluded from confirmatory, supervised, and RUL metrics. No prepared generation, prepared inventory, curated metadata, generation ID, metadata hash, or preparation attestation is asserted."
     }
   ]
 }

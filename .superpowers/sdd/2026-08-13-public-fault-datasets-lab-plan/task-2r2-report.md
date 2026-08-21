@@ -2,9 +2,14 @@
 
 ## Status
 
-IMPLEMENTATION DONE — independent review pending.
+COMPLETE — independent review PASS with 0 Critical / 0 Important at
+`5379af1270a820bae9d1374188cea5e56d99b158`.
 
 Base SHA: `d9388cda89b398c1067608fd8d7e8a95af7f4050`.
+
+Reviewed implementation chain: `504632e4354b45ea327a2962d6114eb43fbe5817` →
+`d26df0ec40df474a6db2319e10c5ae596a32b655` →
+`5379af1270a820bae9d1374188cea5e56d99b158`.
 
 ## Decisions
 
