@@ -62,6 +62,10 @@ _PDF_PATH = f"{_ROOT}/Introduction_to_XJTU-SY_Bearing_Dataset.pdf"
 _EXPECTED_TOTAL_BYTES = 12_220_812_451
 _SAMPLES_PER_WINDOW = 32_768
 _SAMPLING_HZ = 25_600
+_OFFICIAL_CSV_HEADER = (
+    "Horizontal_vibration_signals",
+    "Vertical_vibration_signals",
+)
 _PREPARATION_SCHEMA_VERSION = 1
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _SEQUENCE_NAME = re.compile(r"^[1-9][0-9]*\.csv$")
@@ -621,6 +625,19 @@ def _validate_numeric_csv(
     size = 0
     rows = 0
     with path.open("rb") as stream:
+        raw_header = stream.readline()
+        digest.update(raw_header)
+        size += len(raw_header)
+        try:
+            header = raw_header.rstrip(b"\r\n").decode("ascii").split(",")
+        except UnicodeDecodeError as error:
+            raise ValueError(
+                f"XJTU-SY CSV header must match the official ASCII names: {path.name}"
+            ) from error
+        if tuple(header) != _OFFICIAL_CSV_HEADER:
+            raise ValueError(
+                f"XJTU-SY CSV header must match the official ordered names: {path.name}"
+            )
         for raw_line in stream:
             digest.update(raw_line)
             size += len(raw_line)
@@ -631,6 +648,8 @@ def _validate_numeric_csv(
                 tokens = stripped.decode("ascii").split(",")
             except UnicodeDecodeError as error:
                 raise ValueError(f"XJTU-SY CSV is not ASCII numeric data: {path.name}") from error
+            if tuple(tokens) == _OFFICIAL_CSV_HEADER:
+                raise ValueError(f"XJTU-SY CSV contains a duplicate header: {path.name}")
             if len(tokens) != 2 or any(not token.strip() for token in tokens):
                 raise ValueError(f"XJTU-SY CSV column count must be 2: {path.name}")
             try:
@@ -837,8 +856,11 @@ def _metadata_payload(
             "windowStateLabel": "unknown",
             "terminalFailureMode": None,
             "lifeFraction": None,
-            "columns": {"0": "horizontal", "1": "vertical"},
-            "hasHeader": False,
+            "columns": {
+                _OFFICIAL_CSV_HEADER[0]: "horizontal",
+                _OFFICIAL_CSV_HEADER[1]: "vertical",
+            },
+            "hasHeader": True,
             "rpm": int(_spec_value(spec, "rpm")),
             "load": None,
         }

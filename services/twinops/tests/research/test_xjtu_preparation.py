@@ -57,6 +57,9 @@ _OFFICIAL_PARTS = (
         "df1854821a9d481104476379f7bc045ea1e101427c6e36145cd7677dc7c4a684",
     ),
 )
+_OFFICIAL_HEADER = (
+    b"Horizontal_vibration_signals,Vertical_vibration_signals\n"
+)
 
 
 def _config(tmp_path: Path, **changes) -> XjtuSyPreparationConfig:
@@ -247,9 +250,24 @@ def _csv_path(spec, sequence: int) -> str:
     )
 
 
-def _numeric_csv(*, rows: int = 2, columns: int = 2) -> bytes:
+def _numeric_body(*, rows: int = 2, columns: int = 2) -> bytes:
     row = ",".join(str(index + 1) for index in range(columns))
     return ((row + "\n") * rows).encode("ascii")
+
+
+def _numeric_csv(*, rows: int = 2, columns: int = 2) -> bytes:
+    return _OFFICIAL_HEADER + _numeric_body(rows=rows, columns=columns)
+
+
+def _validate_csv_fixture(tmp_path: Path, monkeypatch, content: bytes) -> None:
+    path = tmp_path / "window.csv"
+    path.write_bytes(content)
+    monkeypatch.setattr(xjtu_preparation, "_SAMPLES_PER_WINDOW", 2, raising=False)
+    xjtu_preparation._validate_numeric_csv(
+        path,
+        expected_size=len(content),
+        expected_sha256=hashlib.sha256(content).hexdigest(),
+    )
 
 
 def _inventory(root: Path, contents: dict[str, bytes]) -> RawInventory:
@@ -519,8 +537,15 @@ def test_prepared_metadata_maps_inventory_and_keeps_scientific_unknowns(
     assert metadata["samplingHz"] == 25_600
     assert metadata["samplesPerWindow"] == 2
     assert metadata["accelerationUnit"] == "unknown"
-    assert all(entry["columns"] == {"0": "horizontal", "1": "vertical"} for entry in signal_entries)
-    assert all(entry["hasHeader"] is False for entry in signal_entries)
+    assert all(
+        entry["columns"]
+        == {
+            "Horizontal_vibration_signals": "horizontal",
+            "Vertical_vibration_signals": "vertical",
+        }
+        for entry in signal_entries
+    )
+    assert all(entry["hasHeader"] is True for entry in signal_entries)
     assert all(entry["startedAt"] is None for entry in signal_entries)
     assert all(entry["timestampQuality"] == "unavailable" for entry in signal_entries)
     assert all(entry["windowStateLabel"] == "unknown" for entry in signal_entries)
@@ -544,6 +569,8 @@ def test_prepared_metadata_maps_inventory_and_keeps_scientific_unknowns(
     }
     assert len(windows) == len(triples) == len(signal_entries)
     assert all(set(window.acceleration) == {"horizontal", "vertical"} for window in windows)
+    assert all(len(window.acceleration["horizontal"]) == 2 for window in windows)
+    assert all(len(window.acceleration["vertical"]) == 2 for window in windows)
     assert all(window.acceleration_unit == "unknown" for window in windows)
     assert all(window.started_at is None for window in windows)
     assert all(window.timestamp_quality == "unavailable" for window in windows)
@@ -577,6 +604,94 @@ def test_attestation_is_path_free_and_all_metric_gates_remain_closed(
     assert os.fspath(config.seven_zip_executable) not in serialized
 
 
+def test_csv_exact_official_header_is_accepted_and_excluded_from_sample_count(
+    tmp_path, monkeypatch
+) -> None:
+    content = _numeric_csv(rows=2)
+
+    _validate_csv_fixture(tmp_path, monkeypatch, content)
+
+
+@pytest.mark.parametrize(
+    ("case", "content"),
+    [
+        ("absent", _numeric_body(rows=2)),
+        ("incorrect", b"horizontal,vertical\n" + _numeric_body(rows=2)),
+        ("duplicated", _OFFICIAL_HEADER + _OFFICIAL_HEADER + _numeric_body(rows=2)),
+        (
+            "reordered",
+            b"Vertical_vibration_signals,Horizontal_vibration_signals\n"
+            + _numeric_body(rows=2),
+        ),
+        (
+            "extra-column",
+            b"Horizontal_vibration_signals,Vertical_vibration_signals,unexpected\n"
+            + _numeric_body(rows=2),
+        ),
+    ],
+)
+def test_csv_rejects_absent_or_malformed_official_header(
+    tmp_path, monkeypatch, case, content
+) -> None:
+    with pytest.raises(ValueError, match="header"):
+        _validate_csv_fixture(tmp_path, monkeypatch, content)
+
+
+@pytest.mark.parametrize("rows", [1, 3], ids=["32767-equivalent", "32769-equivalent"])
+def test_csv_rejects_off_by_one_data_rows_excluding_header(
+    tmp_path, monkeypatch, rows
+) -> None:
+    content = _numeric_csv(rows=rows)
+
+    with pytest.raises(ValueError, match="row count"):
+        _validate_csv_fixture(tmp_path, monkeypatch, content)
+
+
+def test_csv_accepts_literal_32768_data_rows_after_official_header(tmp_path) -> None:
+    content = _numeric_csv(rows=32_768)
+    path = tmp_path / "literal-window.csv"
+    path.write_bytes(content)
+
+    xjtu_preparation._validate_numeric_csv(
+        path,
+        expected_size=len(content),
+        expected_sha256=hashlib.sha256(content).hexdigest(),
+    )
+
+
+@pytest.mark.parametrize("rows", [32_767, 32_769])
+def test_csv_rejects_literal_32767_or_32769_data_rows(tmp_path, rows) -> None:
+    content = _numeric_csv(rows=rows)
+    path = tmp_path / "literal-window.csv"
+    path.write_bytes(content)
+
+    with pytest.raises(ValueError, match="32768"):
+        xjtu_preparation._validate_numeric_csv(
+            path,
+            expected_size=len(content),
+            expected_sha256=hashlib.sha256(content).hexdigest(),
+        )
+
+
+@pytest.mark.parametrize(
+    ("content", "reason"),
+    [
+        (_numeric_csv(columns=1), "one column"),
+        (_numeric_csv(columns=3), "three columns"),
+        (_OFFICIAL_HEADER + b"1,2\n\n", "blank row"),
+        (_OFFICIAL_HEADER + b"1,2\n3\n", "ragged row"),
+        (_OFFICIAL_HEADER + b"1,2\nnot-a-number,3\n", "nonnumeric token"),
+        (_OFFICIAL_HEADER + b"1,2\nNaN,3\n", "NaN"),
+        (_OFFICIAL_HEADER + b"1,2\nInf,3\n", "infinity"),
+    ],
+)
+def test_csv_numeric_body_remains_two_finite_columns(
+    tmp_path, monkeypatch, content, reason
+) -> None:
+    with pytest.raises(ValueError, match="CSV"):
+        _validate_csv_fixture(tmp_path, monkeypatch, content)
+
+
 @pytest.mark.parametrize(
     ("bad_content", "reason"),
     [
@@ -585,11 +700,11 @@ def test_attestation_is_path_free_and_all_metric_gates_remain_closed(
         (_numeric_csv(rows=3), "32769-equivalent off-by-one high"),
         (_numeric_csv(columns=1), "one column"),
         (_numeric_csv(columns=3), "three columns"),
-        (b"1,2\n\n", "blank row"),
-        (b"1,2\n3\n", "ragged row"),
-        (b"1,2\nnot-a-number,3\n", "nonnumeric token"),
-        (b"1,2\nNaN,3\n", "NaN"),
-        (b"1,2\nInf,3\n", "infinity"),
+        (_OFFICIAL_HEADER + b"1,2\n\n", "blank row"),
+        (_OFFICIAL_HEADER + b"1,2\n3\n", "ragged row"),
+        (_OFFICIAL_HEADER + b"1,2\nnot-a-number,3\n", "nonnumeric token"),
+        (_OFFICIAL_HEADER + b"1,2\nNaN,3\n", "NaN"),
+        (_OFFICIAL_HEADER + b"1,2\nInf,3\n", "infinity"),
     ],
 )
 def test_csv_shape_or_content_divergence_never_publishes(
@@ -1027,6 +1142,37 @@ def test_real_xjtu_inspection_is_explicitly_opt_in_and_read_only(tmp_path) -> No
     assert not config.destination_root.exists()
 
 
+def test_real_xjtu_sample_copy_header_smoke_is_explicitly_opt_in_and_read_only(
+    tmp_path,
+) -> None:
+    sample_value = os.environ.get("TWINOPS_XJTU_SAMPLE_CSV_COPY")
+    if not sample_value:
+        pytest.skip(
+            "set TWINOPS_XJTU_SAMPLE_CSV_COPY to a controller-provided copy of "
+            "one official CSV outside every prepared staging tree"
+        )
+    sample = Path(sample_value).resolve(strict=True)
+    if any(part.name.startswith(".xjtu-sy-generation-") for part in sample.parents):
+        pytest.fail("TWINOPS_XJTU_SAMPLE_CSV_COPY must not point into prepared staging")
+    before = sample.lstat()
+    content = sample.read_bytes()
+
+    xjtu_preparation._validate_numeric_csv(
+        sample,
+        expected_size=len(content),
+        expected_sha256=hashlib.sha256(content).hexdigest(),
+    )
+
+    after = sample.lstat()
+    assert (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns) == (
+        before.st_dev,
+        before.st_ino,
+        before.st_size,
+        before.st_mtime_ns,
+    )
+    assert not any(tmp_path.iterdir())
+
+
 def test_extracted_inventory_byte_total_must_match_the_inspected_archive(
     tmp_path, monkeypatch
 ) -> None:
@@ -1159,8 +1305,12 @@ def test_inventory_rejects_compensated_per_file_sizes_with_same_total(
         root = Path(args[1])
         first = _csv_path(specs[0], 1)
         second = _csv_path(specs[0], 2)
-        root.joinpath(*first.split("/")).write_bytes(b"1,2\n3,40\n")
-        root.joinpath(*second.split("/")).write_bytes(b"1,2\n3,4")
+        root.joinpath(*first.split("/")).write_bytes(
+            _OFFICIAL_HEADER + b"1,2\n3,40\n"
+        )
+        root.joinpath(*second.split("/")).write_bytes(
+            _OFFICIAL_HEADER + b"1,2\n3,4"
+        )
         contents = {
             item.relative_path: root.joinpath(*item.relative_path.split("/")).read_bytes()
             for item in inventory.files

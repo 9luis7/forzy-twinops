@@ -56,17 +56,21 @@ xjtu-sy/prepared/<generation-id>/
 ```
 
 O gate exige exatamente 9.216 CSVs e o PDF de origem, as 15 sequências
-contíguas publicadas pelos autores, 32.768 linhas e duas colunas finitas por
-CSV. As colunas são `horizontal` e `vertical`, a amostragem é 25.600 Hz e a
-cadência observacional é um minuto. A unidade numérica de aceleração, nomes de
-header, timestamps/timezone, estado/onset/severidade por janela, vida física,
+contíguas publicadas pelos autores e, em cada CSV, o header ASCII ordenado
+`Horizontal_vibration_signals,Vertical_vibration_signals` seguido de 32.768
+amostras com duas colunas numéricas finitas. O header não conta como amostra;
+ele mapeia para os eixos `horizontal` e `vertical`. A amostragem é 25.600 Hz e
+a cadência observacional é um minuto. A unidade numérica de aceleração,
+timestamps/timezone, estado/onset/severidade por janela, vida física,
 `lifeFraction` e RUL continuam desconhecidos. Carga radial aparece somente
 como evidência de condição com unidade `kN`; nunca no campo float sem unidade.
 Desfechos ficam como evidência terminal do bearing, inclusive os compostos, e
 não viram label de todas as janelas. Métricas confirmatórias, supervisionadas,
 de transferência e de RUL permanecem fechadas. O smoke 2R3 read-only requer
 simultaneamente `TWINOPS_XJTU_RAR_DIRECTORY` e `TWINOPS_TRUSTED_7Z_PATH`; sem
-ambos ele é ignorado e nenhum destino é criado.
+ambos ele é ignorado e nenhum destino é criado. O smoke opcional de conteúdo
+aceita apenas `TWINOPS_XJTU_SAMPLE_CSV_COPY`, apontando para uma cópia de um
+CSV oficial fora de qualquer staging preparada, e também não escreve dados.
 
 Para a preparação NASA IMS em camadas, `raw/IMS/` preserva o ZIP já
 expandido, os três RARs internos e o PDF oficial sem modificação. Runs 1 e 2

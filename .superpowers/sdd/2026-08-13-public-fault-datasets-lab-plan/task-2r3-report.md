@@ -410,3 +410,84 @@ staging or post-promotion tree in place, which requires explicit manual
 disposition after identity and content review. No downloaded archive,
 prepared directory, operational artifact, CLI production code, experiment,
 NASA, or deploy file changed in this wave.
+
+## Real-runtime official-header correction after `1bd291e`
+
+Status: IMPLEMENTED AND LOCALLY VERIFIED; awaiting independent re-review. The
+preserved real staging was not read, mutated, moved, deleted, promoted, or
+re-executed during this corrective implementation.
+
+### Fail-closed real-runtime evidence
+
+The controller-authorized real operation first passed exact worktree, ignore,
+disk, six-volume size/SHA-256, and trusted 7-Zip preflight. It materialized the
+expected `9,217` files (`9,216` CSV plus one PDF) and exactly
+`12,220,812,451` bytes, then failed closed after `1,220.872 s` with the exact
+primary error `XJTU-SY CSV contains nonnumeric data: 1.csv`. No metadata,
+attestation, or final generation was published; the implementation added the
+sanitized note `XJTU-SY preparation state preserved in place for manual
+disposal` and left the single ignored staging tree in situ.
+
+Independent read-only diagnosis proved that all `9,216` CSVs begin with the
+same exact ordered ASCII header:
+`Horizontal_vibration_signals,Vertical_vibration_signals`. The first inspected
+file had `32,769` physical lines: one header plus `32,768` samples. The six
+source RARs and the trusted 7-Zip executable were rehashed after the failed
+operation and remained byte-identical. The sanitized runtime log SHA-256 is
+`cef289cd28f3ea2fda1fbaceb3ad2c350ae914dce69c11f85eaabc38eb52bcb9`.
+
+This evidence supersedes the historical headerless/header-unknown statements
+earlier in this report. It does not resolve the acceleration unit, timestamps,
+window labels, onset, severity, physical failure time, `lifeFraction`, or RUL;
+all corresponding semantic and metric gates remain closed.
+
+### Corrective TDD evidence
+
+- Content-boundary RED: the isolated header/row/body selection returned
+  `8 failed, 7 passed, 88 deselected`. The official header was converted to a
+  float, a missing header was accepted, malformed-header failures lacked the
+  required header boundary, and both off-by-one cases failed before row-count
+  validation.
+- Content-boundary GREEN: the identical selection returned
+  `15 passed, 88 deselected`. The validator now requires exactly one official
+  ordered ASCII header, excludes it from sample count, rejects a duplicate,
+  and retains strict two-column numeric/finitude validation plus byte/hash
+  binding.
+- Metadata/adapter RED: the focused end-to-end metadata test returned
+  `1 failed` only because preparation still emitted positional `0/1` columns
+  with `hasHeader: false`.
+- Metadata/adapter GREEN: the same test returned `1 passed` after emitting the
+  two exact source header names mapped to `horizontal`/`vertical` with
+  `hasHeader: true`. The adapter reads those named columns, skips the header,
+  and preserves window count plus global `(runId,bearingId,sequenceIndex)`.
+- Synthetic literal-scale tests separately accept `32,768` data rows and
+  reject `32,767` and `32,769`; the malformed matrix covers absent, incorrect,
+  duplicated, reordered, and extra-column headers plus one/three data columns,
+  blank/ragged/nonnumeric/NaN/Inf bodies.
+- A second real smoke is explicitly opt-in through
+  `TWINOPS_XJTU_SAMPLE_CSV_COPY`, requires a controller-provided single-file
+  copy outside prepared staging, validates it read-only, and checks stable file
+  identity/size/mtime. It skips when unset.
+
+### Fresh verification after the header correction
+
+- preparation plus adapter: `112 passed, 2 skipped in 8.35s`;
+- focused public-fault CLI regression: `14 passed in 25.52s`;
+- research suite: `347 passed, 5 skipped, 1 warning in 39.58s`;
+- full Python suite: `562 passed, 7 skipped, 2 warnings in 56.92s`;
+- isolated performance gate: `p50=47.17 ms`, `p95=p99=48.98 ms`,
+  `1 passed in 0.91s`;
+- `compileall`, `pip check`, `git diff --check`, scope, and tracking gates
+  passed; pip reported no broken requirements;
+- both real smokes skipped because their explicit opt-in variables were unset,
+  so this correction invoked no real 7-Zip process and performed no real-data
+  I/O;
+- `data/public/sources.json` retained Git blob hash
+  `56a6c9c850366c93f4dbf53bdab6830066a6a6b0`; downloaded and prepared XJTU
+  paths remain ignored/untracked, and operational artifacts, production CLI,
+  experiments, NASA, Plan05, and deploy files were unchanged.
+
+The remaining operational concern is deliberate: the failed real staging must
+stay preserved until the controller explicitly approves its disposition. A
+new real preparation is forbidden until this corrective SHA receives an
+independent 0 Critical / 0 Important review.

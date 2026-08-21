@@ -116,9 +116,12 @@ primary exception. Cover rename-before-raise and identity swaps explicitly.
 After safe extraction but before promotion:
 
 - Reconstruct the filesystem inventory; source hashes must remain pinned.
-- Every CSV is strict UTF-8/ASCII numeric content with exactly 32,768 rows and
-  2 finite columns. Detect header, blank, ragged, nonnumeric, NaN/Inf, extra
-  column, and off-by-one rows fail-closed; do not silently skip a header.
+- Every CSV begins with the exact ordered ASCII header
+  `Horizontal_vibration_signals,Vertical_vibration_signals`, followed by
+  exactly 32,768 data rows with 2 finite numeric columns. The header is not a
+  sample. Reject an absent, incorrect, duplicated, reordered, or extra-column
+  header plus blank, ragged, nonnumeric, NaN/Inf, extra-column, and off-by-one
+  data rows fail-closed.
 - Read/hash the PDF only inside the safely extracted staging tree. Treat it as
   `kind="source_document"`; it is never a signal window.
 - Metadata schema v1 maps every raw-inventory path exactly. CSV entries use
@@ -130,7 +133,9 @@ Author-supported mappings:
 
 - Sampling: `25600 Hz`; samples/window: `32768`; observation cadence: one
   minute.
-- Columns: `0=horizontal`, `1=vertical`; never rename to radial/axial.
+- Header columns: `Horizontal_vibration_signals=horizontal` and
+  `Vertical_vibration_signals=vertical`; preserve this exact source-name
+  mapping and never rename the axes to radial/axial.
 - Conditions: `35Hz12kN -> condition-1, 2100 rpm, 12 kN`;
   `37.5Hz11kN -> condition-2, 2250 rpm, 11 kN`;
   `40Hz10kN -> condition-3, 2400 rpm, 10 kN`.
@@ -142,7 +147,7 @@ Author-supported mappings:
 
 Mandatory unknown/fail-closed fields:
 
-- numeric acceleration unit and header names
+- numeric acceleration unit
 - absolute timestamps/timezone
 - per-window state/fault label, onset, severity
 - physical failure time, true RUL, and `lifeFraction`
@@ -175,7 +180,9 @@ Start with RED tests for:
    and explicit 64 GiB limit.
 2. Inspect-before-write, exact archive shape, contiguous per-bearing sequences,
    PDF uniqueness, and one extraction call.
-3. CSV shape/content failures: header, 32767/32769 rows, 1/3 columns,
+3. CSV shape/content behavior: accept exactly one official ordered header and
+   exclude it from the sample count; reject absent/incorrect/duplicated/
+   reordered/extra-column headers, 32767/32769 data rows, 1/3 data columns,
    blank/ragged/nonnumeric/NaN/Inf.
 4. Metadata equals filesystem inventory; PDF document kind; adapter skips only
    that kind and keeps global `(runId,bearingId,sequenceIndex)` uniqueness.
@@ -187,7 +194,9 @@ Start with RED tests for:
    failure.
 7. Attestation is path-free and all metric gates stay closed.
 8. Real-source smoke is read-only inspection only, opt-in with explicit archive
-   directory and trusted 7-Zip path; it skips otherwise and writes nothing.
+   directory and trusted 7-Zip path; a header/content smoke may use only an
+   explicit controller-provided single-file copy outside prepared staging. Both
+   skip otherwise and write nothing.
 
 ## Verification and commit
 
@@ -212,3 +221,16 @@ and the controller explicitly starts the runtime task.
 Expected real-runtime cost after PASS: 9,217 `7z` member processes, about
 11.38 GiB final data and roughly 55–80 GB logical I/O. Current free disk is
 ample, but duration is conservatively 1–6+ hours on this Windows/SSD setup.
+
+## Real-runtime correction gate — 2026-08-21
+
+The first authorized real preparation passed archive/executable preflight and
+materialized the exact 9,217-file, 12,220,812,451-byte raw inventory, then
+failed closed after 1,220.872 seconds at the first CSV with
+`XJTU-SY CSV contains nonnumeric data: 1.csv`. Independent read-only diagnosis
+proved that all 9,216 official CSVs carry the exact header now pinned above;
+the prior headerless assumption was false. No generation, metadata, or
+attestation was published. The ignored staging state remains preserved at
+`data/public/xjtu-sy/prepared/.xjtu-sy-generation-7x6h7sqm/` for explicit
+controller disposition. This corrective implementation must use synthetic
+fixtures and must not re-run, mutate, promote, move, or delete that real state.
