@@ -70,6 +70,7 @@ def _dataset_fixture(data_root: Path, dataset_id: str) -> dict[str, object]:
                     relative = f"mapped/{bearing_id}.csv"
                     archive.writestr(relative, _csv(values))
                     metadata_files[relative] = {
+                        "kind": "signal_window",
                         "bearingId": bearing_id,
                         "runId": f"explicit-{bearing_id}",
                         "sequenceIndex": 0,
@@ -106,7 +107,11 @@ def _dataset_fixture(data_root: Path, dataset_id: str) -> dict[str, object]:
                 "datasetId": dataset_id,
                 "metadataId": f"synthetic-{dataset_id}-v1",
                 "samplingHz": 1_024,
-                **({"samplesPerWindow": 128} if dataset_id == "nasa-ims" else {}),
+                **(
+                    {"samplesPerWindow": 128}
+                    if dataset_id in {"xjtu-sy", "nasa-ims"}
+                    else {}
+                ),
                 "accelerationUnit": "g",
                 "files": metadata_files,
             }

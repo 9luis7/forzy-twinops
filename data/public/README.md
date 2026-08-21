@@ -28,6 +28,7 @@ Downloads e extrações grandes nunca entram no Git:
 data/public/
   xjtu-sy/downloads/
   xjtu-sy/raw/
+  xjtu-sy/prepared/
   nasa-ims/downloads/
   nasa-ims/raw/
   nasa-ims/prepared/
@@ -40,6 +41,32 @@ A extração também exige um executável 7-Zip confiável informado explicitame
 ao helper; ele é chamado sem shell e transmite um membro validado por vez para
 um arquivo criado pelo Python. O smoke real opcional usa
 `TWINOPS_NASA_RAR_PATH`; sem essa variável, o teste é ignorado explicitamente.
+
+Para a preparação XJTU-SY, as seis partes RAR5 oficiais são inspecionadas
+juntas antes de qualquer escrita e extraídas como um único conjunto. Uma
+geração imutável tem o seguinte layout:
+
+```text
+xjtu-sy/prepared/<generation-id>/
+  attestation.json
+  metadata.json
+  raw/XJTU-SY_Bearing_Datasets/
+    Introduction_to_XJTU-SY_Bearing_Dataset.pdf
+    <condition>/<bearing>/<sequence>.csv
+```
+
+O gate exige exatamente 9.216 CSVs e o PDF de origem, as 15 sequências
+contíguas publicadas pelos autores, 32.768 linhas e duas colunas finitas por
+CSV. As colunas são `horizontal` e `vertical`, a amostragem é 25.600 Hz e a
+cadência observacional é um minuto. A unidade numérica de aceleração, nomes de
+header, timestamps/timezone, estado/onset/severidade por janela, vida física,
+`lifeFraction` e RUL continuam desconhecidos. Carga radial aparece somente
+como evidência de condição com unidade `kN`; nunca no campo float sem unidade.
+Desfechos ficam como evidência terminal do bearing, inclusive os compostos, e
+não viram label de todas as janelas. Métricas confirmatórias, supervisionadas,
+de transferência e de RUL permanecem fechadas. O smoke 2R3 read-only requer
+simultaneamente `TWINOPS_XJTU_RAR_DIRECTORY` e `TWINOPS_TRUSTED_7Z_PATH`; sem
+ambos ele é ignorado e nenhum destino é criado.
 
 Para a preparação NASA IMS em camadas, `raw/IMS/` preserva o ZIP já
 expandido, os três RARs internos e o PDF oficial sem modificação. Runs 1 e 2

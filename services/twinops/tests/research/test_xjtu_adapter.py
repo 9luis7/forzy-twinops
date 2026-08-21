@@ -15,6 +15,7 @@ from twinops.research.metadata import load_metadata
 def _fixture(tmp_path, *, columns=None):
     archive = tmp_path / "xjtu.zip"
     members = {
+        "Introduction_to_XJTU-SY_Bearing_Dataset.pdf": b"%PDF-1.4 fixture",
         "misleading/outer_race/10.csv": b"H,V\n10,20\n11,21\n",
         "misleading/normal/2.csv": b"H,V\n2,4\n3,5\n",
     }
@@ -30,9 +31,15 @@ def _fixture(tmp_path, *, columns=None):
                 "datasetId": "xjtu-sy",
                 "metadataId": "fixture-xjtu-v1",
                 "samplingHz": 25_600,
+                "samplesPerWindow": 2,
                 "accelerationUnit": "g",
                 "files": {
+                    "Introduction_to_XJTU-SY_Bearing_Dataset.pdf": {
+                        "kind": "source_document",
+                        "mediaType": "application/pdf",
+                    },
                     "misleading/outer_race/10.csv": {
+                        "kind": "signal_window",
                         "bearingId": "explicit-bearing-a",
                         "runId": "explicit-run-10",
                         "sequenceIndex": 1,
@@ -47,6 +54,7 @@ def _fixture(tmp_path, *, columns=None):
                         "load": 12,
                     },
                     "misleading/normal/2.csv": {
+                        "kind": "signal_window",
                         "bearingId": "explicit-bearing-a",
                         "runId": "explicit-run-2",
                         "sequenceIndex": 0,
@@ -104,4 +112,43 @@ def test_xjtu_adapter_rejects_non_string_axis_instead_of_stringifying_it(tmp_pat
     raw, metadata = _fixture(tmp_path, columns={"H": None, "V": "axial"})
 
     with pytest.raises(ValueError, match="axis"):
+        list(iter_xjtu(raw, metadata))
+
+
+def test_xjtu_adapter_skips_only_explicit_source_document_entries(tmp_path) -> None:
+    raw, metadata = _fixture(tmp_path)
+
+    windows = list(iter_xjtu(raw, metadata))
+
+    assert len(windows) == 2
+    assert all(window.source_relative_path.endswith(".csv") for window in windows)
+
+
+def test_xjtu_adapter_rejects_unknown_file_kind_before_signal_fields(tmp_path) -> None:
+    raw, metadata = _fixture(tmp_path)
+    metadata.payload["files"]["Introduction_to_XJTU-SY_Bearing_Dataset.pdf"][
+        "kind"
+    ] = "mystery"
+
+    with pytest.raises(ValueError, match="unknown kind"):
+        list(iter_xjtu(raw, metadata))
+
+
+def test_xjtu_adapter_rejects_window_length_that_differs_from_metadata(tmp_path) -> None:
+    raw, metadata = _fixture(tmp_path)
+    metadata.payload["samplesPerWindow"] = 3
+
+    with pytest.raises(ValueError, match="samplesPerWindow|row count"):
+        list(iter_xjtu(raw, metadata))
+
+
+def test_xjtu_adapter_rejects_duplicate_global_window_identity(tmp_path) -> None:
+    raw, metadata = _fixture(tmp_path)
+    files = metadata.payload["files"]
+    first = files["misleading/normal/2.csv"]
+    second = files["misleading/outer_race/10.csv"]
+    second["runId"] = first["runId"]
+    second["sequenceIndex"] = first["sequenceIndex"]
+
+    with pytest.raises(ValueError, match="duplicate.*runId.*bearingId.*sequenceIndex"):
         list(iter_xjtu(raw, metadata))
