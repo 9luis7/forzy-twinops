@@ -7,6 +7,7 @@ import json
 import math
 import os
 import re
+import secrets
 import shutil
 import stat
 import tempfile
@@ -165,6 +166,21 @@ class _DirectoryCreationGuard:
     ctime_ns: int | None
 
 
+@dataclass(frozen=True, slots=True)
+class _InspectedMemberBinding:
+    relative_path: str
+    size_bytes: int
+    kind: str
+
+
+@dataclass(frozen=True, slots=True)
+class _PublicationManifestEntry:
+    relative_path: str
+    kind: str
+    size_bytes: int | None = None
+    sha256: str | None = None
+
+
 def _valid_identity_values(device: object, inode: object) -> tuple[int, int]:
     if (
         not isinstance(device, int)
@@ -247,7 +263,9 @@ def _same_identity(path: Path, owned: _OwnedDirectory) -> bool:
     if not os.path.lexists(path):
         return False
     try:
-        return _directory_identity(path) == (owned.device, owned.inode)
+        first = _valid_identity(_plain_directory_metadata(path))
+        second = _valid_identity(_plain_directory_metadata(path))
+        return first == second == (owned.device, owned.inode)
     except (OSError, ValueError):
         return False
 
@@ -420,7 +438,9 @@ def _inspection_parts_match(
         return False
 
 
-def _validate_inspection(config: "XjtuSyPreparationConfig", inspection: Any) -> tuple[str, ...]:
+def _validate_inspection(
+    config: "XjtuSyPreparationConfig", inspection: Any
+) -> tuple[_InspectedMemberBinding, ...]:
     if not _inspection_parts_match(
         config.archive_parts, getattr(inspection, "parts", None)
     ):
@@ -433,6 +453,7 @@ def _validate_inspection(config: "XjtuSyPreparationConfig", inspection: Any) -> 
 
     directories: list[str] = []
     files: list[str] = []
+    file_sizes: dict[str, int] = {}
     observed_total = 0
     for member in members:
         path = _canonical_member_path(getattr(member, "relative_path", None))
@@ -444,6 +465,7 @@ def _validate_inspection(config: "XjtuSyPreparationConfig", inspection: Any) -> 
             directories.append(path)
         elif is_directory is False:
             files.append(path)
+            file_sizes[path] = size
             observed_total += size
         else:
             raise ValueError("XJTU-SY archive member type is unknown")
@@ -490,7 +512,14 @@ def _validate_inspection(config: "XjtuSyPreparationConfig", inspection: Any) -> 
             raise ValueError("XJTU-SY archive bearing sequence is not contiguous")
     if tuple(sorted(files)) != tuple(sorted((*expected_csv, _PDF_PATH))):
         raise ValueError("XJTU-SY archive file boundary is unexpected")
-    return tuple(sorted(files))
+    return tuple(
+        _InspectedMemberBinding(
+            relative_path=path,
+            size_bytes=file_sizes[path],
+            kind="source_document" if path == _PDF_PATH else "signal_window",
+        )
+        for path in sorted(files)
+    )
 
 
 def _inventory_binding(inventory: RawInventory) -> list[dict[str, object]]:
@@ -504,12 +533,18 @@ def _inventory_binding(inventory: RawInventory) -> list[dict[str, object]]:
     ]
 
 
-def _validate_inventory(inventory: RawInventory, expected_paths: tuple[str, ...]) -> None:
+def _validate_inventory(
+    inventory: RawInventory,
+    expected_members: tuple[_InspectedMemberBinding, ...],
+) -> None:
     if not isinstance(inventory, RawInventory):
         raise TypeError("XJTU-SY extraction must return RawInventory")
     binding = _inventory_binding(inventory)
+    expected_sizes = {
+        item.relative_path: item.size_bytes for item in expected_members
+    }
     paths = tuple(item["relativePath"] for item in binding)
-    if paths != expected_paths:
+    if paths != tuple(sorted(expected_sizes)):
         raise ValueError("XJTU-SY raw inventory does not match archive inspection")
     for item in binding:
         if (
@@ -520,6 +555,10 @@ def _validate_inventory(inventory: RawInventory, expected_paths: tuple[str, ...]
             or _SHA256.fullmatch(item["sha256"]) is None
         ):
             raise ValueError("XJTU-SY raw inventory entry is invalid")
+        if item["sizeBytes"] != expected_sizes[str(item["relativePath"])]:
+            raise ValueError(
+                "XJTU-SY raw inventory member size differs from archive inspection"
+            )
     expected_hash = _sha256_bytes(_canonical_json_bytes(binding))
     if inventory.inventory_sha256 != expected_hash:
         raise ValueError("XJTU-SY raw inventory hash is invalid")
@@ -888,6 +927,7 @@ def _attestation_payload(
             "axes": "horizontal_vertical_author_confirmed",
             "sourceTimezone": "unknown",
             "absoluteTimestamps": "unknown",
+            "physicalFailureTime": "unknown",
             "windowState": "unknown",
             "faultOnset": "unknown",
             "severity": "unknown",
@@ -910,28 +950,198 @@ def _write_new(path: Path, payload: bytes) -> str:
     return _sha256_bytes(payload)
 
 
-def _tree_manifest(root: Path) -> tuple[tuple[str, int, str], ...]:
-    manifest = []
-    for relative_path in _filesystem_relative_files(root):
-        path = root.joinpath(*PurePosixPath(relative_path).parts)
-        size, digest = _hash_file(path)
-        manifest.append((relative_path, size, digest))
-    return tuple(manifest)
+def _expected_publication_manifest(
+    inventory: RawInventory,
+    metadata_bytes: bytes,
+    attestation_bytes: bytes,
+) -> tuple[_PublicationManifestEntry, ...]:
+    directories = {"raw"}
+    entries: list[_PublicationManifestEntry] = []
+    for item in inventory.files:
+        relative_path = PurePosixPath("raw", item.relative_path)
+        directories.update(
+            parent.as_posix()
+            for parent in relative_path.parents
+            if parent != PurePosixPath(".")
+        )
+        entries.append(
+            _PublicationManifestEntry(
+                relative_path=relative_path.as_posix(),
+                kind="file",
+                size_bytes=item.size_bytes,
+                sha256=item.sha256,
+            )
+        )
+    entries.extend(
+        (
+            _PublicationManifestEntry(
+                relative_path="metadata.json",
+                kind="file",
+                size_bytes=len(metadata_bytes),
+                sha256=_sha256_bytes(metadata_bytes),
+            ),
+            _PublicationManifestEntry(
+                relative_path="attestation.json",
+                kind="file",
+                size_bytes=len(attestation_bytes),
+                sha256=_sha256_bytes(attestation_bytes),
+            ),
+        )
+    )
+    entries.extend(
+        _PublicationManifestEntry(relative_path=path, kind="directory")
+        for path in directories
+    )
+    return tuple(sorted(entries, key=lambda item: (item.relative_path, item.kind)))
+
+
+def _tree_manifest(root: Path) -> tuple[_PublicationManifestEntry, ...]:
+    manifest: list[_PublicationManifestEntry] = []
+    reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+
+    def traverse(directory: Path) -> None:
+        before = _stable_plain_path_identity(directory, directory=True)
+        try:
+            with os.scandir(directory) as iterator:
+                children = sorted(tuple(iterator), key=lambda entry: entry.name)
+        except OSError as error:
+            raise ValueError(
+                "XJTU-SY manifest traversal failed safely"
+            ) from error
+
+        for child in children:
+            path = directory / child.name
+            relative_path = path.relative_to(root).as_posix()
+            try:
+                metadata = child.stat(follow_symlinks=False)
+            except OSError as error:
+                raise ValueError(
+                    "XJTU-SY manifest traversal failed safely"
+                ) from error
+            is_reparse = bool(
+                reparse_flag
+                and getattr(metadata, "st_file_attributes", 0) & reparse_flag
+            )
+            if stat.S_ISLNK(metadata.st_mode) or is_reparse:
+                raise ValueError("XJTU-SY manifest contains a link or reparse point")
+            if stat.S_ISDIR(metadata.st_mode):
+                manifest.append(
+                    _PublicationManifestEntry(
+                        relative_path=relative_path,
+                        kind="directory",
+                    )
+                )
+                traverse(path)
+                continue
+            if not stat.S_ISREG(metadata.st_mode):
+                raise ValueError("XJTU-SY manifest contains an unsafe filesystem object")
+            try:
+                file_before = _stable_plain_path_identity(path, directory=False)
+                size, digest = _hash_file(path)
+                file_after = _stable_plain_path_identity(path, directory=False)
+            except OSError as error:
+                raise ValueError(
+                    "XJTU-SY manifest traversal failed safely"
+                ) from error
+            if file_before != file_after:
+                raise ValueError("XJTU-SY manifest file identity changed during traversal")
+            manifest.append(
+                _PublicationManifestEntry(
+                    relative_path=relative_path,
+                    kind="file",
+                    size_bytes=size,
+                    sha256=digest,
+                )
+            )
+        if _stable_plain_path_identity(directory, directory=True) != before:
+            raise ValueError("XJTU-SY manifest directory changed during traversal")
+
+    try:
+        root_identity = _directory_identity(root)
+        traverse(root)
+        if _directory_identity(root) != root_identity:
+            raise ValueError("XJTU-SY manifest root identity changed during traversal")
+    except OSError as error:
+        raise ValueError("XJTU-SY manifest traversal failed safely") from error
+    return tuple(sorted(manifest, key=lambda item: (item.relative_path, item.kind)))
+
+
+def _locate_owned_directory(
+    owned: _OwnedDirectory, candidates: tuple[Path, ...]
+) -> Path | None:
+    existing = tuple(
+        path for path in dict.fromkeys(candidates) if os.path.lexists(path)
+    )
+    matching = tuple(path for path in existing if _same_identity(path, owned))
+    if not existing:
+        return None
+    if len(matching) != 1:
+        raise RuntimeError("refusing to remove an XJTU-SY directory whose identity changed")
+    return matching[0]
+
+
+def _fresh_cleanup_path(parent: Path) -> Path:
+    for _ in range(16):
+        candidate = parent / f".xjtu-sy-cleanup-{secrets.token_hex(16)}"
+        if not os.path.lexists(candidate):
+            return candidate
+    raise RuntimeError("could not allocate an exclusive XJTU-SY cleanup quarantine")
+
+
+def _quarantine_owned_directory(
+    owned: _OwnedDirectory,
+    *,
+    alternate_paths: tuple[Path, ...] = (),
+) -> Path | None:
+    candidates = tuple(dict.fromkeys((owned.path, *alternate_paths)))
+    source = _locate_owned_directory(owned, candidates)
+    if source is None:
+        return None
+    quarantine = _fresh_cleanup_path(source.parent)
+    all_candidates = (*candidates, quarantine)
+
+    try:
+        source.rename(quarantine)
+    except BaseException:
+        located = _locate_owned_directory(owned, all_candidates)
+        if located == quarantine:
+            return quarantine
+        if located != source:
+            raise RuntimeError(
+                "XJTU-SY cleanup rename left the owned identity in an ambiguous state"
+            )
+        try:
+            os.rename(source, quarantine)
+        except BaseException as fallback_error:
+            located = _locate_owned_directory(owned, all_candidates)
+            if located != quarantine:
+                raise RuntimeError(
+                    "XJTU-SY cleanup could not quarantine the owned identity"
+                ) from fallback_error
+    else:
+        located = _locate_owned_directory(owned, all_candidates)
+        if located != quarantine:
+            raise RuntimeError(
+                "XJTU-SY cleanup rename did not quarantine the owned identity"
+            )
+
+    if not _same_identity(quarantine, owned):
+        raise RuntimeError("XJTU-SY cleanup quarantine identity changed")
+    return quarantine
 
 
 def _cleanup_owned_directory(
     owned: _OwnedDirectory, *, alternate_paths: tuple[Path, ...] = ()
 ) -> None:
-    candidates = tuple(dict.fromkeys((owned.path, *alternate_paths)))
-    existing = tuple(path for path in candidates if os.path.lexists(path))
-    matching = tuple(path for path in existing if _same_identity(path, owned))
-    if not existing:
+    quarantine = _quarantine_owned_directory(
+        owned, alternate_paths=alternate_paths
+    )
+    if quarantine is None:
         return
-    if len(matching) != 1:
-        raise RuntimeError("refusing to remove an XJTU-SY directory whose identity changed")
-    target = matching[0]
-    shutil.rmtree(target)
-    if os.path.lexists(target):
+    if not _same_identity(quarantine, owned):
+        raise RuntimeError("XJTU-SY cleanup quarantine identity changed")
+    shutil.rmtree(quarantine)
+    if os.path.lexists(quarantine):
         raise RuntimeError("XJTU-SY staging cleanup did not remove the owned directory")
 
 
@@ -940,8 +1150,20 @@ def _cleanup_new_empty_staging(path: Path, guard: _DirectoryCreationGuard) -> No
         raise RuntimeError("refusing to remove an unverified XJTU-SY staging path")
     if _directory_creation_guard(path) != guard:
         raise RuntimeError("refusing to remove an unverified XJTU-SY staging path")
-    path.rmdir()
-    if os.path.lexists(path):
+    owned = _OwnedDirectory(path, guard.device, guard.inode)
+    quarantine = _quarantine_owned_directory(owned)
+    if quarantine is None:
+        return
+    if not _same_identity(quarantine, owned):
+        raise RuntimeError("XJTU-SY empty cleanup quarantine identity changed")
+    try:
+        with os.scandir(quarantine) as iterator:
+            if next(iterator, None) is not None:
+                raise RuntimeError("refusing to remove a nonempty XJTU-SY staging path")
+    except OSError as error:
+        raise RuntimeError("could not verify the XJTU-SY empty cleanup quarantine") from error
+    quarantine.rmdir()
+    if os.path.lexists(quarantine):
         raise RuntimeError("XJTU-SY empty staging cleanup did not remove the directory")
 
 
@@ -1007,7 +1229,7 @@ def prepare_xjtu_sy(config: XjtuSyPreparationConfig) -> XjtuSyPreparationResult:
     inspection = inspect_rar_archive(
         config.archive_parts, limits=config.extraction_limits
     )
-    inspected_paths = _validate_inspection(config, inspection)
+    inspected_members = _validate_inspection(config, inspection)
 
     destination_root = config.destination_root
     destination_root.mkdir(parents=True, exist_ok=True)
@@ -1032,7 +1254,7 @@ def prepare_xjtu_sy(config: XjtuSyPreparationConfig) -> XjtuSyPreparationResult:
             limits=config.extraction_limits,
             seven_zip_executable=attested_executable,
         )
-        _validate_inventory(inventory, inspected_paths)
+        _validate_inventory(inventory, inspected_members)
         pdf_sha256 = _validate_raw_tree(staging / "raw", inventory)
 
         metadata_bytes = _canonical_json_bytes(
@@ -1060,7 +1282,13 @@ def prepare_xjtu_sy(config: XjtuSyPreparationConfig) -> XjtuSyPreparationResult:
         )
         attestation_json = attestation_bytes.decode("utf-8")
 
-        expected_manifest = _tree_manifest(staging)
+        expected_manifest = _expected_publication_manifest(
+            inventory, metadata_bytes, attestation_bytes
+        )
+        if _tree_manifest(staging) != expected_manifest:
+            raise ValueError(
+                "XJTU-SY staging differs from the deterministic publication manifest"
+            )
         final = destination_root / generation_id
         if os.path.lexists(final):
             existing_identity = _directory_identity(final)

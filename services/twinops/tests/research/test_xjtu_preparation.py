@@ -1109,3 +1109,202 @@ def test_inspection_accepts_public_api_normalization_of_absolute_part_paths(
     result = prepare_xjtu_sy(config)
 
     assert result.generation_root.is_dir()
+
+
+def test_inspection_returns_immutable_per_member_path_size_and_type_binding(
+    tmp_path, monkeypatch
+) -> None:
+    config = _config(tmp_path)
+    specs, contents, _, _ = _install_small_source(monkeypatch, config)
+
+    binding = xjtu_preparation._validate_inspection(
+        config, _inspection(config, specs, contents)
+    )
+
+    assert isinstance(binding, tuple)
+    assert len(binding) == 6
+    assert all(item.relative_path for item in binding)
+    assert all(isinstance(item.size_bytes, int) for item in binding)
+    assert all(item.kind in {"signal_window", "source_document"} for item in binding)
+
+
+def test_inventory_rejects_compensated_per_file_sizes_with_same_total(
+    tmp_path, monkeypatch
+) -> None:
+    config = _config(tmp_path)
+    specs, _, _, _ = _install_small_source(monkeypatch, config)
+    fake_extract = xjtu_preparation.safe_extract_rar_archive
+
+    def compensated_sizes(*args, **kwargs):
+        inventory = fake_extract(*args, **kwargs)
+        root = Path(args[1])
+        first = _csv_path(specs[0], 1)
+        second = _csv_path(specs[0], 2)
+        root.joinpath(*first.split("/")).write_bytes(b"1,2\n3,40\n")
+        root.joinpath(*second.split("/")).write_bytes(b"1,2\n3,4")
+        contents = {
+            item.relative_path: root.joinpath(*item.relative_path.split("/")).read_bytes()
+            for item in inventory.files
+        }
+        replacement = _inventory(root, contents)
+        assert replacement.total_bytes == inventory.total_bytes
+        return replacement
+
+    monkeypatch.setattr(
+        xjtu_preparation, "safe_extract_rar_archive", compensated_sizes
+    )
+
+    with pytest.raises(ValueError, match="size|inspection"):
+        prepare_xjtu_sy(config)
+
+    assert not list(config.destination_root.iterdir())
+
+
+def test_mutation_after_content_validation_is_not_adopted_as_expected_manifest(
+    tmp_path, monkeypatch
+) -> None:
+    config = _config(tmp_path)
+    specs, _, _, _ = _install_small_source(monkeypatch, config)
+    real_manifest = xjtu_preparation._tree_manifest
+    mutated = False
+
+    def mutate_before_staging_manifest(root):
+        nonlocal mutated
+        if root.name.startswith(".xjtu-sy-generation-") and not mutated:
+            target = root / "raw" / Path(*_csv_path(specs[0], 1).split("/"))
+            target.write_bytes(b"3,4\n3,4\n")
+            mutated = True
+        return real_manifest(root)
+
+    monkeypatch.setattr(xjtu_preparation, "_tree_manifest", mutate_before_staging_manifest)
+
+    with pytest.raises((ValueError, RuntimeError), match="manifest|publication"):
+        prepare_xjtu_sy(config)
+
+    assert mutated is True
+    assert not list(config.destination_root.iterdir())
+
+
+@pytest.mark.parametrize("empty", [False, True], ids=["nonempty", "empty"])
+@pytest.mark.parametrize("phase", ["pre", "post"])
+@pytest.mark.parametrize(
+    "rename_error",
+    [RuntimeError("cleanup rename"), KeyboardInterrupt(), SystemExit(21)],
+)
+def test_cleanup_quarantines_owned_identity_before_deletion_and_handles_rename_faults(
+    tmp_path, monkeypatch, empty, phase, rename_error
+) -> None:
+    config = _config(tmp_path)
+    _install_small_source(monkeypatch, config)
+    primary = RuntimeError("primary preparation failure")
+
+    if empty:
+        real_identity = xjtu_preparation._directory_identity
+        injected = False
+
+        def fail_first_staging_identity(path):
+            nonlocal injected
+            if path.name.startswith(".xjtu-sy-generation-") and not injected:
+                injected = True
+                raise primary
+            return real_identity(path)
+
+        monkeypatch.setattr(
+            xjtu_preparation, "_directory_identity", fail_first_staging_identity
+        )
+    else:
+        def write_partial_then_fail(_parts, destination, **_kwargs):
+            staging = Path(destination).parent
+            partial = staging / "partial" / "sentinel.txt"
+            partial.parent.mkdir()
+            partial.write_text("owned partial", encoding="utf-8")
+            raise primary
+
+        monkeypatch.setattr(
+            xjtu_preparation, "safe_extract_rar_archive", write_partial_then_fail
+        )
+
+    real_rename = Path.rename
+    attempts = 0
+    replacement: dict[str, Path] = {}
+
+    def fault_cleanup_rename(source, target):
+        nonlocal attempts
+        if source.name.startswith(".xjtu-sy-generation-") and target.name.startswith(
+            ".xjtu-sy-cleanup-"
+        ):
+            attempts += 1
+            if attempts == 1 and phase == "pre":
+                raise rename_error
+            if attempts == 1 and phase == "post":
+                real_rename(source, target)
+                source.mkdir()
+                sentinel = source / "replacement-sentinel.txt"
+                sentinel.write_text("controller replacement", encoding="utf-8")
+                replacement.update(path=source, sentinel=sentinel)
+                raise rename_error
+        return real_rename(source, target)
+
+    monkeypatch.setattr(Path, "rename", fault_cleanup_rename)
+
+    observed: BaseException | None = None
+    try:
+        prepare_xjtu_sy(config)
+    except BaseException as error:
+        observed = error
+
+    assert observed is primary
+    assert attempts >= 1
+    assert not list(config.destination_root.glob(".xjtu-sy-cleanup-*"))
+    if phase == "post":
+        assert replacement["path"].is_dir()
+        assert replacement["sentinel"].read_text(encoding="utf-8") == (
+            "controller replacement"
+        )
+    else:
+        assert not list(config.destination_root.iterdir())
+
+
+def test_existing_generation_with_undeclared_empty_directory_is_not_idempotent(
+    tmp_path, monkeypatch
+) -> None:
+    config = _config(tmp_path)
+    _install_small_source(monkeypatch, config)
+    first = prepare_xjtu_sy(config)
+    undeclared = first.generation_root / "raw" / "undeclared-empty"
+    undeclared.mkdir()
+
+    with pytest.raises(ValueError, match="differs|manifest"):
+        prepare_xjtu_sy(config)
+
+    assert undeclared.is_dir()
+    assert not list(config.destination_root.glob(".xjtu-sy-generation-*"))
+
+
+def test_tree_manifest_fails_closed_when_scandir_cannot_traverse_directory(
+    tmp_path, monkeypatch
+) -> None:
+    root = tmp_path / "tree"
+    blocked = root / "blocked"
+    blocked.mkdir(parents=True)
+    (blocked / "data.bin").write_bytes(b"data")
+    real_scandir = os.scandir
+
+    def fail_blocked(path):
+        if Path(path) == blocked:
+            raise PermissionError("blocked traversal")
+        return real_scandir(path)
+
+    monkeypatch.setattr(os, "scandir", fail_blocked)
+
+    with pytest.raises(ValueError, match="travers|manifest"):
+        xjtu_preparation._tree_manifest(root)
+
+
+def test_attestation_marks_physical_failure_time_unknown(tmp_path, monkeypatch) -> None:
+    config = _config(tmp_path)
+    _install_small_source(monkeypatch, config)
+
+    result = prepare_xjtu_sy(config)
+
+    assert result.to_dict()["semanticGates"]["physicalFailureTime"] == "unknown"
