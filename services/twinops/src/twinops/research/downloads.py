@@ -17,6 +17,7 @@ import tempfile
 import unicodedata
 import zipfile
 from dataclasses import dataclass
+from enum import Enum, auto
 from pathlib import Path, PurePosixPath
 from typing import BinaryIO, Sequence
 
@@ -465,6 +466,36 @@ class _RarStagingCleanupCapability:
     token: bytes
 
 
+@dataclass(frozen=True, slots=True)
+class _RarStagingCreationGuard:
+    mode: int
+    device: int | None
+    inode: int | None
+    ctime_ns: int | None
+    birthtime_ns: int | None
+    mtime_ns: int | None
+    file_attributes: int | None
+    reparse_tag: int | None
+    size_bytes: int | None
+    link_count: int | None
+
+
+class _RarStagingPhase(Enum):
+    CREATED_GUARDED = auto()
+    MARKER_ESTABLISHED = auto()
+    IDENTITY_ESTABLISHED = auto()
+    MARKER_CONSUMED = auto()
+
+
+@dataclass(slots=True)
+class _RarStagingOwnership:
+    temporary: Path
+    creation_guard: _RarStagingCreationGuard
+    phase: _RarStagingPhase = _RarStagingPhase.CREATED_GUARDED
+    capability: _RarStagingCleanupCapability | None = None
+    owned_identity: _DirectoryIdentity | None = None
+
+
 def _require_plain_directory(path: Path, *, context: str) -> os.stat_result:
     metadata = path.lstat()
     reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
@@ -475,6 +506,51 @@ def _require_plain_directory(path: Path, *, context: str) -> os.stat_result:
     ):
         raise RuntimeError(f"RAR {context} is not a regular directory")
     return metadata
+
+
+def _optional_metadata_int(metadata: os.stat_result, name: str) -> int | None:
+    value = getattr(metadata, name, None)
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    return value
+
+
+def _metadata_timestamp_ns(
+    metadata: os.stat_result,
+    nanoseconds_name: str,
+    seconds_name: str,
+) -> int | None:
+    nanoseconds = _optional_metadata_int(metadata, nanoseconds_name)
+    if nanoseconds is not None:
+        return nanoseconds
+    seconds = getattr(metadata, seconds_name, None)
+    if (
+        isinstance(seconds, bool)
+        or not isinstance(seconds, (int, float))
+        or not math.isfinite(seconds)
+    ):
+        return None
+    return int(seconds * 1_000_000_000)
+
+
+def _rar_staging_creation_guard(path: Path) -> _RarStagingCreationGuard:
+    metadata = _require_plain_directory(path, context="staging creation guard")
+    return _RarStagingCreationGuard(
+        mode=metadata.st_mode,
+        device=_optional_metadata_int(metadata, "st_dev"),
+        inode=_optional_metadata_int(metadata, "st_ino"),
+        ctime_ns=_metadata_timestamp_ns(metadata, "st_ctime_ns", "st_ctime"),
+        birthtime_ns=_metadata_timestamp_ns(
+            metadata,
+            "st_birthtime_ns",
+            "st_birthtime",
+        ),
+        mtime_ns=_metadata_timestamp_ns(metadata, "st_mtime_ns", "st_mtime"),
+        file_attributes=_optional_metadata_int(metadata, "st_file_attributes"),
+        reparse_tag=_optional_metadata_int(metadata, "st_reparse_tag"),
+        size_bytes=_optional_metadata_int(metadata, "st_size"),
+        link_count=_optional_metadata_int(metadata, "st_nlink"),
+    )
 
 
 def _directory_identity_from_lstat(path: Path) -> _DirectoryIdentity:
@@ -545,12 +621,18 @@ def _add_cleanup_note(original: BaseException, action: str, failure: BaseExcepti
         pass
 
 
-def _cleanup_empty_uninitialized_rar_staging(temporary: Path) -> None:
+def _cleanup_creation_guarded_rar_staging(
+    temporary: Path,
+    creation_guard: _RarStagingCreationGuard,
+) -> None:
     if not os.path.lexists(temporary):
         return
-    _require_plain_directory(temporary, context="uninitialized staging cleanup path")
+    if _rar_staging_creation_guard(temporary) != creation_guard:
+        raise RuntimeError("RAR cleanup refused a changed creation-guarded staging path")
     if any(temporary.iterdir()):
         raise RuntimeError("RAR cleanup refused a non-empty uninitialized staging path")
+    if _rar_staging_creation_guard(temporary) != creation_guard:
+        raise RuntimeError("RAR staging creation guard changed during cleanup")
     temporary.rmdir()
     if os.path.lexists(temporary):
         raise RuntimeError("RAR cleanup did not remove uninitialized staging")
@@ -645,52 +727,84 @@ def _cleanup_capability_bound_rar_staging(
         raise RuntimeError("RAR cleanup did not remove capability-bound staging")
 
 
-def _cleanup_uninitialized_rar_staging(
+def _cleanup_identity_bound_rar_staging(
     temporary: Path,
-    capability: _RarStagingCleanupCapability | None,
-    *,
-    marker_established: bool,
+    identity: _DirectoryIdentity,
 ) -> None:
-    if marker_established:
-        if capability is None:
+    if not os.path.lexists(temporary):
+        return
+    if not _matches_directory_identity(temporary, identity):
+        raise RuntimeError("RAR cleanup refused a changed identity-bound staging path")
+    shutil.rmtree(temporary)
+    if os.path.lexists(temporary):
+        raise RuntimeError("RAR cleanup did not remove identity-bound staging")
+
+
+def _cleanup_uninitialized_rar_staging(ownership: _RarStagingOwnership) -> None:
+    if ownership.owned_identity is not None:
+        _cleanup_identity_bound_rar_staging(
+            ownership.temporary,
+            ownership.owned_identity,
+        )
+        return
+    if ownership.phase in {
+        _RarStagingPhase.IDENTITY_ESTABLISHED,
+        _RarStagingPhase.MARKER_CONSUMED,
+    }:
+        raise RuntimeError("RAR staging phase has no owned filesystem identity")
+    if ownership.phase is _RarStagingPhase.MARKER_ESTABLISHED:
+        if ownership.capability is None:
             raise RuntimeError("RAR staging cleanup capability is unavailable")
-        _cleanup_capability_bound_rar_staging(temporary, capability)
+        _cleanup_capability_bound_rar_staging(
+            ownership.temporary,
+            ownership.capability,
+        )
         return
-    if capability is not None and os.path.lexists(capability.marker):
-        _cleanup_capability_bound_rar_staging(temporary, capability)
+    if ownership.capability is not None and os.path.lexists(ownership.capability.marker):
+        _cleanup_capability_bound_rar_staging(
+            ownership.temporary,
+            ownership.capability,
+        )
         return
-    _cleanup_empty_uninitialized_rar_staging(temporary)
+    _cleanup_creation_guarded_rar_staging(
+        ownership.temporary,
+        ownership.creation_guard,
+    )
 
 
 def _create_rar_staging(parent: Path, destination_name: str) -> tuple[Path, _DirectoryIdentity]:
     temporary: Path | None = None
-    capability: _RarStagingCleanupCapability | None = None
-    marker_established = False
+    ownership: _RarStagingOwnership | None = None
     try:
         temporary = Path(
             tempfile.mkdtemp(prefix=f".{destination_name}-rar-extract-", dir=parent)
+        )
+        ownership = _RarStagingOwnership(
+            temporary=temporary,
+            creation_guard=_rar_staging_creation_guard(temporary),
         )
         capability = _RarStagingCleanupCapability(
             marker=temporary / _RAR_STAGING_CAPABILITY_MARKER,
             token=secrets.token_bytes(32),
         )
+        ownership.capability = capability
         _create_rar_staging_capability(capability)
-        marker_established = True
+        ownership.phase = _RarStagingPhase.MARKER_ESTABLISHED
         provisional_identity = _directory_identity_from_lstat(temporary)
         identity = _directory_identity(temporary)
         if identity != provisional_identity:
             raise RuntimeError("RAR staging identity changed during acquisition")
+        ownership.owned_identity = identity
+        ownership.phase = _RarStagingPhase.IDENTITY_ESTABLISHED
         _consume_rar_staging_capability(temporary, capability)
-        marker_established = False
+        ownership.phase = _RarStagingPhase.MARKER_CONSUMED
         return temporary, identity
     except BaseException as error:
         if temporary is not None:
             try:
-                _cleanup_uninitialized_rar_staging(
-                    temporary,
-                    capability,
-                    marker_established=marker_established,
-                )
+                if ownership is None:
+                    raise RuntimeError("RAR staging creation guard is unavailable")
+                _cleanup_uninitialized_rar_staging(ownership)
             except BaseException as cleanup_error:
                 _add_cleanup_note(error, "uninitialized staging cleanup", cleanup_error)
         raise

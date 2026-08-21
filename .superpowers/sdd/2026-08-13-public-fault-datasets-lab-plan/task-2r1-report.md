@@ -296,3 +296,73 @@ DONE
 - The isolated performance p95 was 75.68 ms, below the 100 ms gate but above the prior low-contention samples.
 - When marker contents are incomplete or any path/capability fact is unprovable, fail-closed behavior deliberately leaves the path for manual review and annotates the original exception.
 - No real RAR extraction was requested or performed; the required real-source smoke inspected the authorized NASA RAR read-only.
+
+## Fix wave - explicit RAR staging ownership state
+
+### Status
+
+DONE
+
+### Decisions
+
+- Replaced the `marker_established` boolean with explicit `CREATED_GUARDED`, `MARKER_ESTABLISHED`, `IDENTITY_ESTABLISHED`, and `MARKER_CONSUMED` phases plus separate capability and owned-identity fields.
+- Captured a creation guard immediately after `mkdtemp`, before token generation or marker open. The guard accepts inode zero and records mode, device, inode, ctime, birth time, mtime, file attributes, reparse tag, size, and link count when available.
+- Required the current plain-directory guard to match before and after the empty-directory check in every pre-marker cleanup. A changed empty replacement is preserved and causes a sanitized cleanup note.
+- Stored the stable owned identity before attempting marker consumption. Every exception before or after marker unlink then cleans by that identity and never retries a missing marker.
+- Identity cleanup removes only a path still matching the owned directory identity, verifies absence, never searches for a displaced tree, and preserves any replacement at the original path.
+- Kept partial/invalid marker cleanup on the capability path and retained the marker/tamper refusal behavior from the prior wave.
+
+### Files
+
+- `services/twinops/src/twinops/research/downloads.py`
+- `services/twinops/tests/research/test_rar_downloads.py`
+- `.superpowers/sdd/2026-08-13-public-fault-datasets-lab-plan/task-2r1-report.md` (append only)
+
+`data/public/sources.json` remains separately owned and is excluded from this commit.
+
+### RED
+
+- Post-marker-unlink transition for `RuntimeError`, `KeyboardInterrupt`, and `SystemExit`:
+  - `3 failed, 107 deselected`; cleanup retried the now-missing marker, added a note, and left staging.
+- Pre-marker empty replacement:
+  - `1 failed, 109 deselected`; unguarded empty-directory cleanup removed the replacement path and left the displaced original elsewhere.
+
+### GREEN
+
+- Post-unlink identity cleanup: `3 passed, 107 deselected`.
+- Pre-marker replacement preservation: `1 passed, 109 deselected`.
+- Guard-capture, guarded token/open, stable-identity pre-unlink, displaced-tree, and inode-zero matrix: `14 passed, 107 deselected`.
+- Final focused RAR suite: `121 passed, 1 skipped in 2.58s`.
+- Real NASA inspection smoke with `TWINOPS_NASA_RAR_PATH=C:\Users\Luis\Documents\ChatGPT\forzy twinops\data\public\nasa-ims\raw\IMS\1st_test.rar`:
+  - `1 passed in 4.09s`; read-only inspection, no extraction or data modification.
+
+### Suites
+
+- Existing ZIP/TAR provenance: `17 passed in 1.90s`.
+- Research suite: `179 passed, 1 skipped, 1 warning in 29.17s`.
+- Full Python suite: `394 passed, 3 skipped, 2 warnings in 38.50s`.
+- Performance check immediately after the full suite: `p50=50.35 ms`, `p95=51.32 ms`, `p99=51.32 ms`; `1 passed in 0.95s`.
+- `python -m compileall -q services/twinops/src services/twinops/tests`: passed.
+- `python -m pip check`: `No broken requirements found.`
+- `git diff --check`: passed; only LF-to-CRLF notices were emitted.
+- Raw/archive tracking query: no tracked ZIP, RAR, 7z, downloads, or raw files.
+
+### Security self-review
+
+- `RuntimeError`, `KeyboardInterrupt`, and `SystemExit` are covered at creation-guard capture, guarded token/marker creation, marker-established identity acquisition, identity-established pre-unlink, and post-unlink transitions; each re-raises the exact original object.
+- If guard capture itself fails, ownership cannot be proven: staging remains, the exception is preserved, and only a sanitized cleanup note is added.
+- An inode-zero guard still cleans an unchanged empty directory and detects a replacement through the other recorded metadata signals.
+- An empty pre-marker replacement and the displaced original both survive; cleanup does not scan siblings or infer a relocated task tree.
+- Once stable identity is established, pre/post-unlink failures leave zero staging under normal cleanup and cannot be confused by the consumed marker state.
+- Partial marker, marker tamper, source re-hash ordering, publication rollback, cleanup verification, and destination identity regressions remain covered by the focused and full suites.
+
+### Commit
+
+- Message: `fix: make rar staging ownership state explicit`
+- Scope: the three fix-wave files listed above; Git reports the SHA after committing this append.
+
+### Concerns
+
+- No absolute defense is claimed against a same-user attacker winning the interval between `mkdtemp` and the first creation-guard `lstat`; the multi-signal guard is fail-closed defense in depth after that observation.
+- The expected Starlette/httpx deprecation and joblib physical-core fallback warnings remain unchanged.
+- No real RAR extraction was requested or performed; the required real-source smoke inspected the authorized NASA RAR read-only.

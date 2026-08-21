@@ -745,6 +745,234 @@ def test_safe_extract_rar_does_not_remove_staging_path_after_identity_changes(
 
 
 @pytest.mark.parametrize("error_type", [RuntimeError, KeyboardInterrupt, SystemExit])
+def test_safe_extract_rar_cleans_owned_staging_after_marker_unlink_failure(
+    tmp_path, monkeypatch, error_type
+) -> None:
+    first = _single_file_rar(tmp_path, monkeypatch)
+    destination = tmp_path / "raw"
+    original = error_type("post-unlink transition failed")
+    real_require_plain_directory = downloads._require_plain_directory
+
+    def fail_after_marker_unlink(path, *, context):
+        if context == "staging path after capability removal":
+            raise original
+        return real_require_plain_directory(path, context=context)
+
+    monkeypatch.setattr(downloads, "_require_plain_directory", fail_after_marker_unlink)
+
+    with pytest.raises(error_type) as captured:
+        safe_extract_rar_archive([ArchivePart(first, _sha256(first))], destination)
+
+    assert captured.value is original
+    assert not getattr(original, "__notes__", [])
+    assert not destination.exists()
+    assert not list(tmp_path.glob(".raw-rar-extract-*"))
+
+
+def test_safe_extract_rar_preserves_empty_replacement_before_marker_creation(
+    tmp_path, monkeypatch
+) -> None:
+    first = _single_file_rar(tmp_path, monkeypatch)
+    destination = tmp_path / "raw"
+    displaced = tmp_path / "displaced-original-staging"
+    original = SystemExit("SECRET token transition failed")
+
+    def displace_then_fail(_size):
+        staging = next(tmp_path.glob(".raw-rar-extract-*"))
+        staging.replace(displaced)
+        staging.mkdir()
+        raise original
+
+    monkeypatch.setattr(downloads.secrets, "token_bytes", displace_then_fail)
+
+    with pytest.raises(SystemExit) as captured:
+        safe_extract_rar_archive([ArchivePart(first, _sha256(first))], destination)
+
+    assert captured.value is original
+    replacement = next(tmp_path.glob(".raw-rar-extract-*"))
+    assert replacement.is_dir()
+    assert not any(replacement.iterdir())
+    assert displaced.is_dir()
+    assert not any(displaced.iterdir())
+    assert any(
+        "uninitialized staging cleanup failed safely" in note
+        for note in original.__notes__
+    )
+    assert all("SECRET" not in note for note in original.__notes__)
+    assert not destination.exists()
+
+
+@pytest.mark.parametrize("error_type", [RuntimeError, KeyboardInterrupt, SystemExit])
+def test_safe_extract_rar_preserves_staging_when_creation_guard_capture_fails(
+    tmp_path, monkeypatch, error_type
+) -> None:
+    first = _single_file_rar(tmp_path, monkeypatch)
+    destination = tmp_path / "raw"
+    original = error_type("SECRET creation guard failure")
+    monkeypatch.setattr(
+        downloads,
+        "_rar_staging_creation_guard",
+        lambda _path: (_ for _ in ()).throw(original),
+    )
+
+    with pytest.raises(error_type) as captured:
+        safe_extract_rar_archive([ArchivePart(first, _sha256(first))], destination)
+
+    assert captured.value is original
+    staging = next(tmp_path.glob(".raw-rar-extract-*"))
+    assert staging.is_dir()
+    assert not any(staging.iterdir())
+    assert any(
+        "uninitialized staging cleanup failed safely" in note
+        for note in original.__notes__
+    )
+    assert all("SECRET" not in note for note in original.__notes__)
+    assert not destination.exists()
+
+
+@pytest.mark.parametrize("error_type", [RuntimeError, KeyboardInterrupt, SystemExit])
+def test_safe_extract_rar_cleans_identity_owned_staging_before_marker_unlink(
+    tmp_path, monkeypatch, error_type
+) -> None:
+    first = _single_file_rar(tmp_path, monkeypatch)
+    destination = tmp_path / "raw"
+    original = error_type("pre-unlink transition failed")
+    real_unlink = downloads.Path.unlink
+
+    def fail_marker_unlink(path, *args, **kwargs):
+        if path.name == downloads._RAR_STAGING_CAPABILITY_MARKER:
+            raise original
+        return real_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(downloads.Path, "unlink", fail_marker_unlink)
+
+    with pytest.raises(error_type) as captured:
+        safe_extract_rar_archive([ArchivePart(first, _sha256(first))], destination)
+
+    assert captured.value is original
+    assert not getattr(original, "__notes__", [])
+    assert not destination.exists()
+    assert not list(tmp_path.glob(".raw-rar-extract-*"))
+
+
+def test_safe_extract_rar_does_not_search_for_displaced_pre_marker_staging(
+    tmp_path, monkeypatch
+) -> None:
+    first = _single_file_rar(tmp_path, monkeypatch)
+    destination = tmp_path / "raw"
+    displaced = tmp_path / "displaced-unlocated-staging"
+    original = KeyboardInterrupt("pre-marker staging displaced")
+
+    def displace_then_fail(_size):
+        staging = next(tmp_path.glob(".raw-rar-extract-*"))
+        staging.replace(displaced)
+        raise original
+
+    monkeypatch.setattr(downloads.secrets, "token_bytes", displace_then_fail)
+
+    with pytest.raises(KeyboardInterrupt) as captured:
+        safe_extract_rar_archive([ArchivePart(first, _sha256(first))], destination)
+
+    assert captured.value is original
+    assert displaced.is_dir()
+    assert not any(displaced.iterdir())
+    assert not list(tmp_path.glob(".raw-rar-extract-*"))
+    assert not destination.exists()
+
+
+def test_safe_extract_rar_creation_guard_accepts_zero_inode(tmp_path, monkeypatch) -> None:
+    first = _single_file_rar(tmp_path, monkeypatch)
+    destination = tmp_path / "raw"
+    original = RuntimeError("token creation failed")
+    real_lstat = downloads.Path.lstat
+
+    def zero_inode_for_staging(path):
+        metadata = real_lstat(path)
+        if "rar-extract" not in path.name:
+            return metadata
+        return SimpleNamespace(
+            st_mode=metadata.st_mode,
+            st_dev=metadata.st_dev,
+            st_ino=0,
+            st_ctime_ns=metadata.st_ctime_ns,
+            st_mtime_ns=metadata.st_mtime_ns,
+            st_file_attributes=getattr(metadata, "st_file_attributes", 0),
+            st_reparse_tag=getattr(metadata, "st_reparse_tag", 0),
+            st_size=metadata.st_size,
+            st_nlink=metadata.st_nlink,
+        )
+
+    monkeypatch.setattr(downloads.Path, "lstat", zero_inode_for_staging)
+    monkeypatch.setattr(
+        downloads.secrets,
+        "token_bytes",
+        lambda _size: (_ for _ in ()).throw(original),
+    )
+
+    with pytest.raises(RuntimeError) as captured:
+        safe_extract_rar_archive([ArchivePart(first, _sha256(first))], destination)
+
+    assert captured.value is original
+    assert not getattr(original, "__notes__", [])
+    assert not destination.exists()
+    assert not list(tmp_path.glob(".raw-rar-extract-*"))
+
+
+def test_safe_extract_rar_creation_guard_detects_replacement_with_zero_inode(
+    tmp_path, monkeypatch
+) -> None:
+    first = _single_file_rar(tmp_path, monkeypatch)
+    destination = tmp_path / "raw"
+    displaced = tmp_path / "displaced-zero-inode-staging"
+    original = SystemExit("SECRET zero-inode replacement")
+    replacement_created = False
+    real_lstat = downloads.Path.lstat
+
+    def guarded_lstat(path):
+        metadata = real_lstat(path)
+        if "rar-extract" not in path.name:
+            return metadata
+        ctime_ns = metadata.st_ctime_ns + (1 if replacement_created else 0)
+        return SimpleNamespace(
+            st_mode=metadata.st_mode,
+            st_dev=metadata.st_dev,
+            st_ino=0,
+            st_ctime_ns=ctime_ns,
+            st_mtime_ns=metadata.st_mtime_ns,
+            st_file_attributes=getattr(metadata, "st_file_attributes", 0),
+            st_reparse_tag=getattr(metadata, "st_reparse_tag", 0),
+            st_size=metadata.st_size,
+            st_nlink=metadata.st_nlink,
+        )
+
+    def replace_then_fail(_size):
+        nonlocal replacement_created
+        staging = next(tmp_path.glob(".raw-rar-extract-*"))
+        staging.replace(displaced)
+        staging.mkdir()
+        replacement_created = True
+        raise original
+
+    monkeypatch.setattr(downloads.Path, "lstat", guarded_lstat)
+    monkeypatch.setattr(downloads.secrets, "token_bytes", replace_then_fail)
+
+    with pytest.raises(SystemExit) as captured:
+        safe_extract_rar_archive([ArchivePart(first, _sha256(first))], destination)
+
+    assert captured.value is original
+    replacement = next(tmp_path.glob(".raw-rar-extract-*"))
+    assert replacement.is_dir()
+    assert not any(replacement.iterdir())
+    assert displaced.is_dir()
+    assert any(
+        "uninitialized staging cleanup failed safely" in note
+        for note in original.__notes__
+    )
+    assert all("SECRET" not in note for note in original.__notes__)
+    assert not destination.exists()
+
+
+@pytest.mark.parametrize("error_type", [RuntimeError, KeyboardInterrupt, SystemExit])
 def test_safe_extract_rar_cleans_staging_when_first_identity_observation_raises(
     tmp_path, monkeypatch, error_type
 ) -> None:
@@ -770,6 +998,9 @@ def test_safe_extract_rar_cleans_staging_when_first_identity_observation_raises(
     ("failure_point", "error_type"),
     [
         ("token", RuntimeError),
+        ("token", KeyboardInterrupt),
+        ("token", SystemExit),
+        ("marker", RuntimeError),
         ("marker", KeyboardInterrupt),
         ("marker", SystemExit),
     ],
