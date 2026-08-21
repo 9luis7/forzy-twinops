@@ -8,7 +8,6 @@ import math
 import os
 import re
 import secrets
-import shutil
 import stat
 import tempfile
 from dataclasses import dataclass, field
@@ -179,6 +178,13 @@ class _PublicationManifestEntry:
     kind: str
     size_bytes: int | None = None
     sha256: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class _ReconstructedRawFile:
+    relative_path: str
+    size_bytes: int
+    sha256: str
 
 
 def _valid_identity_values(device: object, inode: object) -> tuple[int, int]:
@@ -997,6 +1003,7 @@ def _expected_publication_manifest(
 
 def _tree_manifest(root: Path) -> tuple[_PublicationManifestEntry, ...]:
     manifest: list[_PublicationManifestEntry] = []
+    first_shape: list[tuple[str, str]] = []
     reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
 
     def traverse(directory: Path) -> None:
@@ -1025,6 +1032,7 @@ def _tree_manifest(root: Path) -> tuple[_PublicationManifestEntry, ...]:
             if stat.S_ISLNK(metadata.st_mode) or is_reparse:
                 raise ValueError("XJTU-SY manifest contains a link or reparse point")
             if stat.S_ISDIR(metadata.st_mode):
+                first_shape.append((relative_path, "directory"))
                 manifest.append(
                     _PublicationManifestEntry(
                         relative_path=relative_path,
@@ -1035,6 +1043,7 @@ def _tree_manifest(root: Path) -> tuple[_PublicationManifestEntry, ...]:
                 continue
             if not stat.S_ISREG(metadata.st_mode):
                 raise ValueError("XJTU-SY manifest contains an unsafe filesystem object")
+            first_shape.append((relative_path, "file"))
             try:
                 file_before = _stable_plain_path_identity(path, directory=False)
                 size, digest = _hash_file(path)
@@ -1056,14 +1065,67 @@ def _tree_manifest(root: Path) -> tuple[_PublicationManifestEntry, ...]:
         if _stable_plain_path_identity(directory, directory=True) != before:
             raise ValueError("XJTU-SY manifest directory changed during traversal")
 
+    def reenumerate(directory: Path) -> list[tuple[str, str]]:
+        before = _stable_plain_path_identity(directory, directory=True)
+        try:
+            with os.scandir(directory) as iterator:
+                children = sorted(tuple(iterator), key=lambda entry: entry.name)
+        except OSError as error:
+            raise ValueError("XJTU-SY manifest traversal failed safely") from error
+        shape: list[tuple[str, str]] = []
+        for child in children:
+            path = directory / child.name
+            relative_path = path.relative_to(root).as_posix()
+            try:
+                metadata = child.stat(follow_symlinks=False)
+            except OSError as error:
+                raise ValueError("XJTU-SY manifest traversal failed safely") from error
+            is_reparse = bool(
+                reparse_flag
+                and getattr(metadata, "st_file_attributes", 0) & reparse_flag
+            )
+            if stat.S_ISLNK(metadata.st_mode) or is_reparse:
+                raise ValueError("XJTU-SY manifest contains a link or reparse point")
+            if stat.S_ISDIR(metadata.st_mode):
+                shape.append((relative_path, "directory"))
+                shape.extend(reenumerate(path))
+            elif stat.S_ISREG(metadata.st_mode):
+                shape.append((relative_path, "file"))
+            else:
+                raise ValueError("XJTU-SY manifest contains an unsafe filesystem object")
+        if _stable_plain_path_identity(directory, directory=True) != before:
+            raise ValueError("XJTU-SY manifest directory changed during traversal")
+        return shape
+
     try:
         root_identity = _directory_identity(root)
         traverse(root)
+        second_shape = reenumerate(root)
+        if tuple(sorted(first_shape)) != tuple(sorted(second_shape)):
+            raise ValueError("XJTU-SY manifest tree changed during re-enumeration")
         if _directory_identity(root) != root_identity:
             raise ValueError("XJTU-SY manifest root identity changed during traversal")
     except OSError as error:
         raise ValueError("XJTU-SY manifest traversal failed safely") from error
     return tuple(sorted(manifest, key=lambda item: (item.relative_path, item.kind)))
+
+
+def _assert_publication_manifest(
+    root: Path,
+    expected: tuple[_PublicationManifestEntry, ...],
+    *,
+    context: str,
+    expected_identity: tuple[int, int] | None = None,
+) -> None:
+    root_identity = _directory_identity(root)
+    if expected_identity is not None and root_identity != expected_identity:
+        raise ValueError(f"{context} identity differs from the validated root")
+    first = _tree_manifest(root)
+    second = _tree_manifest(root)
+    if first != expected or second != expected or first != second:
+        raise ValueError(f"{context} differs from the deterministic publication manifest")
+    if _directory_identity(root) != root_identity:
+        raise ValueError(f"{context} identity changed during manifest reconciliation")
 
 
 def _locate_owned_directory(
@@ -1140,9 +1202,10 @@ def _cleanup_owned_directory(
         return
     if not _same_identity(quarantine, owned):
         raise RuntimeError("XJTU-SY cleanup quarantine identity changed")
-    shutil.rmtree(quarantine)
-    if os.path.lexists(quarantine):
-        raise RuntimeError("XJTU-SY staging cleanup did not remove the owned directory")
+    raise RuntimeError(
+        "XJTU-SY cleanup quarantine preserved because no identity-bound "
+        "directory removal primitive is available"
+    )
 
 
 def _cleanup_new_empty_staging(path: Path, guard: _DirectoryCreationGuard) -> None:
@@ -1156,15 +1219,10 @@ def _cleanup_new_empty_staging(path: Path, guard: _DirectoryCreationGuard) -> No
         return
     if not _same_identity(quarantine, owned):
         raise RuntimeError("XJTU-SY empty cleanup quarantine identity changed")
-    try:
-        with os.scandir(quarantine) as iterator:
-            if next(iterator, None) is not None:
-                raise RuntimeError("refusing to remove a nonempty XJTU-SY staging path")
-    except OSError as error:
-        raise RuntimeError("could not verify the XJTU-SY empty cleanup quarantine") from error
-    quarantine.rmdir()
-    if os.path.lexists(quarantine):
-        raise RuntimeError("XJTU-SY empty staging cleanup did not remove the directory")
+    raise RuntimeError(
+        "XJTU-SY cleanup quarantine preserved because no identity-bound "
+        "directory removal primitive is available"
+    )
 
 
 def _add_cleanup_failure_note(error: BaseException, cleanup_error: BaseException) -> None:
@@ -1219,6 +1277,143 @@ def _result(
     )
 
 
+def _read_plain_file_bytes(path: Path) -> bytes:
+    before = _stable_plain_path_identity(path, directory=False)
+    try:
+        payload = path.read_bytes()
+    except OSError as error:
+        raise ValueError("existing XJTU-SY publication file could not be read") from error
+    after = _stable_plain_path_identity(path, directory=False)
+    if before != after:
+        raise ValueError("existing XJTU-SY publication file identity changed during read")
+    return payload
+
+
+def _existing_generation_candidate(destination_root: Path) -> Path | None:
+    generation_name = re.compile(r"^xjtu-sy-v1-[0-9a-f]{64}$")
+
+    def snapshot() -> tuple[str, ...]:
+        try:
+            with os.scandir(destination_root) as iterator:
+                return tuple(
+                    sorted(
+                        entry.name
+                        for entry in iterator
+                        if generation_name.fullmatch(entry.name) is not None
+                    )
+                )
+        except OSError as error:
+            raise ValueError(
+                "existing XJTU-SY publication root could not be enumerated"
+            ) from error
+
+    first = snapshot()
+    second = snapshot()
+    if first != second:
+        raise ValueError("existing XJTU-SY publication set changed during enumeration")
+    if len(first) > 1:
+        raise ValueError("multiple existing XJTU-SY generations are ambiguous")
+    return destination_root / first[0] if first else None
+
+
+def _inventory_from_publication_manifest(
+    manifest: tuple[_PublicationManifestEntry, ...],
+) -> RawInventory:
+    files: list[_ReconstructedRawFile] = []
+    for entry in manifest:
+        if entry.kind != "file" or not entry.relative_path.startswith("raw/"):
+            continue
+        if entry.size_bytes is None or entry.sha256 is None:
+            raise ValueError("existing XJTU-SY raw manifest entry is incomplete")
+        relative_path = entry.relative_path.removeprefix("raw/")
+        files.append(
+            _ReconstructedRawFile(
+                relative_path=relative_path,
+                size_bytes=entry.size_bytes,
+                sha256=entry.sha256,
+            )
+        )
+    ordered = tuple(sorted(files, key=lambda item: item.relative_path))
+    binding = [
+        {
+            "relativePath": item.relative_path,
+            "sizeBytes": item.size_bytes,
+            "sha256": item.sha256,
+        }
+        for item in ordered
+    ]
+    return RawInventory(
+        files=ordered,
+        inventory_sha256=_sha256_bytes(_canonical_json_bytes(binding)),
+        total_bytes=sum(item.size_bytes for item in ordered),
+    )
+
+
+def _try_existing_generation(
+    config: XjtuSyPreparationConfig,
+    inspected_members: tuple[_InspectedMemberBinding, ...],
+    destination_root: Path,
+) -> XjtuSyPreparationResult | None:
+    final = _existing_generation_candidate(destination_root)
+    if final is None:
+        return None
+    final_identity = _directory_identity(final)
+    initial_manifest = _tree_manifest(final)
+    inventory = _inventory_from_publication_manifest(initial_manifest)
+    _validate_inventory(inventory, inspected_members)
+    pdf_sha256 = _validate_raw_tree(final / "raw", inventory)
+
+    metadata_bytes = _canonical_json_bytes(
+        _metadata_payload(config, inventory, pdf_sha256)
+    )
+    metadata_sha256 = _sha256_bytes(metadata_bytes)
+    if _read_plain_file_bytes(final / "metadata.json") != metadata_bytes:
+        raise ValueError(
+            "existing XJTU-SY generation differs from deterministic metadata"
+        )
+    load_metadata(
+        final / "metadata.json",
+        expected_sha256=metadata_sha256,
+        dataset_id="xjtu-sy",
+        raw_inventory=inventory,
+    )
+    generation_id = _generation_id(config, inventory, metadata_sha256)
+    if final.name != generation_id:
+        raise ValueError("existing XJTU-SY generation id differs from its evidence")
+    attestation_bytes = _canonical_json_bytes(
+        _attestation_payload(
+            config,
+            generation_id,
+            inventory,
+            metadata_sha256,
+            pdf_sha256,
+        )
+    )
+    if _read_plain_file_bytes(final / "attestation.json") != attestation_bytes:
+        raise ValueError(
+            "existing XJTU-SY generation differs from deterministic attestation"
+        )
+    expected_manifest = _expected_publication_manifest(
+        inventory, metadata_bytes, attestation_bytes
+    )
+    attestation_sha256 = _sha256_bytes(attestation_bytes)
+    result = _result(
+        final,
+        generation_id,
+        inventory,
+        metadata_sha256,
+        attestation_sha256,
+        attestation_bytes.decode("utf-8"),
+    )
+    _assert_publication_manifest(
+        final,
+        expected_manifest,
+        context="existing XJTU-SY generation",
+        expected_identity=final_identity,
+    )
+    return result
+
+
 def prepare_xjtu_sy(config: XjtuSyPreparationConfig) -> XjtuSyPreparationResult:
     """Prepare one official multipart XJTU-SY generation."""
 
@@ -1234,6 +1429,11 @@ def prepare_xjtu_sy(config: XjtuSyPreparationConfig) -> XjtuSyPreparationResult:
     destination_root = config.destination_root
     destination_root.mkdir(parents=True, exist_ok=True)
     _directory_identity(destination_root)
+    existing = _try_existing_generation(
+        config, inspected_members, destination_root
+    )
+    if existing is not None:
+        return existing
     staging: Path | None = None
     owned: _OwnedDirectory | None = None
     creation_guard: _DirectoryCreationGuard | None = None
@@ -1285,35 +1485,33 @@ def prepare_xjtu_sy(config: XjtuSyPreparationConfig) -> XjtuSyPreparationResult:
         expected_manifest = _expected_publication_manifest(
             inventory, metadata_bytes, attestation_bytes
         )
-        if _tree_manifest(staging) != expected_manifest:
-            raise ValueError(
-                "XJTU-SY staging differs from the deterministic publication manifest"
-            )
+        _assert_publication_manifest(
+            staging,
+            expected_manifest,
+            context="XJTU-SY staging",
+        )
         final = destination_root / generation_id
         if os.path.lexists(final):
-            existing_identity = _directory_identity(final)
-            existing_manifest = _tree_manifest(final)
-            if _directory_identity(final) != existing_identity:
-                raise ValueError("existing XJTU-SY generation root identity is unstable")
-            if existing_manifest != expected_manifest:
-                raise ValueError(
-                    "existing XJTU-SY generation differs from the deterministic publication"
-                )
-            _cleanup_owned_directory(owned)
-            return _result(
+            _assert_publication_manifest(
                 final,
-                generation_id,
-                inventory,
-                metadata_sha256,
-                attestation_sha256,
-                attestation_json,
+                expected_manifest,
+                context="concurrently published XJTU-SY generation",
+            )
+            raise RuntimeError(
+                "an XJTU-SY generation appeared concurrently during preparation"
             )
 
+        _assert_publication_manifest(
+            staging,
+            expected_manifest,
+            context="XJTU-SY staging immediately before promotion",
+            expected_identity=(owned.device, owned.inode),
+        )
         staging.rename(final)
         owned = _OwnedDirectory(final, device, inode)
-        if not _same_identity(final, owned) or _tree_manifest(final) != expected_manifest:
+        if not _same_identity(final, owned):
             raise RuntimeError("XJTU-SY atomic generation promotion could not be verified")
-        return _result(
+        result = _result(
             final,
             generation_id,
             inventory,
@@ -1321,6 +1519,13 @@ def prepare_xjtu_sy(config: XjtuSyPreparationConfig) -> XjtuSyPreparationResult:
             attestation_sha256,
             attestation_json,
         )
+        _assert_publication_manifest(
+            final,
+            expected_manifest,
+            context="promoted XJTU-SY generation",
+            expected_identity=(owned.device, owned.inode),
+        )
+        return result
     except BaseException as error:
         try:
             if owned is not None:

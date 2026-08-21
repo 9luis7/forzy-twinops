@@ -230,3 +230,98 @@ physical-core detection fallback. `data/public/sources.json` retained Git blob
 hash `56a6c9c850366c93f4dbf53bdab6830066a6a6b0`. No downloaded archive,
 prepared directory, operational artifact, production CLI, experiment, NASA,
 or deploy file was changed.
+
+## Independent re-review fix wave 2 on `8a1a2cd`
+
+Status: IMPLEMENTED AND LOCALLY VERIFIED; awaiting another independent
+re-review. No real XJTU-SY extraction, direct 7-Zip invocation, download,
+push, or merge was performed.
+
+### Reviewer tracers and RED evidence
+
+The exact focused tracer selection returned `9 failed, 85 deselected` before
+any production change:
+
+- six deletion-window cases (empty/nonempty quarantine crossed with
+  `RuntimeError`, `KeyboardInterrupt`, and `SystemExit`) showed that a
+  controller replacement created after the last identity check was deleted by
+  pathname while the displaced owned tree survived;
+- a second idempotent call extracted again and entered staging cleanup;
+- a final generation mutated immediately after its first idempotent manifest
+  traversal was returned as successful;
+- a file inserted after the first `scandir` snapshot was omitted from the
+  manifest without error.
+
+After the minimum production changes, the same selection returned `9 passed,
+85 deselected`. The first complete focused run then exposed 40 old assertions
+that still required destructive cleanup. Those tests were migrated to the new
+fail-safe contract: they require one preserved quarantine plus a sanitized
+note on the exact primary exception object. The complete preparation module
+then passed at `93 passed, 1 skipped`.
+
+### Cleanup disposition
+
+The local Windows/Python runtime reports:
+
+- `shutil.rmtree.avoids_symlink_attacks = False`;
+- `os.rmdir in os.supports_dir_fd = False`;
+- `os.unlink in os.supports_dir_fd = False`.
+
+No identity/handle-bound recursive directory removal primitive is therefore
+available within the authorized Python boundary. The implementation no longer
+calls `rmtree` or `rmdir`. It moves the single located owned identity to a
+fresh cryptographic quarantine name, re-locates and revalidates it, and then
+preserves it. Cleanup reports only a sanitized exception-class note on the
+original `BaseException`; it never replaces that object. Tracers swap the
+quarantine after the final identity check and prove the owned tree, controller
+replacement, and sentinel all survive for empty and nonempty trees across all
+three exception classes.
+
+This deliberately trades disk reclamation for the priority invariant that no
+non-owned pathname is deleted. A failed real preparation can therefore leave
+a large local quarantine for controller-reviewed manual disposition.
+
+### Idempotency and manifest reconciliation
+
+- An exact existing generation is now validated before staging or extraction.
+  The implementation reconstructs an immutable structural raw inventory from
+  the final manifest, binds it to inspected path/size evidence, revalidates all
+  CSV/PDF content, canonical metadata, canonical attestation, generation ID,
+  and the complete final tree. It uses no additional private Task 2R1 import.
+- A second exact call performs no extraction and has no staging-cleanup
+  mutation window. Concurrent publication after this preflight fails closed
+  and preserves the newly built staging quarantine rather than returning with
+  an unaccounted side effect.
+- Each manifest traversal performs a second complete recursive `scandir`
+  re-enumeration and compares every relative child path and type. Links,
+  reparse points, unknown object types, child-set changes, and scan errors all
+  fail closed.
+- Publication validation performs two complete manifests per reconciliation.
+  Staging is reconciled once after construction and again immediately before
+  promotion. The promoted or idempotent final is reconciled against immutable
+  expected bytes as the last operation before returning, with the originally
+  validated root identity bound into that check.
+
+### Fresh verification after fix wave 2
+
+- reviewer tracer selection: `9 passed, 85 deselected in 2.56s`;
+- complete preparation module: `93 passed, 1 skipped in 9.44s`;
+- focused preparation plus adapter: `100 passed, 1 skipped in 9.51s`; final
+  post-report rerun: `100 passed, 1 skipped in 9.39s`;
+- focused public-fault CLI regression: `14 passed in 32.95s`;
+- research suite: `335 passed, 4 skipped, 1 warning in 38.24s`;
+- full Python suite: `550 passed, 6 skipped, 2 warnings in 47.53s`; final
+  post-report rerun: the same `550 passed, 6 skipped, 2 warnings in 61.06s`;
+- isolated performance gate: `p50=49.51 ms`, `p95=p99=53.97 ms`, `1 passed
+  in 0.96s`; final post-full rerun passed at `p50=50.51 ms`,
+  `p95=p99=52.30 ms` in `1.04s`;
+- explicit real-source read-only smoke: `1 skipped in 1.69s` because the two
+  opt-in environment variables were absent, so no 7-Zip process ran;
+- `compileall`, `pip check`, `git diff --check`, and tracking gates passed.
+
+The two broad-suite warnings remain the pre-existing Starlette/httpx
+deprecation and joblib physical-core fallback. `data/public/sources.json`
+retained Git blob hash
+`56a6c9c850366c93f4dbf53bdab6830066a6a6b0`. No downloaded archive,
+prepared directory, operational artifact, production CLI, experiment, NASA,
+or deploy file was changed.

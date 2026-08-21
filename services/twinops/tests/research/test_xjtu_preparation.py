@@ -427,6 +427,20 @@ def _install_small_source(
     return specs, contents, events, lambda: extract_calls
 
 
+def _assert_preserved_cleanup_quarantine(
+    config: XjtuSyPreparationConfig, error: BaseException
+) -> Path:
+    quarantines = list(config.destination_root.glob(".xjtu-sy-cleanup-*"))
+    assert len(quarantines) == 1
+    assert quarantines[0].is_dir()
+    notes = getattr(error, "__notes__", [])
+    assert notes
+    serialized_notes = " ".join(notes)
+    assert "cleanup" in serialized_notes
+    assert os.fspath(config.destination_root) not in serialized_notes
+    return quarantines[0]
+
+
 def test_prepare_inspects_before_any_write_and_extracts_all_six_parts_once(
     tmp_path, monkeypatch
 ) -> None:
@@ -577,10 +591,10 @@ def test_csv_shape_or_content_divergence_never_publishes(
     config = _config(tmp_path)
     _install_small_source(monkeypatch, config, bad_csv=bad_content)
 
-    with pytest.raises(ValueError, match="CSV"):
+    with pytest.raises(ValueError, match="CSV") as caught:
         prepare_xjtu_sy(config)
 
-    assert not list(config.destination_root.iterdir()), reason
+    _assert_preserved_cleanup_quarantine(config, caught.value)
 
 
 def test_author_registry_drives_exact_condition_totals_and_terminal_evidence() -> None:
@@ -628,10 +642,10 @@ def test_executable_is_revalidated_immediately_before_the_single_extract(
 
     monkeypatch.setattr(xjtu_preparation, "inspect_rar_archive", mutate_after_inspection)
 
-    with pytest.raises(ValueError, match="executable changed"):
+    with pytest.raises(ValueError, match="executable changed") as caught:
         prepare_xjtu_sy(config)
 
-    assert not list(config.destination_root.iterdir())
+    _assert_preserved_cleanup_quarantine(config, caught.value)
 
 
 def test_preparation_is_deterministic_across_destination_roots(
@@ -714,7 +728,7 @@ def test_existing_generation_reparse_root_is_rejected_before_manifest(
 
 
 @pytest.mark.parametrize("error", [RuntimeError("extract"), KeyboardInterrupt(), SystemExit(7)])
-def test_extraction_base_exception_preserves_object_and_cleans_owned_staging(
+def test_extraction_base_exception_preserves_object_and_quarantines_owned_staging(
     tmp_path, monkeypatch, error
 ) -> None:
     config = _config(tmp_path)
@@ -724,11 +738,11 @@ def test_extraction_base_exception_preserves_object_and_cleans_owned_staging(
         prepare_xjtu_sy(config)
 
     assert caught.value is error
-    assert not list(config.destination_root.iterdir())
+    _assert_preserved_cleanup_quarantine(config, error)
 
 
 @pytest.mark.parametrize("error", [RuntimeError("rename"), KeyboardInterrupt(), SystemExit(8)])
-def test_rename_that_promotes_then_raises_rolls_back_owned_final(
+def test_rename_that_promotes_then_raises_quarantines_owned_final(
     tmp_path, monkeypatch, error
 ) -> None:
     config = _config(tmp_path)
@@ -745,12 +759,11 @@ def test_rename_that_promotes_then_raises_rolls_back_owned_final(
         prepare_xjtu_sy(config)
 
     assert caught.value is error
-    assert not getattr(caught.value, "__notes__", [])
-    assert not list(config.destination_root.iterdir())
+    _assert_preserved_cleanup_quarantine(config, error)
 
 
 @pytest.mark.parametrize("error", [RuntimeError("rename"), KeyboardInterrupt(), SystemExit(9)])
-def test_rename_that_raises_before_mutation_cleans_only_staging(
+def test_rename_that_raises_before_mutation_quarantines_only_staging(
     tmp_path, monkeypatch, error
 ) -> None:
     config = _config(tmp_path)
@@ -765,12 +778,11 @@ def test_rename_that_raises_before_mutation_cleans_only_staging(
         prepare_xjtu_sy(config)
 
     assert caught.value is error
-    assert not getattr(caught.value, "__notes__", [])
-    assert not list(config.destination_root.iterdir())
+    _assert_preserved_cleanup_quarantine(config, error)
 
 
 @pytest.mark.parametrize("error", [RuntimeError("identity"), KeyboardInterrupt(), SystemExit(10)])
-def test_first_staging_identity_failure_cleans_only_new_empty_directory(
+def test_first_staging_identity_failure_quarantines_only_new_empty_directory(
     tmp_path, monkeypatch, error
 ) -> None:
     config = _config(tmp_path)
@@ -791,7 +803,7 @@ def test_first_staging_identity_failure_cleans_only_new_empty_directory(
         prepare_xjtu_sy(config)
 
     assert caught.value is error
-    assert not list(config.destination_root.iterdir())
+    _assert_preserved_cleanup_quarantine(config, error)
 
 
 @pytest.mark.parametrize(
@@ -926,12 +938,12 @@ def test_zero_identity_returned_during_binding_fails_before_extract(
 
     monkeypatch.setattr(xjtu_preparation, "_directory_identity", zero_staging_inode)
 
-    with pytest.raises(ValueError, match="identity"):
+    with pytest.raises(ValueError, match="identity") as caught:
         prepare_xjtu_sy(config)
 
     assert events == ["inspect"]
     assert extraction_count() == 0
-    assert not list(config.destination_root.iterdir())
+    _assert_preserved_cleanup_quarantine(config, caught.value)
 
 
 class _HostileAddNoteError(RuntimeError):
@@ -1033,10 +1045,10 @@ def test_extracted_inventory_byte_total_must_match_the_inspected_archive(
         return_different_valid_numeric_bytes,
     )
 
-    with pytest.raises(ValueError, match="byte count|inspection"):
+    with pytest.raises(ValueError, match="byte count|inspection") as caught:
         prepare_xjtu_sy(config)
 
-    assert not list(config.destination_root.iterdir())
+    _assert_preserved_cleanup_quarantine(config, caught.value)
 
 
 def test_extracted_raw_root_must_be_plain_non_reparse_before_content_reads(
@@ -1074,11 +1086,11 @@ def test_extracted_raw_root_must_be_plain_non_reparse_before_content_reads(
     monkeypatch.setattr(Path, "lstat", reparse_raw_root)
     monkeypatch.setattr(xjtu_preparation, "_validate_numeric_csv", record_content_read)
 
-    with pytest.raises(ValueError, match="regular directory|unsafe"):
+    with pytest.raises(ValueError, match="regular directory|unsafe") as caught:
         prepare_xjtu_sy(config)
 
     assert content_reads == 0
-    assert not list(config.destination_root.iterdir())
+    _assert_preserved_cleanup_quarantine(config, caught.value)
 
 
 def test_inspection_accepts_public_api_normalization_of_absolute_part_paths(
@@ -1154,10 +1166,10 @@ def test_inventory_rejects_compensated_per_file_sizes_with_same_total(
         xjtu_preparation, "safe_extract_rar_archive", compensated_sizes
     )
 
-    with pytest.raises(ValueError, match="size|inspection"):
+    with pytest.raises(ValueError, match="size|inspection") as caught:
         prepare_xjtu_sy(config)
 
-    assert not list(config.destination_root.iterdir())
+    _assert_preserved_cleanup_quarantine(config, caught.value)
 
 
 def test_mutation_after_content_validation_is_not_adopted_as_expected_manifest(
@@ -1178,11 +1190,13 @@ def test_mutation_after_content_validation_is_not_adopted_as_expected_manifest(
 
     monkeypatch.setattr(xjtu_preparation, "_tree_manifest", mutate_before_staging_manifest)
 
-    with pytest.raises((ValueError, RuntimeError), match="manifest|publication"):
+    with pytest.raises(
+        (ValueError, RuntimeError), match="manifest|publication"
+    ) as caught:
         prepare_xjtu_sy(config)
 
     assert mutated is True
-    assert not list(config.destination_root.iterdir())
+    _assert_preserved_cleanup_quarantine(config, caught.value)
 
 
 @pytest.mark.parametrize("empty", [False, True], ids=["nonempty", "empty"])
@@ -1255,14 +1269,14 @@ def test_cleanup_quarantines_owned_identity_before_deletion_and_handles_rename_f
 
     assert observed is primary
     assert attempts >= 1
-    assert not list(config.destination_root.glob(".xjtu-sy-cleanup-*"))
+    _assert_preserved_cleanup_quarantine(config, primary)
     if phase == "post":
         assert replacement["path"].is_dir()
         assert replacement["sentinel"].read_text(encoding="utf-8") == (
             "controller replacement"
         )
     else:
-        assert not list(config.destination_root.iterdir())
+        assert not list(config.destination_root.glob(".xjtu-sy-generation-*"))
 
 
 def test_existing_generation_with_undeclared_empty_directory_is_not_idempotent(
@@ -1308,3 +1322,198 @@ def test_attestation_marks_physical_failure_time_unknown(tmp_path, monkeypatch) 
     result = prepare_xjtu_sy(config)
 
     assert result.to_dict()["semanticGates"]["physicalFailureTime"] == "unknown"
+
+
+@pytest.mark.parametrize("empty", [False, True], ids=["nonempty", "empty"])
+@pytest.mark.parametrize(
+    ("error_type", "error_args"),
+    [
+        (RuntimeError, ("primary",)),
+        (KeyboardInterrupt, ()),
+        (SystemExit, (22,)),
+    ],
+    ids=["runtime-error", "keyboard-interrupt", "system-exit"],
+)
+def test_cleanup_never_deletes_replacement_swapped_after_last_identity_check(
+    tmp_path, monkeypatch, empty, error_type, error_args
+) -> None:
+    config = _config(tmp_path)
+    _install_small_source(monkeypatch, config)
+    primary = error_type(*error_args)
+
+    if empty:
+        real_identity = xjtu_preparation._directory_identity
+        injected = False
+
+        def fail_first_staging_identity(path):
+            nonlocal injected
+            if path.name.startswith(".xjtu-sy-generation-") and not injected:
+                injected = True
+                raise primary
+            return real_identity(path)
+
+        monkeypatch.setattr(
+            xjtu_preparation, "_directory_identity", fail_first_staging_identity
+        )
+    else:
+
+        def write_owned_then_fail(_parts, destination, **_kwargs):
+            staging = Path(destination).parent
+            sentinel = staging / "owned" / "sentinel.txt"
+            sentinel.parent.mkdir()
+            sentinel.write_text("owned tree", encoding="utf-8")
+            raise primary
+
+        monkeypatch.setattr(
+            xjtu_preparation, "safe_extract_rar_archive", write_owned_then_fail
+        )
+
+    real_same_identity = xjtu_preparation._same_identity
+    cleanup_checks = 0
+    swapped: dict[str, Path] = {}
+
+    def swap_after_last_check(path, owned):
+        nonlocal cleanup_checks
+        matches = real_same_identity(path, owned)
+        if path.name.startswith(".xjtu-sy-cleanup-") and matches:
+            cleanup_checks += 1
+            if cleanup_checks == 3:
+                displaced = path.with_name(f"{path.name}-owned-preserved")
+                path.rename(displaced)
+                path.mkdir()
+                if empty:
+                    sentinel = path.parent / f"{path.name}-replacement-sentinel.txt"
+                else:
+                    sentinel = path / "replacement-sentinel.txt"
+                sentinel.write_text("controller replacement", encoding="utf-8")
+                swapped.update(
+                    replacement=path,
+                    sentinel=sentinel,
+                    owned=displaced,
+                )
+        return matches
+
+    monkeypatch.setattr(xjtu_preparation, "_same_identity", swap_after_last_check)
+
+    observed: BaseException | None = None
+    try:
+        prepare_xjtu_sy(config)
+    except BaseException as error:
+        observed = error
+
+    assert observed is primary
+    assert cleanup_checks == 3
+    assert swapped["owned"].is_dir()
+    assert swapped["replacement"].is_dir()
+    assert swapped["sentinel"].read_text(encoding="utf-8") == (
+        "controller replacement"
+    )
+    notes = getattr(primary, "__notes__", [])
+    assert notes
+    assert os.fspath(tmp_path) not in " ".join(notes)
+
+
+def test_exact_generation_has_no_second_extract_or_cleanup_mutation_window(
+    tmp_path, monkeypatch
+) -> None:
+    config = _config(tmp_path)
+    _, _, _, extraction_count = _install_small_source(monkeypatch, config)
+    first = prepare_xjtu_sy(config)
+    original_attestation = (first.generation_root / "attestation.json").read_bytes()
+    real_cleanup = xjtu_preparation._cleanup_owned_directory
+    cleanup_calls = 0
+
+    def mutate_final_during_cleanup(*args, **kwargs):
+        nonlocal cleanup_calls
+        cleanup_calls += 1
+        real_cleanup(*args, **kwargs)
+        (first.generation_root / "attestation.json").write_bytes(
+            b"controller mutation during cleanup"
+        )
+
+    monkeypatch.setattr(
+        xjtu_preparation, "_cleanup_owned_directory", mutate_final_during_cleanup
+    )
+
+    second = prepare_xjtu_sy(config)
+
+    assert second.generation_root == first.generation_root
+    assert extraction_count() == 1
+    assert cleanup_calls == 0
+    assert (first.generation_root / "attestation.json").read_bytes() == (
+        original_attestation
+    )
+
+
+def test_idempotent_final_mutated_after_first_manifest_is_reconciled_again(
+    tmp_path, monkeypatch
+) -> None:
+    config = _config(tmp_path)
+    _install_small_source(monkeypatch, config)
+    first = prepare_xjtu_sy(config)
+    target = first.generation_root / "attestation.json"
+    real_manifest = xjtu_preparation._tree_manifest
+    mutated = False
+
+    def mutate_after_first_final_manifest(root):
+        nonlocal mutated
+        manifest = real_manifest(root)
+        if root == first.generation_root and not mutated:
+            target.write_bytes(b"controller mutation after traversal")
+            mutated = True
+        return manifest
+
+    monkeypatch.setattr(
+        xjtu_preparation, "_tree_manifest", mutate_after_first_final_manifest
+    )
+
+    with pytest.raises(ValueError, match="differs|manifest|attestation"):
+        prepare_xjtu_sy(config)
+
+    assert mutated is True
+    assert target.read_bytes() == b"controller mutation after traversal"
+    assert not list(config.destination_root.glob(".xjtu-sy-generation-*"))
+
+
+def test_tree_manifest_reenumerates_after_first_scandir_snapshot(
+    tmp_path, monkeypatch
+) -> None:
+    root = tmp_path / "tree"
+    root.mkdir()
+    (root / "expected.bin").write_bytes(b"expected")
+    inserted = root / "inserted-after-snapshot.bin"
+    real_scandir = os.scandir
+    first_root_scan = True
+
+    class Snapshot:
+        def __init__(self, entries):
+            self._iterator = iter(entries)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            return next(self._iterator)
+
+    def insert_after_snapshot(path):
+        nonlocal first_root_scan
+        if Path(path) == root and first_root_scan:
+            first_root_scan = False
+            with real_scandir(path) as iterator:
+                entries = tuple(iterator)
+            inserted.write_bytes(b"late")
+            return Snapshot(entries)
+        return real_scandir(path)
+
+    monkeypatch.setattr(os, "scandir", insert_after_snapshot)
+
+    with pytest.raises(ValueError, match="manifest|changed|travers"):
+        xjtu_preparation._tree_manifest(root)
+
+    assert inserted.is_file()
