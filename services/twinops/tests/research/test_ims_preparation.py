@@ -670,6 +670,154 @@ def test_staging_swap_before_identity_never_erases_the_replacement(
     assert swapped["displaced"].is_dir()
 
 
+def _install_stable_staging_swap(monkeypatch) -> dict[str, Path]:
+    real_identity = ims_preparation._directory_identity
+    swapped: dict[str, Path] = {}
+
+    def swap_then_return_stable_replacement_identity(path):
+        if path.name.startswith(".nasa-ims-generation-") and not swapped:
+            displaced = path.with_name(f"{path.name}-actually-created")
+            path.rename(displaced)
+            path.mkdir()
+            sentinel = path / "replacement-sentinel.txt"
+            sentinel.write_text("controller replacement", encoding="utf-8")
+            swapped.update(replacement=path, displaced=displaced, sentinel=sentinel)
+        return real_identity(path)
+
+    monkeypatch.setattr(
+        ims_preparation,
+        "_directory_identity",
+        swap_then_return_stable_replacement_identity,
+    )
+    return swapped
+
+
+@pytest.mark.parametrize(
+    "later_error",
+    [RuntimeError("extract"), KeyboardInterrupt(), SystemExit(13)],
+)
+def test_stable_swap_before_ownership_is_rejected_before_any_later_base_exception(
+    tmp_path, monkeypatch, later_error
+) -> None:
+    _install_small_source(monkeypatch)
+    config = _config(tmp_path)
+    swapped = _install_stable_staging_swap(monkeypatch)
+    extraction_calls = 0
+
+    def fail_if_called(*_args, **_kwargs):
+        nonlocal extraction_calls
+        extraction_calls += 1
+        raise later_error
+
+    monkeypatch.setattr(ims_preparation, "safe_extract_rar_archive", fail_if_called)
+
+    observed: BaseException | None = None
+    try:
+        prepare_nasa_ims(config)
+    except BaseException as error:
+        observed = error
+
+    assert isinstance(observed, ValueError)
+    assert "changed" in str(observed)
+    assert extraction_calls == 0
+    assert getattr(observed, "__notes__", [])
+    assert swapped["replacement"].is_dir()
+    assert swapped["displaced"].is_dir()
+    assert swapped["sentinel"].read_text(encoding="utf-8") == "controller replacement"
+
+
+def test_stable_swap_without_an_injected_exception_never_becomes_owned(
+    tmp_path, monkeypatch
+) -> None:
+    _, events = _install_small_source(monkeypatch)
+    config = _config(tmp_path)
+    swapped = _install_stable_staging_swap(monkeypatch)
+
+    observed: BaseException | None = None
+    try:
+        prepare_nasa_ims(config)
+    except BaseException as error:
+        observed = error
+
+    assert isinstance(observed, ValueError)
+    assert "changed" in str(observed)
+    assert events == ["inspect-1", "inspect-2", "inspect-3"]
+    assert getattr(observed, "__notes__", [])
+    assert swapped["replacement"].is_dir()
+    assert swapped["displaced"].is_dir()
+    assert swapped["sentinel"].read_text(encoding="utf-8") == "controller replacement"
+
+
+def test_zero_identity_returned_during_ownership_binding_fails_before_extract(
+    tmp_path, monkeypatch
+) -> None:
+    _, events = _install_small_source(monkeypatch)
+    config = _config(tmp_path)
+    real_identity = ims_preparation._directory_identity
+
+    def zero_staging_inode(path):
+        device, inode = real_identity(path)
+        if path.name.startswith(".nasa-ims-generation-"):
+            inode = 0
+        return device, inode
+
+    monkeypatch.setattr(ims_preparation, "_directory_identity", zero_staging_inode)
+
+    with pytest.raises(ValueError, match="identity"):
+        prepare_nasa_ims(config)
+
+    assert events == ["inspect-1", "inspect-2", "inspect-3"]
+    assert not list(config.destination_root.iterdir())
+
+
+class _HostileAddNoteError(RuntimeError):
+    def __init__(self, note_error: BaseException) -> None:
+        super().__init__("primary extraction failure")
+        self.note_error = note_error
+
+    def add_note(self, _note: str) -> None:
+        raise self.note_error
+
+
+@pytest.mark.parametrize(
+    "note_error",
+    [RuntimeError("note"), KeyboardInterrupt(), SystemExit(14)],
+)
+def test_cleanup_note_failure_never_masks_the_original_base_exception(
+    tmp_path, monkeypatch, note_error
+) -> None:
+    _install_small_source(monkeypatch)
+    config = _config(tmp_path)
+    primary = _HostileAddNoteError(note_error)
+    swapped: dict[str, Path] = {}
+
+    def swap_owned_staging_then_fail(_parts, destination, **_kwargs):
+        staging = Path(destination).parent.parent
+        displaced = staging.with_name(f"{staging.name}-actually-created")
+        staging.rename(displaced)
+        staging.mkdir()
+        sentinel = staging / "replacement-sentinel.txt"
+        sentinel.write_text("controller replacement", encoding="utf-8")
+        swapped.update(replacement=staging, displaced=displaced, sentinel=sentinel)
+        raise primary
+
+    monkeypatch.setattr(
+        ims_preparation, "safe_extract_rar_archive", swap_owned_staging_then_fail
+    )
+
+    observed: BaseException | None = None
+    try:
+        prepare_nasa_ims(config)
+    except BaseException as error:
+        observed = error
+
+    assert observed is primary
+    assert not getattr(primary, "__notes__", [])
+    assert swapped["replacement"].is_dir()
+    assert swapped["displaced"].is_dir()
+    assert swapped["sentinel"].read_text(encoding="utf-8") == "controller replacement"
+
+
 @pytest.mark.parametrize("error", [RuntimeError("rename"), KeyboardInterrupt(), SystemExit(11)])
 def test_rename_that_promotes_then_raises_rolls_back_the_final_generation(
     tmp_path, monkeypatch, error

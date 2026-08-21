@@ -221,9 +221,7 @@ def _plain_directory_metadata(path: Path):
     return metadata
 
 
-def _valid_identity(metadata: Any) -> tuple[int, int]:
-    device = getattr(metadata, "st_dev", None)
-    inode = getattr(metadata, "st_ino", None)
+def _valid_identity_values(device: object, inode: object) -> tuple[int, int]:
     if (
         not isinstance(device, int)
         or isinstance(device, bool)
@@ -234,6 +232,12 @@ def _valid_identity(metadata: Any) -> tuple[int, int]:
     ):
         raise ValueError("NASA IMS publication path has an invalid filesystem identity")
     return device, inode
+
+
+def _valid_identity(metadata: Any) -> tuple[int, int]:
+    return _valid_identity_values(
+        getattr(metadata, "st_dev", None), getattr(metadata, "st_ino", None)
+    )
 
 
 def _directory_identity(path: Path) -> tuple[int, int]:
@@ -262,6 +266,25 @@ def _directory_creation_guard(path: Path) -> _DirectoryCreationGuard:
     if first != second:
         raise ValueError("NASA IMS staging creation identity is unstable")
     return first
+
+
+def _bind_owned_directory(
+    path: Path,
+    creation_guard: _DirectoryCreationGuard,
+    acquired_identity: tuple[int, int],
+) -> _OwnedDirectory:
+    try:
+        device, inode = acquired_identity
+    except (TypeError, ValueError) as error:
+        raise ValueError("NASA IMS staging acquired an invalid filesystem identity") from error
+    identity = _valid_identity_values(device, inode)
+    observed_guard = _directory_creation_guard(path)
+    if (
+        observed_guard != creation_guard
+        or identity != (creation_guard.device, creation_guard.inode)
+    ):
+        raise ValueError("NASA IMS staging changed between creation and ownership")
+    return _OwnedDirectory(path, *identity)
 
 
 def _same_identity(path: Path, owned: _OwnedDirectory) -> bool:
@@ -846,6 +869,19 @@ def _cleanup_new_empty_staging(path: Path, guard: _DirectoryCreationGuard) -> No
         raise RuntimeError("NASA IMS empty staging cleanup did not remove the directory")
 
 
+def _add_cleanup_failure_note(error: BaseException, cleanup_error: BaseException) -> None:
+    try:
+        note = (
+            "NASA IMS owned staging cleanup failed safely "
+            f"({cleanup_error.__class__.__name__})"
+        )
+        add_note = getattr(error, "add_note", None)
+        if callable(add_note):
+            add_note(note)
+    except BaseException:
+        return
+
+
 def _result(
     generation_root: Path,
     generation_id: str,
@@ -897,8 +933,9 @@ def prepare_nasa_ims(config: NasaImsPreparationConfig) -> NasaImsPreparationResu
             tempfile.mkdtemp(prefix=".nasa-ims-generation-", dir=destination_root)
         )
         creation_guard = _directory_creation_guard(staging)
-        device, inode = _directory_identity(staging)
-        owned = _OwnedDirectory(staging, device, inode)
+        acquired_identity = _directory_identity(staging)
+        owned = _bind_owned_directory(staging, creation_guard, acquired_identity)
+        device, inode = owned.device, owned.inode
         run_1_spec, run_2_spec, run_3_spec = _RUN_SPECS
         attested_executable = _revalidate_executable(config)
         run_1_inventory = safe_extract_rar_archive(
@@ -1003,8 +1040,5 @@ def prepare_nasa_ims(config: NasaImsPreparationConfig) -> NasaImsPreparationResu
                     raise RuntimeError("NASA IMS staging identity was never established")
                 _cleanup_new_empty_staging(staging, creation_guard)
         except BaseException as cleanup_error:
-            error.add_note(
-                "NASA IMS owned staging cleanup failed safely "
-                f"({cleanup_error.__class__.__name__})"
-            )
+            _add_cleanup_failure_note(error, cleanup_error)
         raise

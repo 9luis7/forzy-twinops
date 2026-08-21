@@ -169,3 +169,61 @@ and no executable path or local identity is added to the public attestation.
   part of this fix commit.
 
 Commit message: `fix: harden NASA IMS publication ownership`.
+
+## Fix wave 2 - guard binding and exception preservation (2026-08-21)
+
+### Re-review findings and RED evidence
+
+This wave starts from `d26df0ec40df474a6db2319e10c5ae596a32b655` and
+closes two further Important findings from independent re-review.
+
+- A stable replacement inserted after the creation guard but before
+  `_directory_identity()` became the owned directory. Across a later
+  `RuntimeError`, `KeyboardInterrupt`, and `SystemExit`, cleanup erased that
+  replacement and its sentinel. The no-injected-error case published the
+  replacement, and a zero inode was rejected only after extraction/promotion:
+  `5 failed`.
+- If ambiguous cleanup failed and the primary exception's `add_note()` raised
+  `RuntimeError`, `KeyboardInterrupt`, or `SystemExit`, that note failure masked
+  the primary object: `3 failed`. Each tracer compared the observed exception
+  to the original with `is`.
+
+### Minimal corrections
+
+- Ownership acquisition now validates the returned device/inode pair, captures
+  a second stable full creation guard, compares every existing guard signal
+  (device, inode, mode, file attributes, reparse tag, and ctime) plus the
+  acquired identity, and only then constructs `_OwnedDirectory`. Any divergence
+  fails before extraction. The actually-created displaced tree, replacement
+  path, and replacement sentinel are all preserved because no uncertain object
+  receives ownership.
+- Cleanup-note attachment is isolated in a defensive helper. Missing,
+  non-callable, or BaseException-raising `add_note` behavior is swallowed only
+  for the secondary annotation attempt; the original outer `raise` always
+  rethrows the exact primary object. Normal cleanup failures still receive the
+  existing sanitized note.
+
+### Fresh verification
+
+- Focused preparation: `51 passed, 2 skipped in 5.27s`.
+- Research suite: `238 passed, 3 skipped, 1 warning in 33.96s`.
+- Full Python suite: `453 passed, 5 skipped, 2 warnings in 43.36s`.
+- Real read-only executable-attestation smoke validated the versioned trusted
+  executable, seven plain ancestors, size `576512`, and SHA-256
+  `2bff20bd679d45166b8c2d039044a4ca16189e6d69ff9c82345b4c1306986ec4`;
+  the destination remained absent and 7-Zip was not executed.
+- Isolated performance gate passed at `p50=49.25 ms`, `p95=p99=50.69 ms`.
+- `compileall`, `pip check`, `git diff --check`, and raw/archive/prepared
+  tracking passed.
+
+### Self-review
+
+- The guard comparison occurs before any extraction call or ownership grant.
+  Both stable-swap and invalid-identity paths are fail-closed.
+- Ambiguous cleanup never deletes either the displaced mkdtemp tree or the
+  replacement path. Hostile secondary annotation cannot change exception
+  control flow.
+- No real archive extraction, 7-Zip execution, raw/prepared output, source
+  registry change, push, or merge was performed.
+
+Commit message: `fix: bind NASA IMS staging ownership`.
