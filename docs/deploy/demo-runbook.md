@@ -72,15 +72,25 @@ $env:DEPLOYMENT_URL="https://<preview-autorizado>"
 npm.cmd run test:e2e -- tests/e2e/deployed-real.spec.js
 ```
 
-O primeiro teste é read-only: valida snapshot v2, ativo único, health,
-manifesto, GLB e PNG. Para permitir o POST somente contra o stub controlado e
-dentro da janela confirmada pelo backend. O manifesto exige JSON; GLB e PNG são
-confirmados por GET, MIME e magic bytes:
+O primeiro teste impõe um firewall de mutação no browser antes de navegar. Ele
+fixa o relógio em uma janela aberta, permite apenas `GET`, `HEAD` e `OPTIONS`
+para `/api/**`, aborta localmente qualquer outro método e exige observar ao
+menos uma tentativa bloqueada. Assim ele exercita o auto-refresh intencional da
+UI sem deixar um `POST` sair do browser, enquanto os `GET` independentes validam
+snapshot v2, ativo único, health, manifesto, GLB e PNG. O manifesto exige JSON;
+GLB e PNG são confirmados por GET, MIME e magic bytes.
+
+O segundo teste é o único caminho autorizado a emitir `POST`, somente contra o
+stub controlado e dentro da janela confirmada pelo backend:
 
 ```powershell
 $env:TWINOPS_E2E_ALLOW_STUB_REFRESH="1"
 npm.cmd run test:e2e -- tests/e2e/deployed-real.spec.js
 ```
+
+Sem essa flag, o spec inteiro permanece read-only. Com a flag, não descreva a
+execução inteira como livre de efeitos colaterais: o segundo teste pode persistir
+uma leitura do stub no Neon do preview.
 
 Fora da janela de segunda a quarta, 12h–14h em `America/Sao_Paulo`, o teste de
 refresh é pulado. Não altere o relógio ou a regra de negócio para fazê-lo

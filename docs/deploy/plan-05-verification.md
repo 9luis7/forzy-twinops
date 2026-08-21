@@ -55,3 +55,25 @@ nem refatorado o grafo de dependências para maquiar metadata upstream.
   introduzir breaking changes.
 - Vite reportou chunks acima de 500 kB. O build permaneceu verde; otimização de
   bundle frontend não pertence a este plano.
+
+## Finding pós-fechamento 5R1 — firewall do probe read-only
+
+- Classificação: Important. O primeiro teste Playwright era descrito como
+  read-only, mas `page.goto("/")` podia acionar o auto-refresh legítimo da UI e
+  emitir `POST` quando o relógio do browser estivesse na janela Forzy.
+- RED na base `3ab10fb`: o invariant check terminou com exit 1 porque havia
+  navegação sem `page.route` protegendo `/api/**`.
+- Fix: antes da navegação, o teste instala um firewall que continua somente
+  `GET`, `HEAD` e `OPTIONS`, aborta os demais métodos com `blockedbyclient`, fixa
+  o relógio em quarta-feira, 12:30 de São Paulo, e exige pelo menos uma mutação
+  interceptada. Os `GET` via `request` e todas as asserções de UI/assets foram
+  preservados; o segundo teste continua sendo o único caminho autorizado a
+  emitir `POST` e mantém seus dois gates explícitos.
+- GREEN local: invariant check verde; `node --check` verde; Playwright discovery
+  listou 2 testes; Vitest passou 147 testes com 1 skip; Vite transformou 1.440
+  módulos e concluiu o build. A primeira varredura Vitest foi impedida pelo ACL
+  de `services/twinops/.pytest_cache`; a repetição excluiu apenas caches
+  `.pytest_cache` pela CLI, sem alterar configuração ou apagar dados.
+- Não houve deploy, chamada remota, leitura/mutação de env, acesso ao Neon nem
+  contato com upstream. A execução browser completa permanece para o preview
+  autorizado, pois esta correção foi deliberadamente validada sem rede.

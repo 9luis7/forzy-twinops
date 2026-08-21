@@ -11,6 +11,19 @@ test.describe("deployed real TwinOps preview", () => {
     page,
     request,
   }) => {
+    let blockedMutationAttempts = 0;
+    await page.route("**/api/**", async (route) => {
+      const method = route.request().method().toUpperCase();
+      if (["GET", "HEAD", "OPTIONS"].includes(method)) {
+        await route.continue();
+        return;
+      }
+
+      blockedMutationAttempts += 1;
+      await route.abort("blockedbyclient");
+    });
+    await page.clock.install({ time: new Date("2026-08-12T15:30:00Z") });
+
     const snapshotResponse = await request.get(`${assetPath}/snapshot`);
     expect(snapshotResponse.status()).toBe(200);
     const snapshot = await snapshotResponse.json();
@@ -26,6 +39,11 @@ test.describe("deployed real TwinOps preview", () => {
     ]);
 
     await page.goto("/");
+    await expect
+      .poll(() => blockedMutationAttempts, {
+        message: "the open-window UI should attempt a mutation that stays inside the browser",
+      })
+      .toBeGreaterThanOrEqual(1);
     await expect(
       page.getByRole("heading", { name: "Conjunto motor-bomba monitorado" })
     ).toBeVisible();
