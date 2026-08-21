@@ -49,16 +49,25 @@ test.describe("deployed real TwinOps preview", () => {
       "/models/conjunto-motor-bomba.manifest.json"
     );
     expect(manifestResponse.status()).toBe(200);
+    expect(manifestResponse.headers()["content-type"]).toContain("application/json");
     const manifest = await manifestResponse.json();
     expect(manifest.assetId).toBe("forzy-motor-01");
     expect(manifest.modelUrl).toBe("/models/conjunto-motor-bomba.glb");
-    for (const path of [
-      manifest.modelUrl,
-      "/models/conjunto-motor-bomba-preview.png",
+    for (const [path, contentTypes, magic] of [
+      [manifest.modelUrl, ["model/gltf-binary", "application/octet-stream"], Buffer.from("glTF")],
+      [
+        "/models/conjunto-motor-bomba-preview.png",
+        ["image/png"],
+        Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+      ],
     ]) {
       const response = await request.get(path);
       expect(response.status()).toBe(200);
-      expect((await response.body()).byteLength).toBeGreaterThan(0);
+      const contentType = response.headers()["content-type"]?.split(";", 1)[0];
+      expect(contentTypes).toContain(contentType);
+      const body = await response.body();
+      expect(body.byteLength).toBeGreaterThanOrEqual(magic.byteLength);
+      expect(body.subarray(0, magic.byteLength).equals(magic)).toBe(true);
     }
   });
 
@@ -81,11 +90,13 @@ test.describe("deployed real TwinOps preview", () => {
     }
     expect(envelope.snapshot.schemaVersion).toBe("2.0");
     expect(envelope.snapshot.asset.assetId).toBe("forzy-motor-01");
-    if (envelope.snapshot.assessment !== null) {
-      expect(envelope.snapshot.assessment.assessment.scoreSemantics).toBe(
-        "relative_to_historical_baseline_not_failure_probability"
-      );
-      expect(envelope.snapshot.assessment.model.name).toBe("robust-baseline");
-    }
+    expect(envelope.snapshot.assessment).toEqual(expect.any(Object));
+    expect(["normal", "watch", "alert", "insufficient_data"]).toContain(
+      envelope.snapshot.assessment.assessment.status
+    );
+    expect(envelope.snapshot.assessment.assessment.scoreSemantics).toBe(
+      "relative_to_historical_baseline_not_failure_probability"
+    );
+    expect(envelope.snapshot.assessment.model.name).toBe("robust-baseline");
   });
 });

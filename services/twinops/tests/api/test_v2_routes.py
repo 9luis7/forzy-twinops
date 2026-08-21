@@ -633,10 +633,10 @@ def test_runtime_loads_scorer_only_with_all_three_anchors(
         assert app.state.assessment_scorer is scorer
 
 
-def test_runtime_keeps_telemetry_available_when_scorer_loader_fails(
+def test_runtime_fails_closed_when_configured_scorer_loader_fails(
     monkeypatch, tmp_path, caplog
 ):
-    caplog.set_level("WARNING", logger="twinops.api")
+    caplog.set_level("ERROR", logger="twinops.api")
     repository = _Repository()
     scorer_loader = Mock(
         side_effect=RuntimeError(
@@ -664,20 +664,17 @@ def test_runtime_keeps_telemetry_available_when_scorer_loader_fails(
         clock=lambda: NOW_IN_WINDOW,
     )
 
-    with TestClient(app) as client:
-        snapshot = client.get(
-            "/api/v2/assets/forzy-motor-01/snapshot"
-        )
-        health = client.get("/api/v2/integration/health")
+    with pytest.raises(
+        RuntimeError,
+        match="assessment_scorer_startup_failed",
+    ) as captured:
+        with TestClient(app):
+            pass
 
-    assert snapshot.status_code == 200
-    assert snapshot.json()["assessment"] is None
-    assert health.status_code == 200
-    assert health.json()["status"] == "ok"
-    assert "internal.example" not in snapshot.text + health.text
-    assert "Traceback" not in snapshot.text + health.text
-    assert "secret" not in snapshot.text + health.text
-    assert "assessment_scorer_unavailable error_type=RuntimeError" in caplog.text
+    assert "internal.example" not in str(captured.value)
+    assert "Traceback" not in str(captured.value)
+    assert "secret" not in str(captured.value)
+    assert "assessment_scorer_startup_failed error_type=RuntimeError" in caplog.text
     assert "internal.example" not in caplog.text
     assert "Traceback" not in caplog.text
     assert "secret" not in caplog.text

@@ -66,8 +66,22 @@ def verify_deployment(
             stage="model_manifest",
         )
         _validate_manifest(manifest)
-        _probe_static(http, origin, _MODEL_PATH, stage="model_glb")
-        _probe_static(http, origin, _PREVIEW_PATH, stage="model_preview")
+        _probe_static(
+            http,
+            origin,
+            _MODEL_PATH,
+            stage="model_glb",
+            content_types={"model/gltf-binary", "application/octet-stream"},
+            magic=b"glTF",
+        )
+        _probe_static(
+            http,
+            origin,
+            _PREVIEW_PATH,
+            stage="model_preview",
+            content_types={"image/png"},
+            magic=b"\x89PNG\r\n\x1a\n",
+        )
 
         refresh = "not_requested"
         if allow_live_refresh:
@@ -128,6 +142,8 @@ def _json_response(
     response = _request(client, method, f"{origin}{path}", stage=stage)
     if response.status_code != 200:
         raise DeploymentVerificationError(stage, "unexpected_status")
+    if not _is_json_content_type(response.headers.get("content-type")):
+        raise DeploymentVerificationError(stage, "invalid_content_type")
     try:
         payload = response.json()
     except (json.JSONDecodeError, ValueError):
@@ -166,7 +182,11 @@ def _validate_health(payload: Mapping[str, object]) -> str:
     return str(state)
 
 
-def _validate_snapshot(payload: Mapping[str, object]) -> str:
+def _validate_snapshot(
+    payload: Mapping[str, object],
+    *,
+    require_assessment: bool = False,
+) -> str:
     if payload.get("schemaVersion") != "2.0":
         raise DeploymentVerificationError("snapshot", "invalid_schema")
     if _contains_key(payload, "assetTag"):
@@ -190,20 +210,30 @@ def _validate_snapshot(payload: Mapping[str, object]) -> str:
         raise DeploymentVerificationError("snapshot", "invalid_sensors")
     assessment = payload.get("assessment")
     if assessment is None:
+        if require_assessment:
+            raise DeploymentVerificationError("refresh", "assessment_unavailable")
         return "not_yet_available"
     if not isinstance(assessment, Mapping):
         raise DeploymentVerificationError("snapshot", "invalid_assessment")
     detail = assessment.get("assessment")
+    quality = assessment.get("quality")
     model = assessment.get("model")
     if (
-        not isinstance(detail, Mapping)
+        assessment.get("schemaVersion") != "2.0"
+        or assessment.get("assetId") != "forzy-motor-01"
+        or assessment.get("sensorId") not in {"s1", "s2"}
+        or not isinstance(quality, Mapping)
+        or quality.get("status") not in {"ok", "degraded", "insufficient_data"}
+        or not isinstance(detail, Mapping)
+        or detail.get("status")
+        not in {"normal", "watch", "alert", "insufficient_data"}
         or detail.get("scoreSemantics")
         != "relative_to_historical_baseline_not_failure_probability"
         or not isinstance(model, Mapping)
         or model.get("name") != "robust-baseline"
     ):
         raise DeploymentVerificationError("snapshot", "invalid_assessment")
-    return "available"
+    return str(detail["status"])
 
 
 def _validate_manifest(payload: Mapping[str, object]) -> None:
@@ -221,29 +251,25 @@ def _probe_static(
     path: str,
     *,
     stage: str,
+    content_types: set[str],
+    magic: bytes,
 ) -> None:
-    response = _request(client, "HEAD", f"{origin}{path}", stage=stage)
-    length = response.headers.get("content-length")
-    if response.status_code == 200 and (length is None or _positive_length(length)):
-        return
-    if response.status_code not in {200, 405, 501}:
-        raise DeploymentVerificationError(stage, "unexpected_status")
     response = _request(
         client,
         "GET",
         f"{origin}{path}",
         stage=stage,
-        headers={"range": "bytes=0-0"},
+        headers={"range": "bytes=0-7"},
     )
-    if response.status_code not in {200, 206} or not response.content:
+    if response.status_code not in {200, 206}:
+        raise DeploymentVerificationError(stage, "unexpected_status")
+    if not response.content:
         raise DeploymentVerificationError(stage, "empty_asset")
-
-
-def _positive_length(value: str) -> bool:
-    try:
-        return int(value) > 0
-    except ValueError:
-        return False
+    content_type = _media_type(response.headers.get("content-type"))
+    if content_type not in content_types:
+        raise DeploymentVerificationError(stage, "invalid_content_type")
+    if not response.content.startswith(magic):
+        raise DeploymentVerificationError(stage, "invalid_magic")
 
 
 def _validate_refresh(payload: Mapping[str, object]) -> str:
@@ -257,7 +283,16 @@ def _validate_refresh(payload: Mapping[str, object]) -> str:
     snapshot = payload.get("snapshot")
     if not isinstance(snapshot, Mapping):
         raise DeploymentVerificationError("refresh", "invalid_snapshot")
-    return _validate_snapshot(snapshot)
+    return _validate_snapshot(snapshot, require_assessment=True)
+
+
+def _media_type(value: str | None) -> str:
+    return (value or "").partition(";")[0].strip().lower()
+
+
+def _is_json_content_type(value: str | None) -> bool:
+    media_type = _media_type(value)
+    return media_type == "application/json" or media_type.endswith("+json")
 
 
 def _contains_key(value: object, key: str) -> bool:
