@@ -24,6 +24,9 @@ dev = [
     "pytest>=8,<9",
     "pytest-asyncio>=0.23,<1",
 ]
+research = [
+    "rarfile>=4.5,<5",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

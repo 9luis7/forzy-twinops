@@ -33,6 +33,13 @@ data/public/
   pronostia/raw/
 ```
 
+Para inspecionar RAR3/RAR5, ative o venv isolado e, na raiz do repositório,
+instale o extra com `python -m pip install -e "services/twinops[research]"`.
+A extração também exige um executável 7-Zip confiável informado explicitamente
+ao helper; ele é chamado sem shell e transmite um membro validado por vez para
+um arquivo criado pelo Python. O smoke real opcional usa
+`TWINOPS_NASA_RAR_PATH`; sem essa variável, o teste é ignorado explicitamente.
+
 Cada adapter produz `SignalWindow` sem concatenar os brutos. As unidades da
 fonte são preservadas e qualquer conversão precisa ser explícita e documentada.
 Os splits são feitos por `bearing_id`, e toda alegação de transferência exige
