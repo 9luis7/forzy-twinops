@@ -7,7 +7,7 @@
 | Ativo | `forzy-motor-01` |
 | Data | 2026-08-22 |
 | Branch de desenho | `luis/real-twinops-integration` |
-| Status | Direção aprovada em conversa; aguardando revisão deste documento |
+| Status | Direção consolidada; aguardando aprovação explícita desta especificação |
 
 ## 1. Decisão executiva
 
@@ -60,6 +60,76 @@ o TwinOps não observou entre esses períodos.
 O twin 3D faz sentido quando funciona como uma superfície de investigação: ele
 deve orientar o usuário pelo conjunto, refletir o instante selecionado e abrir
 evidências. Um modelo apenas decorativo não cumpre esse papel.
+
+### 2.1 Princípio de produto: suporte à decisão
+
+O TwinOps não será um mural genérico de telemetria. Sua função é reduzir o tempo
+entre perceber um desvio, avaliar se a evidência é confiável e decidir o próximo
+passo seguro. Cada elemento proeminente da interface deverá responder a uma
+pergunta operacional concreta.
+
+Nenhum cartão, score ou indicador entra na tela principal sem declarar:
+
+1. qual pergunta ajuda a responder;
+2. qual fonte, instante e janela temporal utiliza;
+3. qual evidência sustenta o estado exibido;
+4. qual é a qualidade/frescura dessa evidência;
+5. qual próximo passo humano é compatível com o estado;
+6. o que os dados ainda não permitem concluir.
+
+Um valor isolado não é informação operacional suficiente. Sempre que a
+evidência existir, a apresentação deverá combinar valor e unidade com referência
+ou baseline, desvio, direção da tendência, início e persistência do evento,
+idade do dado, qualidade e proveniência. Se algum desses elementos não puder ser
+calculado honestamente, a ausência será explícita; não será preenchida por zero,
+inferência ou texto tranquilizador.
+
+### 2.2 Usuários e perguntas operacionais
+
+A mesma aplicação atenderá três profundidades de uso, por divulgação
+progressiva, sem criar três dashboards desconectados:
+
+- **Operação/turno:** “os dados são atuais e confiáveis?”, “há desvio persistente
+  agora?”, “qual sensor e grandeza motivaram o estado?” e “preciso escalar a
+  análise?”.
+- **Confiabilidade/manutenção:** “quando o comportamento mudou?”, “é um evento
+  isolado ou persistente?”, “como se compara ao baseline e ao período anterior?”,
+  “qual evidência sustenta o alerta?” e “qual verificação física segura faz
+  sentido?”.
+- **Instrumentação/dados:** “o problema pode ser de cobertura, timestamp,
+  integração ou qualidade do sensor?”, “qual origem e regra produziram este
+  ponto?” e “o que falta para recuperar confiança na avaliação?”.
+
+| Papel | Evidência principal | Ação permitida no TwinOps | Afirmação/ação proibida |
+| --- | --- | --- | --- |
+| Operação/turno | estado, confiança, idade, sensor, persistência | abrir evidências, atualizar quando permitido, escalar revisão humana | afirmar saúde, continuar/parar operação ou intervir |
+| Confiabilidade/manutenção | baseline, desvio, ciclo, recorrência e janela causal | comparar períodos/ciclos e preparar pacote de evidências | diagnosticar causa, criticidade física ou emitir ordem de serviço |
+| Instrumentação/dados | flags, timestamps, gaps, tentativas, origem e hashes | revisar a cadeia digital de aquisição e registrar a incerteza | declarar defeito físico, calibração ou montagem do sensor |
+
+A tela inicial prioriza a leitura de operação. Evidência temporal, comparação,
+proveniência, detalhes do modelo e geometria CAD ficam disponíveis sob demanda
+para investigação, sem esconder a situação atual.
+
+### 2.3 Hierarquia de decisão
+
+A composição seguirá três níveis:
+
+1. **Situação agora:** estado acionável, confiança dos dados, última observação,
+   persistência e evidência dominante. Deve permitir decidir se é possível
+   continuar monitorando, se é necessário recuperar a qualidade dos dados ou se
+   cabe revisão humana.
+2. **Entenda o desvio:** sensor e grandeza responsáveis, valor versus baseline,
+   variação, início, duração, tendência e comparação S1/S2. A comparação entre
+   sensores não implica causa física enquanto posição e eixo não forem
+   validados.
+3. **Investigue:** linha do tempo, janela anterior/posterior, pontos originais,
+   proveniência, saúde da integração, limitações do modelo e navegação pelo CAD.
+
+Contagens administrativas, volume de registros e detalhes de infraestrutura só
+aparecerão quando ajudarem a avaliar cobertura, qualidade ou proveniência. Não
+serão usados como KPIs de destaque. A meta de usabilidade é que um profissional
+técnico responda às perguntas do primeiro nível em até 60 segundos e chegue à
+evidência dominante e ao próximo passo em no máximo três interações primárias.
 
 ## 3. Evidência disponível
 
@@ -135,21 +205,27 @@ decisão explícita sobre propriedade, licença e escopo.
 
 ## 4. Objetivos
 
-1. Exibir histórico CSV e telemetria recente em uma única linha do tempo
+1. Apoiar decisões de operação e engenharia, transformando telemetria, qualidade
+   e avaliação em estado, evidência e próximo passo seguro — não em números
+   isolados.
+2. Exibir histórico CSV e telemetria recente em uma única linha do tempo
    navegável, sem perder a origem de cada ponto.
-2. Tornar a ausência de dados entre segmentos visível e semanticamente
+3. Tornar a ausência de dados entre segmentos visível e semanticamente
    honesta.
-3. Permitir selecionar um instante passado e reproduzir o contexto operacional
+4. Permitir selecionar um instante passado e reproduzir o contexto operacional
    daquele instante em cartões, gráficos, avaliação e twin 3D.
-4. Preservar todos os registros importados e tornar a importação determinística,
+5. Preservar todos os registros importados e tornar a importação determinística,
    idempotente, transacional e verificável por hash.
-5. Evitar carregar milhares de leituras dentro do snapshot inicial.
-6. Transformar o 3D em uma ferramenta de navegação por grupo CAD, com materiais
+6. Evitar carregar milhares de leituras dentro do snapshot inicial.
+7. Transformar o 3D em uma ferramenta de navegação por grupo CAD, com materiais
    e iluminação de qualidade, sem inventar geometria ou semântica mecânica.
-7. Representar o modelo de sensor com fidelidade dimensional em um inspetor
+8. Representar o modelo de sensor com fidelidade dimensional em um inspetor
    separado, sem posicionar S1/S2 no ativo antes da validação da Forzy.
-8. Manter o produto acessível e útil quando WebGL, histórico, modelo ML ou uma
+9. Manter o produto acessível e útil quando WebGL, histórico, modelo ML ou uma
    das fontes estiver indisponível.
+10. Favorecer detecção precoce e tempo útil de reação, medindo início e
+    persistência de desvios sem alegar antecedência de falha antes de existirem
+    eventos Forzy rotulados que permitam validar esse lead time.
 
 ## 5. Fora do escopo
 
@@ -165,6 +241,10 @@ decisão explícita sobre propriedade, licença e escopo.
 - Usar datasets NASA/XJTU como histórico operacional da Forzy.
 - Executar migração ou importação no banco de produção sem gate operacional
   separado.
+- Substituir procedimentos do local, intertravamentos, proteções, inspeção física
+  ou julgamento do engenheiro responsável.
+- Emitir comando automático de parada, ordem de manutenção ou diagnóstico de
+  causa a partir dos estados do TwinOps.
 
 ## 6. Arquitetura alvo
 
@@ -184,10 +264,13 @@ flowchart LR
     TL --> API["Timeline overview + séries + contexto"]
 
     API --> STATE["Contexto visual\nagora ou histórico"]
-    STATE --> CHART["Gráficos e tabela"]
+    STATE --> DECISION["Situação + confiança\nevidência + próximo passo"]
+    DECISION --> CHART["Gráficos e tabela"]
     STATE --> CARDS["Cartões S1/S2"]
     STATE --> TWIN["Twin 3D e inspetor"]
     STATE --> ASSESS["Avaliação e evidências"]
+    ASSESS --> DECISION
+    CARDS --> DECISION
 ```
 
 ### 6.1 Separação de responsabilidades
@@ -208,6 +291,9 @@ flowchart LR
   novo não dependerá dela.
 - **Contexto visual:** escolhe entre o snapshot live e um contexto histórico
   fixado, sem permitir que refresh em background mova o cursor do usuário.
+- **Apresentador de decisão:** combina fatos do contexto, qualidade e avaliação
+  em mensagens e próximos passos determinísticos; não calcula diagnóstico, não
+  chama LLM e não grava comando operacional.
 - **Twin 3D:** apresenta o contexto escolhido; não calcula score nem associa
   sensor a peça.
 
@@ -510,10 +596,10 @@ uma lacuna como se as amostras fossem contínuas.
 Os resultados históricos deverão registrar hashes e sua semântica pública será
 sempre:
 
-- `normal` → “normal”;
-- `watch` → “atenção”;
-- `alert` → “alerta”;
-- `insufficient_data` → “dados insuficientes”;
+- `normal` → “sem desvio relevante detectado neste baseline”;
+- `watch` → “desvio para revisão”;
+- `alert` → “desvio persistente prioritário para revisão”;
+- `insufficient_data` → “condição não avaliável com os dados disponíveis”;
 - `event_candidate` → “candidato de desvio”;
 - nunca “falha confirmada”, “causa”, “probabilidade de falha” ou “RUL”.
 
@@ -524,6 +610,161 @@ validação externa independente.
 `componentTag` permanece nulo. Um alerta de S1 ou S2 pode realçar o contorno do
 ativo inteiro e o rail do sensor correspondente, mas não pode tornar motor,
 bomba ou acoplamento “culpado”.
+
+### 9.1 Estados acionáveis e limites da recomendação
+
+O estado técnico e a confiança dos dados são dimensões independentes. Uma
+qualidade degradada nunca será escondida por um estado `normal`, e um `alert`
+com qualidade degradada continuará mostrando as duas condições.
+
+A camada de apresentação produzirá `OperationalDecisionViewV1`, contrato fechado
+e derivado apenas de medições, avaliação, qualidade, proveniência e contexto
+temporal já contratados:
+
+```text
+schemaVersion          "1.0"
+ruleSetVersion         "forzy-operational-triage-v1"
+ruleSetHash            SHA-256 do bundle canônico matriz + copy + checklists
+decisionId             SHA-256(schemaVersion + ruleSetHash + displayContext canônico)
+displayContextHash     SHA-256 do contexto canônico usado
+viewMode               now | historical
+decisionAsOf           snapshot.generatedAt ou selectedAt
+conditionState         normal | watch | alert | insufficient_data | unknown
+conditionTemporalScope current | last_known | historical | none
+conditionAsOf          fim da janela/ponto que sustenta a condição ou null
+conditionSource        live_assessment | historical_walk_forward | none
+collectionState        received_now | last_known | expected_idle | unavailable |
+                       historical_context | historical_gap
+collectionExpectation  expected_now | expected_idle | not_applicable
+dataAvailability       complete | partial | gap | unavailable
+dataFreshness          fresh | stale | historical | unknown
+dataTrust              sufficient | degraded | insufficient
+triageState            monitor | review_candidate | review_history |
+                       verify_data_source | insufficient_evidence
+summaryCode            enum fechado
+driverEvidence         lista ordenada de IDs do contrato
+nextCheckCodes         lista ordenada, única e allowlisted
+limitationCodes        lista ordenada, única e allowlisted
+```
+
+`decisionAsOf` e `conditionAsOf` serão exibidos separadamente. Assim, “último
+alerta conhecido às 13:10” nunca será apresentado como alerta atual às 18:00.
+Frescura será calculada pela política de coleta versionada associada ao ponto,
+nunca por um número mágico do frontend. `historical` significa contexto arquivado
+válido para o cursor, não dado fresco. `gap` ou `unavailable` impedem uma condição
+atual. `partial` conserva fatos conhecidos e declara o que falta.
+
+Os `summaryCode` iniciais serão:
+
+```text
+current_no_relevant_deviation
+current_deviation_for_review
+current_priority_deviation_for_review
+current_condition_not_evaluable
+last_known_condition
+expected_idle_last_known
+expected_idle_no_condition
+historical_no_relevant_deviation
+historical_candidate_for_review
+historical_condition_not_evaluable
+context_gap
+data_source_verification_required
+```
+
+O fixture compartilhado `operational-decision-copy.pt-BR.v1` terá um único
+template por código; consumidores não poderão redefinir a copy localmente:
+
+| `summaryCode` | Template pt-BR canônico |
+| --- | --- |
+| `current_no_relevant_deviation` | “Sem desvio relevante detectado neste baseline.” |
+| `current_deviation_for_review` | “Desvio para revisão.” |
+| `current_priority_deviation_for_review` | “Desvio persistente prioritário para revisão.” |
+| `current_condition_not_evaluable` | “Condição atual não avaliável com os dados disponíveis.” |
+| `last_known_condition` | “Última condição conhecida em {conditionAsOf}: {conditionLabel}.” |
+| `expected_idle_last_known` | “Coleta não esperada agora. Última condição conhecida em {conditionAsOf}: {conditionLabel}.” |
+| `expected_idle_no_condition` | “Coleta não esperada agora e nenhuma condição anterior está disponível.” |
+| `historical_no_relevant_deviation` | “Sem desvio relevante detectado neste baseline no instante selecionado.” |
+| `historical_candidate_for_review` | “Candidato histórico para revisão; não representa condição atual.” |
+| `historical_condition_not_evaluable` | “Condição histórica não avaliável com os dados disponíveis.” |
+| `context_gap` | “O TwinOps não possui dados para o intervalo selecionado.” |
+| `data_source_verification_required` | “Verifique a aquisição antes de interpretar a condição.” |
+
+Os `nextCheckCodes`, nessa ordem canônica, serão
+`monitor_next_expected_sample`, `review_evidence`,
+`compare_previous_cycle`, `review_data_gap`, `verify_acquisition`,
+`review_sensor_chain_evidence` e `escalate_engineering_review`. O penúltimo
+significa somente revisar digitalmente timestamps, tentativas, flags e integração;
+não instrui teste elétrico, desmontagem ou inspeção de campo. Os
+`limitationCodes`, também em ordem canônica, serão
+`not_failure_probability`, `component_not_localized`,
+`sensor_placement_unvalidated`, `source_timestamp_assumed`, `data_partial`,
+`data_quality_degraded`, `data_stale`, `historical_context_only`,
+`no_causal_assessment`,
+`lead_time_not_validated` e `site_procedure_unavailable`.
+
+O campo livre legado `assessment.recommendation` não será renderizado na UI
+operacional nem incluído no resumo exportável. Texto, checklist e limitações
+virão exclusivamente dos códigos allowlisted e da `ruleSetVersion`; não serão
+gerados por LLM nem variarão livremente.
+
+A matriz de decisão será materializada como fixture compartilhada e qualquer
+combinação não enumerada falhará fechada:
+
+| Modo/contexto | Condição | Dados | `summaryCode` | Triagem e orientação permitida |
+| --- | --- | --- | --- | --- |
+| `now`, `received_now` | `normal` | completos, frescos e suficientes | `current_no_relevant_deviation` | `monitor`; nenhuma autorização de operação |
+| `now`, `received_now` | `watch` | completos, frescos e suficientes | `current_deviation_for_review` | `review_candidate`; revisar evidência e ciclo anterior |
+| `now`, `received_now` | `alert` | completos, frescos e suficientes | `current_priority_deviation_for_review` | `review_candidate`; revisar evidência e permitir `escalate_engineering_review` |
+| `now`, `received_now` | `watch` | parciais ou degradados | `current_deviation_for_review` | manter candidato, adicionar limitação correspondente e `verify_acquisition`, sem escalonamento |
+| `now`, `received_now` | `alert` | parciais ou degradados | `current_priority_deviation_for_review` | manter candidato, adicionar limitação correspondente e `verify_acquisition`, sem escalonamento |
+| `now`, `received_now` | `normal` | parciais, degradados ou insuficientes | `data_source_verification_required` | `verify_data_source`; não declarar normalidade atual |
+| `now`, `received_now` | `insufficient_data`/`unknown` | aquisição completa, mas janela/avaliação insuficiente | `current_condition_not_evaluable` | `insufficient_evidence`; explicar a evidência faltante |
+| `now`, `last_known` | `normal`/`watch`/`alert`/`insufficient_data` | stale | `last_known_condition` | escopo `last_known` e `conditionAsOf`; `watch`/`alert` seguem revisáveis, sem escalonamento atual |
+| `now`, `last_known` | `unknown` | stale | `data_source_verification_required` | `verify_data_source`; escopo `none`, sem condição herdada |
+| `now`, `expected_idle` | último `watch`/`alert` | sem coleta esperada agora | `expected_idle_last_known` | `review_candidate` retrospectivo, sem escalonamento atual |
+| `now`, `expected_idle` | último `normal`/`insufficient_data` | sem coleta esperada agora | `expected_idle_last_known` | `insufficient_evidence`; não tratar ausência como falha de coleta/condição atual |
+| `now`, `expected_idle` | `unknown` ou ausente | sem coleta esperada agora | `expected_idle_no_condition` | `insufficient_evidence`; aguardar próxima coleta esperada |
+| `now`, `unavailable` + `expected_now` | `unknown` | indisponíveis | `data_source_verification_required` | `verify_data_source` |
+| `now`, `unavailable` + `expected_idle` | `unknown` | indisponíveis | `current_condition_not_evaluable` | `insufficient_evidence`; coleta não era esperada |
+| `historical`, contexto válido | `normal` | históricos suficientes | `historical_no_relevant_deviation` | `review_history`; nunca `monitor` atual |
+| `historical`, contexto válido | `watch`/`alert` | históricos suficientes ou degradados | `historical_candidate_for_review` | `review_candidate` retrospectivo; apenas revisar/comparar |
+| `historical`, contexto válido | `insufficient_data`/`unknown` | qualquer | `historical_condition_not_evaluable` | `insufficient_evidence`; explicar janela/qualidade ausente |
+| `historical`, gap | `unknown` | gap/unavailable | `context_gap` | `insufficient_evidence`; sem carry-forward |
+
+A lista de checks será derivada sem texto livre:
+
+- `monitor` atual → `[monitor_next_expected_sample]`;
+- `review_candidate` atual, `watch` confiável → `[review_evidence,
+  compare_previous_cycle?]`;
+- `review_candidate` atual, `alert` confiável → `[review_evidence,
+  compare_previous_cycle?, escalate_engineering_review]`;
+- candidato atual degradado/parcial → `[review_evidence,
+  compare_previous_cycle?, verify_acquisition,
+  review_sensor_chain_evidence?]`, nunca escalonamento;
+- `last_known` → `[review_evidence?, verify_acquisition]`, sem escalonamento;
+- `expected_idle` → `[monitor_next_expected_sample, review_evidence?]`;
+- `review_history`/candidato histórico → `[review_evidence,
+  compare_previous_cycle?]`;
+- `context_gap` → `[review_data_gap]`;
+- `verify_data_source` → `[verify_acquisition,
+  review_sensor_chain_evidence?]`;
+- insuficiência apenas de janela causal → `[monitor_next_expected_sample]` em
+  **Agora** e `[review_evidence]` em **Histórico**.
+
+`?` significa inclusão somente quando o fato correspondente existir no contrato;
+depois desse filtro, a lista sempre volta à ordem canônica declarada. A versão e
+o hash do fixture de matriz/copy/checklists entram nos testes e no pacote de
+evidências.
+
+Em todos os casos, `watch`/`alert` permanecem visíveis com sua qualidade; nunca
+somem nem viram `normal`. Só `now + received_now + alert + complete + fresh +
+sufficient` permite o código de escalonamento humano. Histórico é investigação
+retrospectiva, não despacho operacional.
+
+Os checklists são apoio à triagem, não procedimentos técnicos do equipamento.
+Qualquer decisão física permanece humana. O produto buscará antecipar a
+percepção de desvios em relação ao baseline; “falha iminente”, causa, RUL e lead
+time comprovado continuarão proibidos até existirem eventos e validação Forzy.
 
 ## 10. Estado do frontend
 
@@ -538,6 +779,7 @@ selectedPointId     ponto/par de amostras escolhido ou null
 historicalContext   contexto retornado para selectedAt
 selectedSensor      s1 | s2 | all
 selectedGroup       motor | pump | coupling | base | null
+decisionSupport     resumo determinístico do displayContext
 ```
 
 ### 10.1 Regras
@@ -558,6 +800,45 @@ selectedGroup       motor | pump | coupling | base | null
 - A URL poderá conservar intervalo e instante selecionado em query params sem
   incluir segredos ou payloads.
 - Falha da timeline não apaga o último snapshot live.
+- `decisionSupport` é recalculado a partir do mesmo `displayContext` que alimenta
+  cartões, gráfico, avaliação e twin; ele nunca mistura o snapshot live com um
+  cursor histórico.
+- O topo da tela prioriza **Situação agora/naquele instante**, evidência
+  dominante, confiança e próximo passo. Valores detalhados, saúde da integração
+  e proveniência permanecem acessíveis logo abaixo ou por expansão.
+- A UI não usa somente cor ou score para comunicar urgência e nunca apresenta
+  `anomalyScore`/`deteriorationScore` sem semântica, baseline e limitação.
+
+### 10.2 Ordem operacional da tela
+
+A ordem padrão será:
+
+1. ativo, modo **Agora/Histórico**, disponibilidade, frescura e confiança;
+2. resumo de decisão e próxima verificação;
+3. S1/S2 com valor, unidade, baseline/desvio, direção, persistência, janela,
+   origem e flags traduzidas quando esses fatos existirem;
+4. candidatos para revisão, navegador de ciclos e linha do tempo;
+5. avaliação detalhada, evidências e limitações do modelo;
+6. twin 3D investigável;
+7. **Confiabilidade dos dados**, painel secundário/expansível que substitui a
+   linguagem interna “saúde da integração”.
+
+Em 1366×768, ativo, modo, confiança, última observação, resumo de decisão e
+próximo passo deverão aparecer sem scroll. O twin não ocupará sozinho o primeiro
+viewport. IDs de sólidos, bounding boxes e detalhes de infraestrutura ficam em
+modos avançados.
+
+Flags não serão agregadas apenas em “qualidade degradada”: cada código terá
+descrição operacional e impacto na avaliação. Quando baseline, desvio, direção
+ou persistência não existirem, o cartão escreverá “comparação indisponível” ou o
+motivo específico, nunca zero. Em `watch`/`alert`, o usuário identifica sensor,
+grandeza, direção, duração e confiança sem depender de tooltip.
+
+**Confiabilidade dos dados** mostrará última leitura, idade, última tentativa,
+último sucesso, próxima coleta esperada, gaps dentro da janela e estado por S1/S2.
+Erro de upstream ou banco afeta confiança/disponibilidade, nunca transforma a
+condição do ativo em `alert`. “Tentar atualizar” só aparece quando a política e o
+ambiente autorizarem a ação.
 
 ## 11. Experiência da linha do tempo
 
@@ -577,7 +858,49 @@ A área histórica terá:
 - marcador visível quando existir apenas um ponto;
 - contagem original/visível quando houver redução;
 - tabela acessível dos pontos do intervalo;
-- marcadores de candidatos de desvio com legenda semântica.
+- marcadores de candidatos de desvio com legenda semântica;
+- painel de investigação do evento com início, persistência, sensor, grandeza,
+  baseline, desvio, qualidade, origem, modelo/fold e janela causal;
+- comparação com a janela anterior sem atravessar segmento, origem ou lacuna;
+- ação para copiar/exportar um resumo sanitizado da evidência, sem transformar o
+  TwinOps em sistema de ordem de serviço ou de comando do ativo.
+
+O overview também oferecerá:
+
+- **Candidatos para revisão**, ordenados por prioridade relativa declarada, com
+  horário, sensor, `operatingCycleId`, persistência, confiança e ação
+  **Investigar**. Essa ordem não é criticidade de manutenção;
+- navegador dos 204 ciclos operacionais do lote histórico, exibindo duração,
+  gaps e quantidade de candidatos;
+- **Comparar com ciclo anterior** apenas quando existir ciclo causalmente
+  anterior dentro da mesma origem;
+- “métrica causadora não determinada” quando o relatório não identificar a
+  evidência dominante, sem eleger visualmente a maior oscilação como causa.
+
+A fila usará `candidateRankingVersion: forzy-review-priority-v1`. Ela nunca
+misturará histórico e live, lotes históricos distintos nem famílias/versões de
+modelo diferentes. Em **Agora**, conterá somente candidatos live recentes da
+mesma versão; em **Histórico**, somente candidatos walk-forward do lote ativo e
+do intervalo/ciclos em foco.
+
+Dentro de cada fila comparável, a ordem será determinística: `alert` antes de
+`watch`, maior persistência, `dataTrust` na ordem `sufficient`, `degraded`,
+`insufficient`, `eventAt` mais recente e `candidateId` ascendente como desempate
+final. Scores crus de anomalia/deterioração não ordenarão sensores, folds ou
+modelos diferentes. Confiança degradada permanece visível e adiciona check de
+aquisição, sem esconder o candidato. A regra/versão será exibida na fila. Esse
+ranking é prioridade de revisão no TwinOps, não risco, criticidade do ativo ou
+prioridade de ordem de serviço.
+
+O resumo copiável/exportável conterá ativo provisório, modo/instante,
+`pointId`/`candidateId`/`operatingCycleId`, medições, baseline, desvio,
+persistência, flags, origem, hashes públicos, versão do modelo e limitações. Ele
+incluirá `schemaVersion`, `ruleSetVersion`, `ruleSetHash`, `displayContextHash` e
+`candidateRankingVersion`, mas não bytes brutos, paths locais, DSN, segredos ou
+dados de conexão. Um
+workflow auditável de reconhecimento/fechamento de evento fica condicionado a
+identidade/autenticação, TAG oficial e definição de responsáveis; não será
+simulado nesta fase.
 
 O gráfico não conectará linhas através de lacunas nem entre fontes. As cores de
 sensor e de estado não serão o único meio de distinção.
@@ -645,6 +968,18 @@ O twin recebe o mesmo `displayContext` dos cartões e do gráfico:
 - sem avaliação, permanece neutro e exibe “dados insuficientes”;
 - alerta de sensor destaca o rail S1/S2 e o ativo inteiro;
 - nenhum grupo mecânico recebe status causal sem `componentTag` validado.
+
+O 3D responde à pergunta “qual volume CAD estou inspecionando?” e abre os fatos
+disponíveis daquele grupo: quantidade de sólidos, nomes fonte, envelope e
+confiança semântica. Selecionar motor, bomba, acoplamento ou base não filtra nem
+reinterpreta automaticamente a evidência S1/S2 como se o sensor estivesse
+montado ali. A relação entre tempo, estado do ativo e rail do sensor continua
+visível durante foco ou isolamento de grupo.
+
+O painel de qualquer grupo exibirá “nenhum sensor está fisicamente mapeado a
+este grupo”. Mesmo com o ativo em `alert`, selecionar uma parte nunca muda a
+mensagem para “alerta no motor”, “falha na bomba” ou equivalente. A seleção ajuda
+a localizar e compreender o CAD; não localiza a origem mecânica do desvio.
 
 ### 12.4 Inspetor do sensor VIM32
 
@@ -812,7 +1147,44 @@ não usam a CLI administrativa.
 - ponto único, valor zero, métrica ausente e lacuna possuem estados visíveis;
 - overview proporcional e atalhos de foco mantêm CSV e live legíveis;
 - falha de histórico preserva o snapshot;
-- tabela e teclado cobrem a mesma informação visual.
+- tabela e teclado cobrem a mesma informação visual;
+- cada estado `normal`, `watch`, `alert` e `insufficient_data` produz orientação
+  determinística, evidência, confiança, limitação e próximo passo compatíveis;
+- qualidade degradada permanece visível em qualquer estado e nunca é convertida
+  silenciosamente em normal;
+- score sem baseline/semântica não aparece como informação principal;
+- troca entre agora e histórico troca atomicamente também o resumo de decisão;
+- S1/S2 sem posição validada podem ser comparados, mas nunca apresentados como
+  localização causal no equipamento;
+- matriz compartilhada cobre `now/historical`, todos os status inclusive
+  `unknown`, `received_now/last_known/expected_idle/unavailable`, disponibilidade,
+  frescura e confiança; combinações não enumeradas falham fechadas;
+- `schemaVersion`, `ruleSetVersion`, `ruleSetHash`, `decisionId` e
+  `displayContextHash` são estáveis para entrada idêntica; checks/limitações
+  seguem ordem canônica;
+- recomendação livre contendo “pare”, “continue operando”, intervenção ou causa
+  nunca aparece na UI nem no export;
+- histórico nunca produz escalonamento operacional atual, e condição stale/last
+  known sempre exibe seu `conditionAsOf`;
+- ranking de candidatos separa fontes/modelos e obedece exatamente
+  `forzy-review-priority-v1`, sem ordenar por scores crus não comparáveis.
+
+Os cenários E2E por tarefa serão:
+
+1. live normal e fresco: identificar horário, confiança e ausência de desvio
+   relevante;
+2. candidato persistente: identificar sensor, evidência, direção, duração e
+   próxima verificação;
+3. upstream indisponível: concluir “condição não avaliável por dados” sem
+   confundir com falha do ativo;
+4. histórico candidato: abrir marcador, confirmar CSV/walk-forward e copiar o
+   resumo de evidências;
+5. gap: provar que nenhum valor, contexto ou estado atravessa o intervalo;
+6. 3D: localizar o grupo CAD e responder corretamente que a origem mecânica não
+   foi determinada.
+
+Fixtures negativas também provarão que nenhuma combinação gera “equipamento
+saudável”, “falha”, “continue operando” ou “pare o equipamento”.
 
 ### 17.4 Twin 3D
 
@@ -837,7 +1209,35 @@ não usam a CLI administrativa.
 - teste de interação 3D usa o perfil versionado, Windows 11, Chromium fixado
   pelo Playwright, viewport 1366×768 e `deviceScaleFactor=1`, reproduzindo
   warm-up, três runs, cálculo rAF e long tasks definidos na seção 14;
+- roteiro de usabilidade técnica mede se um usuário encontra situação,
+  confiança, evidência dominante, início/persistência e próximo passo em até 60
+  segundos e no máximo três interações primárias;
+- revisão de preview inclui o responsável de produto; antes de produção, o
+  protocolo manual exige ao menos uma pessoa representativa de operação e uma de
+  engenharia/confiabilidade, registrando tempo, respostas e ambiguidades;
 - produção continua um gate separado.
+
+O artefato versionado `operational-triage-usability-v1` congelará a rubrica:
+
+- início em sessão limpa, modo **Agora**, viewport 1366×768, primeiro painel de
+  detalhes fechado e fixture/cenário declarado;
+- uma interação primária é clique/toque ou `Enter`/`Space` que altera modo,
+  seleciona candidato/ciclo ou abre uma camada de evidência; hover, foco por Tab
+  e scroll não contam, mas são registrados;
+- respostas obrigatórias: disponibilidade/confiança, formulação segura da
+  condição, sensor/grandeza dominante quando conhecida, início/persistência,
+  próximo check permitido e ao menos uma limitação;
+- live normal/fresco deve ser compreendido em até 30 s; candidato persistente,
+  gap ou falha de aquisição em até 60 s e três interações primárias;
+- reprova por tempo/interações excedidos, resposta obrigatória ausente, confusão
+  entre confiabilidade dos dados e condição, ou qualquer inferência de falha,
+  causa, operação/parada ou localização física não sustentada;
+- participante de operação deve trabalhar com operação ou instrumentação
+  industrial; participante de engenharia deve ter experiência em
+  confiabilidade, manutenção de conjuntos rotativos ou análise de vibração.
+
+Automação valida estados, cópias e navegação; ela não substitui a prova de
+utilidade humana registrada nessa rubrica.
 
 ## 18. Critérios de aceite
 
@@ -865,6 +1265,39 @@ não usam a CLI administrativa.
    janela interna sem serializá-la para o browser.
 14. Nenhum marcador histórico usa um modelo treinado com dados posteriores à
    janela avaliada.
+15. A primeira dobra da tela responde sem abrir painéis: estado atual, confiança
+    dos dados, última observação, persistência, evidência dominante e próximo
+    passo humano.
+16. Nenhuma grandeza operacional principal é exibida apenas como número: valor,
+    unidade, contexto temporal, qualidade e referência/desvio aparecem juntos
+    quando disponíveis; ausências são explícitas.
+17. `normal`, `watch`, `alert` e `insufficient_data` possuem mensagens e
+    checklists determinísticos, testados e coerentes com os limites da evidência.
+18. Um profissional técnico consegue identificar em até 60 segundos e no máximo
+    três interações: se os dados são confiáveis, qual sensor/grandeza motivou o
+    estado, quando o desvio começou e qual verificação segura vem a seguir.
+19. Nenhuma tela afirma falha iminente, causa, RUL ou componente culpado; alertas
+    continuam desvios relativos sujeitos a validação humana.
+20. O 3D contribui para navegação e investigação do CAD; ele não ocupa a
+    hierarquia principal quando não acrescenta evidência à decisão.
+21. Falha de upstream, banco ou cobertura altera disponibilidade/confiança e
+    nunca produz `alert` de condição do ativo.
+22. A fila de candidatos declara prioridade relativa de revisão, ciclo, sensor,
+    persistência e qualidade; não usa linguagem de criticidade física.
+23. Selecionar qualquer grupo CAD mantém visível que S1/S2 não possuem
+    mapeamento físico validado e não atribui o alerta ao grupo.
+24. O pacote de evidências é reproduzível e sanitizado, sem bytes brutos, path,
+    DSN ou segredo.
+25. Condição, escopo temporal e confiança são independentes: histórico,
+    `last_known`, `expected_idle`, stale e gap nunca se apresentam como condição
+    atual.
+26. Todo resumo decisório carrega schema/ruleset, hash do ruleset e do contexto,
+    instante da decisão, instante da condição e listas allowlisted em ordem
+    canônica.
+27. `assessment.recommendation` livre não aparece na UI operacional nem no
+    pacote exportado.
+28. A rubrica `operational-triage-usability-v1` passa com os dois perfis técnicos
+    exigidos antes do gate de produção.
 
 ## 19. Fases de execução
 
@@ -886,7 +1319,11 @@ não usam a CLI administrativa.
 
 - provider com `now/historical`;
 - gráfico multigrandeza, proveniência, lacunas, cursor e tabela;
-- sincronização com cartões e avaliação.
+- sincronização com cartões e avaliação;
+- hierarquia **Situação → Entenda → Investigue**;
+- `OperationalDecisionView` determinístico, evidência dominante e próximos
+  passos seguros por estado;
+- roteiro de triagem técnica e teste de usabilidade.
 
 ### Fase D — twin 3D investigável
 
@@ -894,7 +1331,8 @@ não usam a CLI administrativa.
 - PBR, iluminação, solo, sombras e fallback renovado;
 - seleção, foco, isolamento, painel e acessibilidade;
 - inspetor dimensional do VIM32;
-- sincronização com a linha do tempo.
+- sincronização com a linha do tempo e com o resumo operacional, sem localização
+  causal fictícia.
 
 As fases C e D podem avançar em paralelo depois dos contratos da Fase B. A
 integração final exige que ambas consumam o mesmo `displayContext`.
@@ -926,6 +1364,17 @@ integração final exige que ambas consumam o mesmo `displayContext`.
    promoção.
 7. **Gate de fidelidade:** evidências físicas antes de hotspots, internos,
    placas ou acabamento apresentados como reais.
+8. **Gate de usabilidade operacional:** protocolo de tarefa com perfis de
+   operação e engenharia antes de produção.
+9. **Gate de despacho em campo:** TAG oficial e mapeamento físico de S1/S2 antes
+   de instruções que identifiquem um ponto físico de inspeção.
+10. **Gate de procedimento:** SOP e limites operacionais fornecidos pela Forzy
+    antes de qualquer orientação sobre operar, parar ou intervir; até lá, essas
+    orientações permanecem proibidas.
+11. **Gate de contexto:** carga/regime e evidência de processo antes de qualquer
+    interpretação de causa mecânica.
+12. **Gate de early warning:** eventos de manutenção/falha rotulados antes de
+    publicar precisão, criticidade ou antecedência de falha.
 
 ## 21. Decisões congeladas para o plano
 
@@ -937,6 +1386,20 @@ integração final exige que ambas consumam o mesmo `displayContext`.
 - `now/historical` controla toda a tela por um contexto único.
 - Navegação histórica não reativa o replay sintético legado.
 - Marcadores históricos são candidatos de desvio, não falhas.
+- O produto é orientado a decisão: situação, confiança, evidência e próximo passo
+  vêm antes de telemetria detalhada ou visualização decorativa.
+- Nenhum KPI/card principal existe sem pergunta operacional, origem temporal,
+  qualidade, ação possível e limitação explícita.
+- Orientações são determinísticas, versionadas e submetidas à validação humana;
+  o TwinOps não comanda o ativo nem substitui procedimento ou engenheiro.
+- Condição, `conditionAsOf`, disponibilidade, frescura, confiança e triagem são
+  dimensões separadas; último conhecido ou histórico nunca viram estado atual.
+- Recomendações livres legadas não orientam ações nem entram no export.
+- Histórico permite investigar e comparar, nunca escalar uma situação como se
+  estivesse ocorrendo agora.
+- Early warning significa detectar início e persistência de desvio contra o
+  baseline; antecedência de falha só poderá ser alegada após validação com
+  eventos Forzy rotulados.
 - Quatro grupos CAD selecionáveis: motor, bomba, acoplamento e base.
 - Materiais PBR melhoram leitura visual, mas permanecem não validados até fotos.
 - S1/S2 não são colocados no ativo; VIM32 aparece em inspetor separado.
