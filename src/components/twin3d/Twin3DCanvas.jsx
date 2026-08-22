@@ -45,6 +45,19 @@ function visitMaterials(scene, visitor) {
   });
 }
 
+export function applyViewModelToSceneMaterials(scene, viewModel) {
+  visitMaterials(scene, (material) => {
+    material.color?.set(viewModel.materialColor);
+    material.emissive?.set(viewModel.emissiveColor);
+    if ("emissiveIntensity" in material) {
+      material.emissiveIntensity = viewModel.emissiveIntensity;
+    }
+    if ("metalness" in material) material.metalness = 0.18;
+    if ("roughness" in material) material.roughness = 0.72;
+    material.needsUpdate = true;
+  });
+}
+
 export function disposeSceneMaterials(scene) {
   visitMaterials(scene, (material) => material.dispose());
 }
@@ -54,12 +67,7 @@ export function TwinModel({ modelUrl, viewModel }) {
   const model = useMemo(() => cloneSceneWithIndependentMaterials(gltf.scene), [gltf.scene]);
 
   useEffect(() => {
-    visitMaterials(model, (material) => {
-      material.color?.set(viewModel.materialColor);
-      material.emissive?.set(viewModel.emissiveColor);
-      if ("emissiveIntensity" in material) material.emissiveIntensity = viewModel.emissiveIntensity;
-      material.needsUpdate = true;
-    });
+    applyViewModelToSceneMaterials(model, viewModel);
   }, [model, viewModel.emissiveColor, viewModel.emissiveIntensity, viewModel.materialColor]);
 
   useEffect(
@@ -140,7 +148,7 @@ export default function Twin3DCanvas({
           <directionalLight position={[3, 5, 4]} intensity={2.2} castShadow />
           <directionalLight position={[-4, 2, -3]} intensity={0.7} />
           <Suspense fallback={<ModelLoadingOverlay />}>
-            <Bounds fit clip observe margin={1.2}>
+            <Bounds fit clip observe margin={1.2} maxDuration={0.01}>
               <ModelReadySignal onReady={markModelReady}>
                 <Model modelUrl={manifest.modelUrl} viewModel={viewModel} />
               </ModelReadySignal>

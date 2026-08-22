@@ -21,13 +21,14 @@ vi.mock("@react-three/fiber", () => ({
 }));
 
 vi.mock("@react-three/drei", () => ({
-  Bounds: ({ children, fit, clip, observe, margin }) => (
+  Bounds: ({ children, fit, clip, observe, margin, maxDuration }) => (
     <div
       data-testid="model-bounds"
       data-fit={String(fit)}
       data-clip={String(clip)}
       data-observe={String(observe)}
       data-margin={String(margin)}
+      data-max-duration={String(maxDuration)}
     >
       {children}
     </div>
@@ -84,6 +85,7 @@ it("renders the supplied GLB without sensor markers", async () => {
   expect(screen.getByTestId("model-bounds")).toHaveAttribute("data-clip", "true");
   expect(screen.getByTestId("model-bounds")).toHaveAttribute("data-observe", "true");
   expect(screen.getByTestId("model-bounds")).toHaveAttribute("data-margin", "1.2");
+  expect(screen.getByTestId("model-bounds")).toHaveAttribute("data-max-duration", "0.01");
   expect(screen.getByLabelText("Controles orbitais do modelo")).toHaveAttribute("data-enable-pan", "false");
   expect(screen.getByLabelText("Controles orbitais do modelo")).toHaveAttribute("data-enable-damping", "false");
   await waitFor(() => {
@@ -91,6 +93,30 @@ it("renders the supplied GLB without sensor markers", async () => {
   });
   expect(screen.queryByLabelText(/Sensor S1/i)).not.toBeInTheDocument();
   expect(screen.queryByLabelText(/Sensor S2/i)).not.toBeInTheDocument();
+});
+
+it("normalizes fully metallic CAD materials so the status color stays visible", () => {
+  const scene = new Scene();
+  const geometry = new BoxGeometry(1, 1, 1);
+  const material = new MeshStandardMaterial({
+    color: "#ffffff",
+    metalness: 1,
+    roughness: 1,
+  });
+  scene.add(new Mesh(geometry, material));
+
+  twin3dModule.applyViewModelToSceneMaterials(scene, {
+    materialColor: "#718096",
+    emissiveColor: "#1f2937",
+    emissiveIntensity: 0,
+  });
+
+  expect(material.color.getHexString()).toBe("718096");
+  expect(material.metalness).toBe(0.18);
+  expect(material.roughness).toBe(0.72);
+  expect(material.version).toBeGreaterThan(0);
+  geometry.dispose();
+  material.dispose();
 });
 
 it("shows a dedicated loading state while the manifest is pending", () => {
