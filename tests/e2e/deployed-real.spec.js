@@ -23,6 +23,7 @@ test.describe("deployed real TwinOps preview", () => {
       await route.abort("blockedbyclient");
     });
     await page.clock.install({ time: new Date("2026-08-12T15:30:00Z") });
+    await page.emulateMedia({ reducedMotion: "reduce" });
 
     const snapshotResponse = await request.get(`${assetPath}/snapshot`);
     expect(snapshotResponse.status()).toBe(200);
@@ -47,6 +48,11 @@ test.describe("deployed real TwinOps preview", () => {
     await expect(
       page.getByRole("heading", { name: "Conjunto motor-bomba monitorado" })
     ).toBeVisible();
+    const twinCanvas = page.getByTestId("twin3d-canvas");
+    await expect(twinCanvas).toBeVisible();
+    await expect(twinCanvas).toHaveAttribute("data-model-ready", "true");
+    await expect(twinCanvas.locator("canvas")).toBeVisible();
+    await expect(page.getByText("Visualização 3D indisponível")).toHaveCount(0);
     await expect(page.getByText("TAG não fornecida")).toBeVisible();
     await expect(
       page.getByText(/MTR-BMB-042|Área 01|Ordens de serviço/)

@@ -1,6 +1,6 @@
 import "@testing-library/jest-dom/vitest";
 import React from "react";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import Twin3D, { createTwin3DComponent } from "./Twin3D.jsx";
 import { normalSnapshot } from "./twin3d/testFixtures.js";
@@ -38,13 +38,37 @@ it("uses the fallback when the snapshot has no 3D capability", () => {
   expect(screen.getByTestId("static-fallback")).toBeVisible();
 });
 
-it("uses the fallback for reduced motion", () => {
+it("keeps the interactive twin available for reduced motion", async () => {
   window.matchMedia.mockReturnValue({ matches: true });
   HTMLCanvasElement.prototype.getContext.mockReturnValue({});
+  const CanvasStub = () => <section aria-label="Modelo 3D do conjunto motor-bomba" />;
+  const TestTwin3D = createTwin3DComponent(() => Promise.resolve({ default: CanvasStub }));
 
-  render(<Twin3D snapshot={normalSnapshot} fallback={fallback} />);
+  render(<TestTwin3D snapshot={normalSnapshot} fallback={fallback} />);
 
-  expect(screen.getByTestId("static-fallback")).toBeVisible();
+  expect(await screen.findByLabelText("Modelo 3D do conjunto motor-bomba")).toBeVisible();
+  expect(screen.queryByTestId("static-fallback")).not.toBeInTheDocument();
+});
+
+it("shows a dedicated loading state while the lazy 3D chunk is pending", async () => {
+  HTMLCanvasElement.prototype.getContext.mockReturnValue({});
+  let resolveCanvas;
+  const pendingCanvas = new Promise((resolve) => {
+    resolveCanvas = resolve;
+  });
+  const PendingTwin3D = createTwin3DComponent(() => pendingCanvas);
+
+  render(<PendingTwin3D snapshot={normalSnapshot} fallback={fallback} />);
+
+  expect(
+    screen.getByRole("status", { name: "Carregando o gêmeo 3D real…" }),
+  ).toHaveAttribute("aria-live", "polite");
+  expect(screen.queryByTestId("static-fallback")).not.toBeInTheDocument();
+
+  await act(async () => {
+    resolveCanvas({ default: () => <section aria-label="Modelo 3D do conjunto motor-bomba" /> });
+    await pendingCanvas;
+  });
 });
 
 it("passes only the canonical snapshot to the lazy canvas", async () => {
@@ -69,4 +93,33 @@ it("falls back and warns exactly once when the lazy chunk rejects", async () => 
   expect(await screen.findByTestId("static-fallback")).toBeVisible();
   await waitFor(() => expect(warning).toHaveBeenCalledTimes(1));
   expect(warning).toHaveBeenCalledWith("Twin3D fallback", expect.objectContaining({ message: "chunk unavailable" }));
+});
+
+it("retries a transient canvas failure when a fresh snapshot arrives", async () => {
+  HTMLCanvasElement.prototype.getContext.mockReturnValue({});
+  const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
+  vi.spyOn(console, "error").mockImplementation(() => {});
+  const RecoveringCanvas = ({ snapshot }) => {
+    if (snapshot.generatedAt === normalSnapshot.generatedAt) {
+      throw new Error("transient model failure");
+    }
+    return <section aria-label="Modelo 3D recuperado" />;
+  };
+  const RecoveringTwin3D = createTwin3DComponent(() => Promise.resolve({ default: RecoveringCanvas }));
+  const { rerender } = render(
+    <RecoveringTwin3D snapshot={normalSnapshot} fallback={fallback} />,
+  );
+
+  expect(await screen.findByTestId("static-fallback")).toBeVisible();
+
+  rerender(
+    <RecoveringTwin3D
+      snapshot={{ ...normalSnapshot, generatedAt: "2026-08-12T15:00:02.000Z" }}
+      fallback={fallback}
+    />,
+  );
+
+  expect(await screen.findByLabelText("Modelo 3D recuperado")).toBeVisible();
+  expect(screen.queryByTestId("static-fallback")).not.toBeInTheDocument();
+  expect(warning).toHaveBeenCalledTimes(1);
 });

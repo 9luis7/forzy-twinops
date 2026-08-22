@@ -1,6 +1,6 @@
 import "@testing-library/jest-dom/vitest";
 import React, { Component } from "react";
-import { act, cleanup, render, screen } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import { BoxGeometry, Mesh, MeshStandardMaterial, Scene } from "three";
 import { afterEach, expect, it, vi } from "vitest";
 import Twin3DCanvas, * as twin3dModule from "./Twin3DCanvas.jsx";
@@ -32,9 +32,13 @@ vi.mock("@react-three/drei", () => ({
       {children}
     </div>
   ),
-  OrbitControls: ({ enablePan, makeDefault }) => (
+  Html: ({ children, fullscreen }) => (
+    <div data-fullscreen={String(fullscreen)} data-testid="canvas-html">{children}</div>
+  ),
+  OrbitControls: ({ enableDamping, enablePan, makeDefault }) => (
     <div
       aria-label="Controles orbitais do modelo"
+      data-enable-damping={String(enableDamping)}
       data-enable-pan={String(enablePan)}
       data-make-default={String(makeDefault)}
     />
@@ -81,8 +85,47 @@ it("renders the supplied GLB without sensor markers", async () => {
   expect(screen.getByTestId("model-bounds")).toHaveAttribute("data-observe", "true");
   expect(screen.getByTestId("model-bounds")).toHaveAttribute("data-margin", "1.2");
   expect(screen.getByLabelText("Controles orbitais do modelo")).toHaveAttribute("data-enable-pan", "false");
+  expect(screen.getByLabelText("Controles orbitais do modelo")).toHaveAttribute("data-enable-damping", "false");
+  await waitFor(() => {
+    expect(screen.getByTestId("twin3d-canvas")).toHaveAttribute("data-model-ready", "true");
+  });
   expect(screen.queryByLabelText(/Sensor S1/i)).not.toBeInTheDocument();
   expect(screen.queryByLabelText(/Sensor S2/i)).not.toBeInTheDocument();
+});
+
+it("shows a dedicated loading state while the manifest is pending", () => {
+  render(
+    <Twin3DCanvas
+      snapshot={normalSnapshot}
+      loadManifest={() => new Promise(() => {})}
+    />,
+  );
+
+  expect(
+    screen.getByRole("status", { name: "Preparando a geometria do conjunto…" }),
+  ).toHaveAttribute("aria-live", "polite");
+});
+
+it("shows a dedicated loading state while the GLB resource is pending", async () => {
+  const pending = new Promise(() => {});
+  const PendingModel = () => {
+    throw pending;
+  };
+
+  render(
+    <Twin3DCanvas
+      snapshot={normalSnapshot}
+      loadManifest={() => Promise.resolve(realManifestFixture)}
+      Model={PendingModel}
+    />,
+  );
+
+  await screen.findByLabelText("Modelo 3D do conjunto motor-bomba");
+  expect(screen.getByTestId("twin3d-canvas")).toHaveAttribute("data-model-ready", "false");
+  expect(screen.getByTestId("canvas-html")).toHaveAttribute("data-fullscreen", "true");
+  expect(
+    screen.getByRole("status", { name: "Carregando a malha 3D real…" }),
+  ).toHaveAttribute("aria-live", "polite");
 });
 
 it("surfaces manifest loading failures to the outer fallback boundary", async () => {

@@ -1,11 +1,22 @@
-import React, { Suspense, useEffect, useMemo, useState } from "react";
-import { Bounds, OrbitControls, useGLTF } from "@react-three/drei";
+import React, { Suspense, useCallback, useEffect, useMemo, useState } from "react";
+import { Bounds, Html, OrbitControls, useGLTF } from "@react-three/drei";
 import { Canvas } from "@react-three/fiber";
+import LoadingState from "../LoadingState.jsx";
 import { parseModelManifest } from "./modelManifest.js";
 import { buildTwinViewModel } from "./twinViewModel.js";
 
 
 const MANIFEST_URL = "/models/conjunto-motor-bomba.manifest.json";
+const MANIFEST_LOADING_MESSAGES = [
+  "Lendo o manifesto do conjunto…",
+  "Validando a geometria fornecida…",
+  "Preparando materiais e iluminação…",
+];
+const GLB_LOADING_MESSAGES = [
+  "Carregando a malha do conjunto…",
+  "Preparando materiais do modelo…",
+  "Ajustando a visualização interativa…",
+];
 
 export async function loadModelManifest({ signal } = {}) {
   const response = await fetch(MANIFEST_URL, { signal });
@@ -61,6 +72,26 @@ export function TwinModel({ modelUrl, viewModel }) {
   return <primitive object={model} />;
 }
 
+function ModelLoadingOverlay() {
+  return (
+    <Html fullscreen>
+      <LoadingState
+        label="Carregando a malha 3D real…"
+        messages={GLB_LOADING_MESSAGES}
+        variant="canvas"
+      />
+    </Html>
+  );
+}
+
+function ModelReadySignal({ children, onReady }) {
+  useEffect(() => {
+    onReady();
+  }, [onReady]);
+
+  return children;
+}
+
 export default function Twin3DCanvas({
   snapshot,
   loadManifest = loadModelManifest,
@@ -68,6 +99,8 @@ export default function Twin3DCanvas({
 }) {
   const [manifest, setManifest] = useState(null);
   const [error, setError] = useState(null);
+  const [modelReady, setModelReady] = useState(false);
+  const markModelReady = useCallback(() => setModelReady(true), []);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -83,13 +116,20 @@ export default function Twin3DCanvas({
 
   if (error) throw error;
   if (!manifest) {
-    return <section className="card" role="status">Carregando modelo 3D real…</section>;
+    return (
+      <LoadingState
+        label="Preparando a geometria do conjunto…"
+        messages={MANIFEST_LOADING_MESSAGES}
+        variant="twin"
+      />
+    );
   }
 
   const viewModel = buildTwinViewModel({ snapshot });
   return (
     <section
       className="card"
+      data-model-ready={String(modelReady)}
       data-testid="twin3d-canvas"
       data-status={viewModel.status}
       aria-label="Modelo 3D do conjunto motor-bomba"
@@ -99,12 +139,14 @@ export default function Twin3DCanvas({
           <ambientLight intensity={1.4} />
           <directionalLight position={[3, 5, 4]} intensity={2.2} castShadow />
           <directionalLight position={[-4, 2, -3]} intensity={0.7} />
-          <Suspense fallback={null}>
+          <Suspense fallback={<ModelLoadingOverlay />}>
             <Bounds fit clip observe margin={1.2}>
-              <Model modelUrl={manifest.modelUrl} viewModel={viewModel} />
+              <ModelReadySignal onReady={markModelReady}>
+                <Model modelUrl={manifest.modelUrl} viewModel={viewModel} />
+              </ModelReadySignal>
             </Bounds>
           </Suspense>
-          <OrbitControls makeDefault enablePan={false} />
+          <OrbitControls makeDefault enableDamping={false} enablePan={false} />
         </Canvas>
       </div>
       <p className="muted small">

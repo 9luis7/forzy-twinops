@@ -63,7 +63,13 @@ it("shows an honest loading state before the first real snapshot", () => {
 
   render(<App dataSource={source} />);
 
-  expect(screen.getByText("Carregando o último snapshot real…")).toBeInTheDocument();
+  const loading = screen.getByRole("status", {
+    name: "Carregando o último snapshot real…",
+  });
+  expect(loading).toHaveAttribute("aria-live", "polite");
+  expect(loading).toHaveTextContent(
+    /Conectando ao snapshot operacional|Validando telemetria S1 e S2|Preparando o painel operacional|Sincronizando o gêmeo digital/,
+  );
 });
 
 it("starts a fresh bootstrap after StrictMode aborts the first setup outside the window", async () => {

@@ -1,4 +1,5 @@
 import React, { Component, Suspense, lazy } from "react";
+import LoadingState from "./LoadingState.jsx";
 
 export function canUseWebGL() {
   if (typeof document === "undefined") return false;
@@ -10,9 +11,12 @@ export function canUseWebGL() {
   }
 }
 
-export function prefersReducedMotion() {
-  return typeof window !== "undefined" && window.matchMedia?.("(prefers-reduced-motion: reduce)").matches === true;
-}
+const TWIN_LOADING_MESSAGES = [
+  "Preparando a geometria do conjunto…",
+  "Validando o manifesto do modelo…",
+  "Sincronizando o gêmeo digital…",
+  "Preparando rotação e zoom…",
+];
 
 export function Twin3DStaticFallback() {
   return (
@@ -41,6 +45,12 @@ class Twin3DErrorBoundary extends Component {
     console.warn("Twin3D fallback", error);
   }
 
+  componentDidUpdate(previousProps) {
+    if (this.state.error && previousProps.resetSignal !== this.props.resetSignal) {
+      this.setState({ error: null });
+    }
+  }
+
   render() {
     return this.state.error ? this.props.fallback : this.props.children;
   }
@@ -51,13 +61,21 @@ export function createTwin3DComponent(loadCanvas) {
 
   return function Twin3D({ snapshot, fallback }) {
     const fallbackView = fallback ?? <Twin3DStaticFallback />;
-    if (!snapshot || snapshot.capabilities?.twin3d !== true || !canUseWebGL() || prefersReducedMotion()) {
+    if (!snapshot || snapshot.capabilities?.twin3d !== true || !canUseWebGL()) {
       return fallbackView;
     }
 
+    const loadingView = (
+      <LoadingState
+        label="Carregando o gêmeo 3D real…"
+        messages={TWIN_LOADING_MESSAGES}
+        variant="twin"
+      />
+    );
+
     return (
-      <Twin3DErrorBoundary fallback={fallbackView}>
-        <Suspense fallback={fallbackView}>
+      <Twin3DErrorBoundary fallback={fallbackView} resetSignal={snapshot}>
+        <Suspense fallback={loadingView}>
           <LazyTwin3DCanvas snapshot={snapshot} />
         </Suspense>
       </Twin3DErrorBoundary>

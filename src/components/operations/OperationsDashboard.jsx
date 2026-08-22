@@ -1,10 +1,18 @@
 import React from "react";
 import { useTwinOps } from "../../TwinOpsContext.jsx";
+import LoadingState from "../LoadingState.jsx";
 import AssessmentPanel from "./AssessmentPanel.jsx";
 import AssetHeader from "./AssetHeader.jsx";
 import IntegrationHealth from "./IntegrationHealth.jsx";
 import SensorCard from "./SensorCard.jsx";
 import TelemetryTrend from "./TelemetryTrend.jsx";
+
+const SNAPSHOT_LOADING_MESSAGES = [
+  "Conectando ao snapshot operacional…",
+  "Validando telemetria S1 e S2…",
+  "Preparando o painel operacional…",
+  "Sincronizando o gêmeo digital…",
+];
 
 export function TwinFallback() {
   return (
@@ -26,7 +34,11 @@ export default function OperationsDashboard({ Twin3DComponent = null }) {
   if (!snapshot && !error) {
     return (
       <main className="operations-shell operations-shell--centered">
-        <p className="loading-state" role="status">Carregando o último snapshot real…</p>
+        <LoadingState
+          label="Carregando o último snapshot real…"
+          messages={SNAPSHOT_LOADING_MESSAGES}
+          variant="panel"
+        />
       </main>
     );
   }
