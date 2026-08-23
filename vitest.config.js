@@ -9,7 +9,7 @@ export default defineConfig({
       "**/dist/**",
       "**/.worktrees/**",
       "**/.claude/worktrees/**",
-      "**/tests/e2e/**",
+      "**/tests/e2e/**/*.spec.js",
     ],
   },
 });
