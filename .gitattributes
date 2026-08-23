@@ -1,0 +1,3 @@
+/artifacts/ml/real-forzy/*.json text eol=lf
+/artifacts/ml/real-forzy/*.md text eol=lf
+/artifacts/ml/real-forzy/*.joblib binary

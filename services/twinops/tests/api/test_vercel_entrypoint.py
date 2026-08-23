@@ -16,7 +16,7 @@ import pytest
 from twinops import main_v2
 
 
-_MANIFEST_HASH = "sha256:3319936da354fe9bb1ec37755940688abacd57876a44bfeda3e1d78fef39aed5"
+_MANIFEST_HASH = "sha256:fe2cbd7e1b576f04b2c6380e41ecb7c97df7faa5084c39c4b0d16db786afe7f0"
 _MODEL_HASH = "sha256:68d00121edbf8c4c01cf7cd231cd57c4c8eff25661135494e3c791ca78e562ba"
 _DEPLOY_FORBIDDEN_DISTRIBUTIONS = {
     "rarfile",

@@ -13,7 +13,7 @@ def _valid_deploy_env(**overrides):
         "TWINOPS_UPSTREAM_BASE_URL": "https://upstream.invalid",
         "TWINOPS_ML_ARTIFACT_PATH": "artifacts/ml/real-forzy",
         "TWINOPS_ML_MANIFEST_HASH": (
-            "sha256:3319936da354fe9bb1ec37755940688abacd57876a44bfeda3e1d78fef39aed5"
+            "sha256:fe2cbd7e1b576f04b2c6380e41ecb7c97df7faa5084c39c4b0d16db786afe7f0"
         ),
         "TWINOPS_ML_MODEL_HASH": (
             "sha256:68d00121edbf8c4c01cf7cd231cd57c4c8eff25661135494e3c791ca78e562ba"

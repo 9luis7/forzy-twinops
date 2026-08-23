@@ -22,9 +22,9 @@
     }
   ],
   "files": {
-    "backtest-report.json": "sha256:2a9d9e407dcd1e71977e84acc78b7620e2ed742841699c7cf51b8056bbab6ebb",
-    "model-card.md": "sha256:cf86def9fb35a19ce6dbd9e841a54c37731ef54abf54d9741c7d279f5ba6c975",
-    "pipeline-config.json": "sha256:571da0af46d4b882841d4d8a0e39a334366dfc091c67c52fd62462ae6a11a85e",
+    "backtest-report.json": "sha256:9d9f76e907792b2d5abe84f897aa8d7e5b062af573b6f95646e5fc2fe1dd6a1e",
+    "model-card.md": "sha256:1660358ac223635d4fb550f722f82c0c2d5b35b78f048cdf920d898a8496a7a8",
+    "pipeline-config.json": "sha256:483481bf43cc5ea30621f222bb9190502da0a037da3850367a179fcb9b1c0a1d",
     "pipeline.joblib": "sha256:68d00121edbf8c4c01cf7cd231cd57c4c8eff25661135494e3c791ca78e562ba"
   },
   "model": {
