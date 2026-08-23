@@ -44,6 +44,18 @@ def _invoke(repository, expected_parent, paths, message="test commit", extra_env
     )
 
 
+def _git_shim(tmp_path, body, **environment):
+    shim_dir = tmp_path / "git-shim"
+    shim_dir.mkdir()
+    (shim_dir / "git.cmd").write_text(body, encoding="utf-8")
+    real_git = shutil.which("git")
+    return {
+        "PATH": f"{shim_dir}{os.pathsep}{os.environ['PATH']}",
+        "E1_REAL_GIT": real_git,
+        **environment,
+    }
+
+
 def test_commit_boundary_helper_is_required(tmp_path):
     if not SCRIPT.is_file():
         pytest.fail("E1_COMMIT_BOUNDARY_HELPER_MISSING")
@@ -104,6 +116,54 @@ def test_commit_boundary_helper_rejects_a_pre_staged_file_without_unstaging_it(t
     assert _git(repository, "diff", "--cached", "--name-only").stdout.strip() == "extra.txt"
 
 
+def test_commit_boundary_helper_rejects_cached_whitespace_without_unstaging_it(tmp_path):
+    repository = _repository(tmp_path)
+    parent = _git(repository, "rev-parse", "HEAD").stdout.strip()
+    (repository / "tracked.txt").write_text("trailing whitespace  \n", encoding="utf-8")
+
+    result = _invoke(repository, parent, ["tracked.txt"])
+
+    assert result.returncode != 0
+    assert _git(repository, "rev-parse", "HEAD").stdout.strip() == parent
+    assert _git(repository, "diff", "--cached", "--name-only").stdout.strip() == "tracked.txt"
+
+
+def test_commit_boundary_helper_fails_closed_when_commit_tree_fails(tmp_path):
+    repository = _repository(tmp_path)
+    parent = _git(repository, "rev-parse", "HEAD").stdout.strip()
+    (repository / "tracked.txt").write_text("changed\n", encoding="utf-8")
+    environment = _git_shim(
+        tmp_path,
+        "@echo off\r\n"
+        "if \"%1\"==\"commit-tree\" exit /b 73\r\n"
+        "\"%E1_REAL_GIT%\" %*\r\n",
+    )
+
+    result = _invoke(repository, parent, ["tracked.txt"], extra_env=environment)
+
+    assert result.returncode != 0
+    assert "commit object creation failed" in result.stderr
+    assert _git(repository, "rev-parse", "HEAD").stdout.strip() == parent
+
+
+def test_commit_boundary_helper_rejects_a_malformed_created_sha(tmp_path):
+    repository = _repository(tmp_path)
+    parent = _git(repository, "rev-parse", "HEAD").stdout.strip()
+    (repository / "tracked.txt").write_text("changed\n", encoding="utf-8")
+    environment = _git_shim(
+        tmp_path,
+        "@echo off\r\n"
+        "if \"%1\"==\"commit-tree\" ( echo malformed-sha & exit /b 0 )\r\n"
+        "\"%E1_REAL_GIT%\" %*\r\n",
+    )
+
+    result = _invoke(repository, parent, ["tracked.txt"], extra_env=environment)
+
+    assert result.returncode != 0
+    assert "commit-tree did not return a new 40-hex SHA" in result.stderr
+    assert _git(repository, "rev-parse", "HEAD").stdout.strip() == parent
+
+
 def test_commit_boundary_helper_rejects_moved_parent_and_unchanged_files(tmp_path):
     repository = _repository(tmp_path)
     parent = _git(repository, "rev-parse", "HEAD").stdout.strip()
@@ -116,6 +176,53 @@ def test_commit_boundary_helper_rejects_moved_parent_and_unchanged_files(tmp_pat
 
     assert moved.returncode != 0
     assert unchanged.returncode != 0
+
+
+def test_commit_boundary_helper_rejects_a_post_cas_head_move(tmp_path):
+    repository = _repository(tmp_path)
+    parent = _git(repository, "rev-parse", "HEAD").stdout.strip()
+    (repository / "tracked.txt").write_text("changed\n", encoding="utf-8")
+    tree = _git(repository, "write-tree").stdout.strip()
+    other = _git(repository, "commit-tree", tree, "-p", parent, "-m", "post-cas move").stdout.strip()
+    environment = _git_shim(
+        tmp_path,
+        "@echo off\r\n"
+        "if \"%1\"==\"update-ref\" (\r\n"
+        "  \"%E1_REAL_GIT%\" %*\r\n"
+        "  \"%E1_REAL_GIT%\" update-ref %2 %E1_OTHER_SHA%\r\n"
+        "  exit /b %ERRORLEVEL%\r\n"
+        ")\r\n"
+        "\"%E1_REAL_GIT%\" %*\r\n",
+        E1_OTHER_SHA=other,
+    )
+
+    result = _invoke(repository, parent, ["tracked.txt"], extra_env=environment)
+
+    assert result.returncode != 0
+    assert "branch moved after compare-and-swap" in result.stderr
+    assert _git(repository, "rev-parse", "HEAD").stdout.strip() == other
+
+
+def test_commit_boundary_helper_rejects_a_multiple_parent_created_commit(tmp_path):
+    repository = _repository(tmp_path)
+    parent = _git(repository, "rev-parse", "HEAD").stdout.strip()
+    (repository / "tracked.txt").write_text("changed\n", encoding="utf-8")
+    tree = _git(repository, "write-tree").stdout.strip()
+    other = _git(repository, "commit-tree", tree, "-p", parent, "-m", "side").stdout.strip()
+    merge = _git(repository, "commit-tree", tree, "-p", parent, "-p", other, "-m", "merge").stdout.strip()
+    environment = _git_shim(
+        tmp_path,
+        "@echo off\r\n"
+        "if \"%1\"==\"commit-tree\" ( echo %E1_MERGE_SHA% & exit /b 0 )\r\n"
+        "\"%E1_REAL_GIT%\" %*\r\n",
+        E1_MERGE_SHA=merge,
+    )
+
+    result = _invoke(repository, parent, ["tracked.txt"], extra_env=environment)
+
+    assert result.returncode != 0
+    assert "single-parent child" in result.stderr
+    assert _git(repository, "rev-parse", "HEAD").stdout.strip() == merge
 
 
 def test_commit_boundary_helper_compare_and_swap_rejects_an_actual_concurrent_ref_move(tmp_path):

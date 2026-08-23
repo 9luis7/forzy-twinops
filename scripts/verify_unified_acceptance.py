@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 import re
+import stat
 import subprocess
 import sys
 import tempfile
@@ -495,16 +496,31 @@ def export_local_causal_manifest(args: argparse.Namespace) -> None:
     root = Path.cwd().resolve()
     source = Path(args.source_result)
     guarded = root / "tmp" / "twinops-admin-results"
-    if source.is_symlink() or source.parent.resolve() != guarded.resolve() or not RESULT_NAME.fullmatch(source.name):
+    if ".." in source.parts or not source.is_absolute() or source.parent != guarded or not RESULT_NAME.fullmatch(source.name):
         raise LedgerError("source result must be a direct guarded local-causal result")
     try:
-        descriptor = os.open(source, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
-        with os.fdopen(descriptor, "rb") as handle:
-            source_bytes = handle.read()
-            source_stat = os.fstat(handle.fileno())
+        before_open = os.lstat(source)
     except OSError as error:
         raise LedgerError("source result is not a guarded regular file") from error
-    if not os.path.isfile(source) or source_stat.st_size != len(source_bytes):
+    if stat.S_ISLNK(before_open.st_mode) or (getattr(before_open, "st_file_attributes", 0) & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)):
+        raise LedgerError("source result must be a direct guarded local-causal result")
+    if not stat.S_ISREG(before_open.st_mode):
+        raise LedgerError("source result is not a guarded regular file")
+    descriptor = None
+    try:
+        descriptor = os.open(source, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        source_stat = os.fstat(descriptor)
+        if not stat.S_ISREG(source_stat.st_mode) or (before_open.st_dev, before_open.st_ino) != (source_stat.st_dev, source_stat.st_ino):
+            raise LedgerError("source result is not a guarded regular file")
+        with os.fdopen(descriptor, "rb") as handle:
+            descriptor = None
+            source_bytes = handle.read()
+    except OSError as error:
+        raise LedgerError("source result is not a guarded regular file") from error
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+    if source_stat.st_size != len(source_bytes):
         raise LedgerError("source result is not a guarded regular file")
     not_before = _parse_rfc3339(args.source_not_before)
     if source_stat.st_mtime < not_before.timestamp():
