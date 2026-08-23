@@ -12,6 +12,7 @@ import pytest
 
 
 HUMAN_ONLY = {"AC-18", "AC-28"}
+FROZEN_SPEC_SHA256 = "20629d860f19a212bc2b941d6270e2316c747a0b85c473f0b51bbee6106e3a44"
 OWNER_CRITERIA = {
     "A": ("AC-06",),
     "B": ("AC-13", "AC-14"),
@@ -80,8 +81,55 @@ def _isolated_git(directory, *arguments):
 
 def _copy_ledger(tmp_path):
     destination = tmp_path / "unified-twin-acceptance-v1.json"
-    destination.write_bytes(LEDGER.read_bytes())
+    criteria = []
+    for number in range(1, 29):
+        criterion_id = f"AC-{number:02d}"
+        owner = next(plan for plan, values in OWNER_CRITERIA.items() if criterion_id in values)
+        if criterion_id == "AC-06":
+            gate, allowed = "database", ["database"]
+        elif criterion_id in {"AC-12", "AC-24"}:
+            gate, allowed = "preview", ["preview"]
+        elif criterion_id in HUMAN_ONLY:
+            gate, allowed = "human", ["human"]
+        else:
+            gate, allowed = "local", ["automated"]
+        criteria.append({
+            "criterionId": criterion_id, "ownerPlan": owner, "gate": gate,
+            "allowedEvidenceKinds": allowed, "status": "pending", "evidenceKind": None,
+            "evidenceRefs": [], "verifiedCodeCommit": None,
+        })
+    ledger = {
+        "schemaVersion": "unified-twin-acceptance-v1", "specSha256": FROZEN_SPEC_SHA256,
+        "criteria": criteria,
+        "plans": {
+            plan: {
+                "status": "pending", "verifiedCodeCommit": None, "reviewVerdict": None,
+                "findingIds": [], "evidenceRefs": [],
+            }
+            for plan in "ABCDE"
+        },
+        "findings": {},
+    }
+    destination.write_text(json.dumps(ledger, sort_keys=True, indent=2) + "\n", encoding="utf-8")
     return destination
+
+
+def test_test_ledger_fixture_is_initial_and_does_not_inherit_tracked_e_review_state(tmp_path):
+    ledger = _copy_ledger(tmp_path)
+
+    report = _verifier_module().verify_acceptance(ledger)
+
+    assert not report.findings
+    assert all(
+        plan.status == "pending" and plan.verified_code_commit is None and plan.review_verdict is None
+        and not plan.finding_ids and not plan.evidence_refs
+        for plan in report.plans.values()
+    )
+    assert all(
+        entry.status == "pending" and entry.evidence_kind is None
+        and entry.verified_code_commit is None and not entry.evidence_refs
+        for entry in report.entries.values()
+    )
 
 
 def _run_verifier(*arguments, cwd=WORKTREE):
