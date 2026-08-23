@@ -5,7 +5,6 @@ import os
 import shutil
 import subprocess
 import sys
-from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -25,6 +24,7 @@ OWNER_CRITERIA = {
 }
 WORKTREE = Path(__file__).resolve().parents[3]
 LEDGER = WORKTREE / "docs" / "verification" / "unified-twin-acceptance-v1.json"
+SHARED_CAUSAL_ARTIFACT = WORKTREE / "tmp" / "twinops-admin-results" / "build-assessments-local-causal-pytest-test_export_local_causal_manif0.json"
 
 
 def _verifier_module():
@@ -305,11 +305,18 @@ def test_every_ledger_mutation_reproduces_the_markdown_from_json(tmp_path):
 
 
 def test_export_local_causal_manifest_accepts_only_a_fresh_closed_local_result(tmp_path):
-    source_dir = WORKTREE / "tmp" / "twinops-admin-results"
-    source_dir.mkdir(parents=True, exist_ok=True)
-    nonce = f"pytest-{tmp_path.name}"
-    source = source_dir / f"build-assessments-local-causal-{nonce}.json"
-    not_before = datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    isolated = tmp_path / "isolated"
+    isolated.mkdir()
+    _isolated_git(isolated, "init", "-q")
+    _isolated_git(isolated, "config", "user.email", "e1@example.invalid")
+    _isolated_git(isolated, "config", "user.name", "E1 Test")
+    (isolated / "anchor.txt").write_text("anchor\n", encoding="utf-8")
+    _isolated_git(isolated, "add", "anchor.txt")
+    _isolated_git(isolated, "commit", "-qm", "anchor")
+    isolated_sha = _isolated_git(isolated, "rev-parse", "HEAD").stdout.strip()
+    source_dir = isolated / "tmp" / "twinops-admin-results"
+    source_dir.mkdir(parents=True)
+    source = source_dir / "build-assessments-local-causal-fixture.json"
     source.write_text(json.dumps({
         "schemaVersion": "1.0", "kind": "build-assessments", "environment": "local",
         "mode": "dry-run", "writesPerformed": 0, "batchId": "batch-1",
@@ -318,16 +325,22 @@ def test_export_local_causal_manifest_accepts_only_a_fresh_closed_local_result(t
         "validatedAnchorCount": 2, "validatedEpisodeCount": 2,
         "anchorInvariantViolationCount": 0, "episodeInvariantViolationCount": 0,
     }), encoding="utf-8")
-    output = tmp_path / "manifest.json"
-    _run_ok(
-        "export-local-causal-manifest", "--source-result", str(source), "--source-not-before", not_before,
-        "--reviewed-code-commit", _git_ref(), "--expected-batch-id", "batch-1",
-        "--expected-artifact-sha256", "a" * 64, "--expected-report-sha256", "b" * 64,
-        "--expected-config-sha256", "c" * 64, "--output", str(output),
-    )
+    output = isolated / "manifest.json"
+    command = [sys.executable, str(WORKTREE / "scripts" / "verify_unified_acceptance.py"), "export-local-causal-manifest", "--source-result", str(source), "--source-not-before", "2000-01-01T00:00:00Z", "--reviewed-code-commit", isolated_sha, "--expected-batch-id", "batch-1", "--expected-artifact-sha256", "a" * 64, "--expected-report-sha256", "b" * 64, "--expected-config-sha256", "c" * 64, "--output", str(output)]
+    result = subprocess.run(command, cwd=isolated, capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
     manifest = json.loads(output.read_text(encoding="utf-8"))
     assert manifest["kind"] == "phase-b-local-causal-manifest"
     assert manifest["assessmentCount"] == 2
+    outside = isolated / "outside.json"
+    outside.write_bytes(source.read_bytes())
+    outside_result = subprocess.run(command[:command.index("--source-result") + 1] + [str(outside)] + command[command.index("--source-result") + 2:], cwd=isolated, capture_output=True, text=True)
+    assert outside_result.returncode != 0
+    assert "guarded" in outside_result.stderr
+
+
+def test_causal_manifest_tests_leave_no_artifact_in_the_shared_worktree():
+    assert not SHARED_CAUSAL_ARTIFACT.exists()
 
 
 def test_rejected_closure_and_render_failure_leave_ledger_and_markdown_byte_identical(tmp_path, monkeypatch):
@@ -388,28 +401,3 @@ def test_criterion_transitions_preserve_prior_evidence_and_mutation_markdown(tmp
     raw = next(entry for entry in json.loads(ledger.read_text())["criteria"] if entry["criterionId"] == "AC-06")
     assert raw["evidenceRefs"] == ["first", "second"]
     assert ledger.with_suffix(".md").read_bytes() == _verifier_module().render_markdown(_verifier_module().verify_acceptance(ledger)).encode()
-
-
-def test_causal_manifest_reads_one_guarded_regular_file_in_an_isolated_repository(tmp_path):
-    isolated = tmp_path / "isolated"
-    isolated.mkdir()
-    _isolated_git(isolated, "init", "-q")
-    _isolated_git(isolated, "config", "user.email", "e1@example.invalid")
-    _isolated_git(isolated, "config", "user.name", "E1 Test")
-    (isolated / "anchor.txt").write_text("anchor\n", encoding="utf-8")
-    _isolated_git(isolated, "add", "anchor.txt")
-    _isolated_git(isolated, "commit", "-qm", "anchor")
-    isolated_sha = _isolated_git(isolated, "rev-parse", "HEAD").stdout.strip()
-    guarded = isolated / "tmp" / "twinops-admin-results"
-    guarded.mkdir(parents=True)
-    source = guarded / "build-assessments-local-causal-fixture.json"
-    payload = {"schemaVersion":"1.0","kind":"build-assessments","environment":"local","mode":"dry-run","writesPerformed":0,"batchId":"batch-1","artifactSha256":"a"*64,"reportSha256":"b"*64,"configSha256":"c"*64,"assessmentManifestSha256":"d"*64,"assessmentCount":1,"candidateCount":1,"validatedAnchorCount":1,"validatedEpisodeCount":1,"anchorInvariantViolationCount":0,"episodeInvariantViolationCount":0}
-    source.write_text(json.dumps(payload), encoding="utf-8")
-    output = isolated / "manifest.json"
-    result = subprocess.run([sys.executable, str(WORKTREE / "scripts" / "verify_unified_acceptance.py"), "export-local-causal-manifest", "--source-result", str(source), "--source-not-before", "2000-01-01T00:00:00Z", "--reviewed-code-commit", isolated_sha, "--expected-batch-id", "batch-1", "--expected-artifact-sha256", "a"*64, "--expected-report-sha256", "b"*64, "--expected-config-sha256", "c"*64, "--output", str(output)], cwd=isolated, capture_output=True, text=True)
-    assert result.returncode == 0, result.stderr
-    outside = isolated / "outside.json"
-    outside.write_text(json.dumps(payload), encoding="utf-8")
-    replay = subprocess.run([sys.executable, str(WORKTREE / "scripts" / "verify_unified_acceptance.py"), "export-local-causal-manifest", "--source-result", str(outside), "--source-not-before", "2000-01-01T00:00:00Z", "--reviewed-code-commit", isolated_sha, "--expected-batch-id", "batch-1", "--expected-artifact-sha256", "a"*64, "--expected-report-sha256", "b"*64, "--expected-config-sha256", "c"*64, "--output", str(output)], cwd=isolated, capture_output=True, text=True)
-    assert replay.returncode != 0
-    assert "guarded" in replay.stderr
