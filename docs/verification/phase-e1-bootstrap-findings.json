@@ -1,101 +1,11 @@
 {
   "schemaVersion": "finding-review-v1",
   "plan": "E",
-  "reviewedSha": "a57ff73ef5ad53307d8b852a7072333ded570f56",
+  "reviewedSha": "82cb338a0dbd18bce3dd625909c5dc0250ccdeb2",
   "verdict": {
     "critical": 0,
     "important": 0,
     "minor": 0
   },
-  "findings": [
-    {
-      "findingId": "E1-C-001",
-      "severity": "critical",
-      "status": "fixed",
-      "title": "Rejected criterion mutations can corrupt the sole tracked ledger",
-      "evidenceRefs": [
-        "scripts/verify_unified_acceptance.py:300-311",
-        "services/twinops/tests/test_verify_unified_acceptance.py:493-527"
-      ],
-      "resolvedSha": "a57ff73ef5ad53307d8b852a7072333ded570f56"
-    },
-    {
-      "findingId": "E1-I-001",
-      "severity": "important",
-      "status": "fixed",
-      "title": "Ledger verification does not reconcile review verdicts with cumulative findings and review identity",
-      "evidenceRefs": [
-        "scripts/verify_unified_acceptance.py:359-415",
-        "services/twinops/tests/test_verify_unified_acceptance.py:267-301"
-      ],
-      "resolvedSha": "a57ff73ef5ad53307d8b852a7072333ded570f56"
-    },
-    {
-      "findingId": "E1-I-002",
-      "severity": "important",
-      "status": "fixed",
-      "title": "Causal-manifest source validation is reparse and TOCTOU unsafe",
-      "evidenceRefs": [
-        "scripts/verify_unified_acceptance.py:495-526",
-        "services/twinops/tests/test_verify_unified_acceptance.py:425-481"
-      ],
-      "resolvedSha": "a57ff73ef5ad53307d8b852a7072333ded570f56"
-    },
-    {
-      "findingId": "E1-I-003",
-      "severity": "important",
-      "status": "fixed",
-      "title": "Exact commit helper lacks atomic parent compare-and-swap and can return a moved HEAD",
-      "evidenceRefs": [
-        "scripts/verify_git_commit_boundary.ps1:78-93",
-        "services/twinops/tests/test_git_commit_boundary_script.py:181-242"
-      ],
-      "resolvedSha": "a57ff73ef5ad53307d8b852a7072333ded570f56"
-    },
-    {
-      "findingId": "E1-I-004",
-      "severity": "important",
-      "status": "fixed",
-      "title": "Mandated fail-closed and every-mutation test coverage is missing",
-      "evidenceRefs": [
-        "services/twinops/tests/test_verify_unified_acceptance.py:192-221",
-        "services/twinops/tests/test_verify_unified_acceptance.py:386-407",
-        "services/twinops/tests/test_git_commit_boundary_script.py:119-242"
-      ],
-      "resolvedSha": "a57ff73ef5ad53307d8b852a7072333ded570f56"
-    },
-    {
-      "findingId": "E1-I-005",
-      "severity": "important",
-      "status": "fixed",
-      "title": "Focused causal-manifest test mutates and pollutes the shared worktree",
-      "evidenceRefs": [
-        "services/twinops/tests/test_verify_unified_acceptance.py:425-487",
-        "services/twinops/tests/test_verify_unified_acceptance.py:486-487"
-      ],
-      "resolvedSha": "a57ff73ef5ad53307d8b852a7072333ded570f56"
-    },
-    {
-      "findingId": "E1-I-006",
-      "severity": "important",
-      "status": "fixed",
-      "title": "Review SHA lineage accepts divergent commits and merge-base command errors",
-      "evidenceRefs": [
-        "scripts/verify_unified_acceptance.py:359-370",
-        "services/twinops/tests/test_verify_unified_acceptance.py:267-301"
-      ],
-      "resolvedSha": "a57ff73ef5ad53307d8b852a7072333ded570f56"
-    },
-    {
-      "findingId": "E1-I-007",
-      "severity": "important",
-      "status": "fixed",
-      "title": "Criterion updates erase prior evidence references",
-      "evidenceRefs": [
-        "scripts/verify_unified_acceptance.py:475-480",
-        "services/twinops/tests/test_verify_unified_acceptance.py:553-563"
-      ],
-      "resolvedSha": "a57ff73ef5ad53307d8b852a7072333ded570f56"
-    }
-  ]
+  "findings": []
 }

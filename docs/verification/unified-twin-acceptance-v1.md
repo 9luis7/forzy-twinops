@@ -11,7 +11,7 @@
 | B | pending | pending | pending |
 | C | pending | pending | pending |
 | D | pending | pending | pending |
-| E | in_progress | a57ff73ef5ad53307d8b852a7072333ded570f56 | 0/0/0 |
+| E | in_progress | 82cb338a0dbd18bce3dd625909c5dc0250ccdeb2 | 0/0/0 |
 
 ## Acceptance criteria
 
