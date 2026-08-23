@@ -1,6 +1,8 @@
 import importlib
 import importlib.util
 import json
+import os
+import shutil
 import subprocess
 import sys
 from datetime import UTC, datetime
@@ -69,6 +71,10 @@ def _git_ref(ref="HEAD"):
     return subprocess.check_output(
         ["git", "rev-parse", ref], cwd=WORKTREE, text=True
     ).strip()
+
+
+def _isolated_git(directory, *arguments):
+    return subprocess.run(["git", *arguments], cwd=directory, check=True, capture_output=True, text=True)
 
 
 def _copy_ledger(tmp_path):
@@ -322,3 +328,88 @@ def test_export_local_causal_manifest_accepts_only_a_fresh_closed_local_result(t
     manifest = json.loads(output.read_text(encoding="utf-8"))
     assert manifest["kind"] == "phase-b-local-causal-manifest"
     assert manifest["assessmentCount"] == 2
+
+
+def test_rejected_closure_and_render_failure_leave_ledger_and_markdown_byte_identical(tmp_path, monkeypatch):
+    ledger = _copy_ledger(tmp_path)
+    markdown = ledger.with_suffix(".md")
+    _run_ok("render", "--ledger", str(ledger), "--output", str(markdown))
+    before_json, before_markdown = ledger.read_bytes(), markdown.read_bytes()
+    rejected = _run_verifier(
+        "update-criterion", "--ledger", str(ledger), "--criterion", "AC-06", "--status", "passed",
+        "--evidence-kind", "database", "--evidence-ref", "db-proof",
+    )
+    assert rejected.returncode != 0
+    assert ledger.read_bytes() == before_json
+    assert markdown.read_bytes() == before_markdown
+
+    verifier = _verifier_module()
+    monkeypatch.setattr(verifier, "render_markdown", lambda _report: (_ for _ in ()).throw(OSError("render failed")))
+    with pytest.raises(OSError, match="render failed"):
+        verifier.update_criterion(ledger, "AC-06", "pending", None, None, None)
+    assert ledger.read_bytes() == before_json
+    assert markdown.read_bytes() == before_markdown
+
+
+@pytest.mark.parametrize("mutation", ["bool_verdict", "mismatched_verdict", "uncoupled_identity", "unknown_commit"])
+def test_verification_rejects_invalid_review_verdict_and_identity_contract(tmp_path, mutation):
+    ledger = _copy_ledger(tmp_path)
+    data = json.loads(ledger.read_text(encoding="utf-8"))
+    plan = data["plans"]["A"]
+    if mutation == "bool_verdict":
+        plan["verifiedCodeCommit"] = _git_ref()
+        plan["reviewVerdict"] = {"critical": True, "important": 0, "minor": 0}
+        plan["status"] = "in_progress"
+    elif mutation == "mismatched_verdict":
+        plan["verifiedCodeCommit"] = _git_ref()
+        plan["reviewVerdict"] = {"critical": 1, "important": 0, "minor": 0}
+        plan["status"] = "in_progress"
+    elif mutation == "uncoupled_identity":
+        plan["verifiedCodeCommit"] = _git_ref()
+        plan["reviewVerdict"] = None
+        plan["status"] = "in_progress"
+    else:
+        plan["verifiedCodeCommit"] = "f" * 40
+        plan["reviewVerdict"] = {"critical": 0, "important": 0, "minor": 0}
+        plan["status"] = "in_progress"
+    ledger.write_text(json.dumps(data), encoding="utf-8")
+    with pytest.raises(_verifier_module().LedgerError):
+        _verifier_module().verify_acceptance(ledger)
+
+
+def test_criterion_transitions_preserve_prior_evidence_and_mutation_markdown(tmp_path):
+    ledger = _copy_ledger(tmp_path)
+    sha = _git_ref()
+    review = _review(tmp_path / "review.json", plan="A", reviewed_sha=sha, verdict={"critical": 0, "important": 0, "minor": 0}, findings=[])
+    _run_ok("ingest-review", "--ledger", str(ledger), "--review-report", str(review))
+    _run_ok("update-criterion", "--ledger", str(ledger), "--criterion", "AC-06", "--status", "passed", "--evidence-kind", "database", "--evidence-ref", "first", "--verified-code-commit", sha)
+    _run_ok("update-criterion", "--ledger", str(ledger), "--criterion", "AC-06", "--status", "pending")
+    _run_ok("update-criterion", "--ledger", str(ledger), "--criterion", "AC-06", "--status", "passed", "--evidence-kind", "database", "--evidence-ref", "second", "--verified-code-commit", sha)
+    raw = next(entry for entry in json.loads(ledger.read_text())["criteria"] if entry["criterionId"] == "AC-06")
+    assert raw["evidenceRefs"] == ["first", "second"]
+    assert ledger.with_suffix(".md").read_bytes() == _verifier_module().render_markdown(_verifier_module().verify_acceptance(ledger)).encode()
+
+
+def test_causal_manifest_reads_one_guarded_regular_file_in_an_isolated_repository(tmp_path):
+    isolated = tmp_path / "isolated"
+    isolated.mkdir()
+    _isolated_git(isolated, "init", "-q")
+    _isolated_git(isolated, "config", "user.email", "e1@example.invalid")
+    _isolated_git(isolated, "config", "user.name", "E1 Test")
+    (isolated / "anchor.txt").write_text("anchor\n", encoding="utf-8")
+    _isolated_git(isolated, "add", "anchor.txt")
+    _isolated_git(isolated, "commit", "-qm", "anchor")
+    isolated_sha = _isolated_git(isolated, "rev-parse", "HEAD").stdout.strip()
+    guarded = isolated / "tmp" / "twinops-admin-results"
+    guarded.mkdir(parents=True)
+    source = guarded / "build-assessments-local-causal-fixture.json"
+    payload = {"schemaVersion":"1.0","kind":"build-assessments","environment":"local","mode":"dry-run","writesPerformed":0,"batchId":"batch-1","artifactSha256":"a"*64,"reportSha256":"b"*64,"configSha256":"c"*64,"assessmentManifestSha256":"d"*64,"assessmentCount":1,"candidateCount":1,"validatedAnchorCount":1,"validatedEpisodeCount":1,"anchorInvariantViolationCount":0,"episodeInvariantViolationCount":0}
+    source.write_text(json.dumps(payload), encoding="utf-8")
+    output = isolated / "manifest.json"
+    result = subprocess.run([sys.executable, str(WORKTREE / "scripts" / "verify_unified_acceptance.py"), "export-local-causal-manifest", "--source-result", str(source), "--source-not-before", "2000-01-01T00:00:00Z", "--reviewed-code-commit", isolated_sha, "--expected-batch-id", "batch-1", "--expected-artifact-sha256", "a"*64, "--expected-report-sha256", "b"*64, "--expected-config-sha256", "c"*64, "--output", str(output)], cwd=isolated, capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    outside = isolated / "outside.json"
+    outside.write_text(json.dumps(payload), encoding="utf-8")
+    replay = subprocess.run([sys.executable, str(WORKTREE / "scripts" / "verify_unified_acceptance.py"), "export-local-causal-manifest", "--source-result", str(outside), "--source-not-before", "2000-01-01T00:00:00Z", "--reviewed-code-commit", isolated_sha, "--expected-batch-id", "batch-1", "--expected-artifact-sha256", "a"*64, "--expected-report-sha256", "b"*64, "--expected-config-sha256", "c"*64, "--output", str(output)], cwd=isolated, capture_output=True, text=True)
+    assert replay.returncode != 0
+    assert "guarded" in replay.stderr

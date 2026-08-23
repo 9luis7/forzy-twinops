@@ -65,14 +65,25 @@ function Invoke-ExactGitCommit {
         throw 'staged scope is not the exact changed allowlist'
     }
     $null = Invoke-CheckedGit -Arguments @('diff', '--cached', '--check') -FailureMessage 'cached diff check failed'
-    $beforeCommit = Get-ExactGitHead
-    if ($beforeCommit -cne $ExpectedParent) {
-        throw 'expected parent moved before commit'
+    $branchRef = Invoke-CheckedGit -Arguments @('symbolic-ref', '-q', 'HEAD') -FailureMessage 'HEAD must be attached to a symbolic branch'
+    $branchRef = ($branchRef -join '').Trim()
+    if ($branchRef -notmatch '^refs/heads/.+') {
+        throw 'HEAD is not an attached branch ref'
     }
-    $null = Invoke-CheckedGit -Arguments @('commit', '-m', $Message) -FailureMessage 'exact commit failed'
+    $tree = Invoke-CheckedGit -Arguments @('write-tree') -FailureMessage 'tree write failed'
+    $tree = ($tree -join '').Trim()
+    if ($tree -notmatch '^[0-9a-f]{40}$') {
+        throw 'write-tree did not return one 40-hex SHA'
+    }
+    $created = Invoke-CheckedGit -Arguments @('commit-tree', $tree, '-p', $ExpectedParent, '-m', $Message) -FailureMessage 'commit object creation failed'
+    $created = ($created -join '').Trim()
+    if ($created -notmatch '^[0-9a-f]{40}$' -or $created -ceq $ExpectedParent) {
+        throw 'commit-tree did not return a new 40-hex SHA'
+    }
+    $null = Invoke-CheckedGit -Arguments @('update-ref', $branchRef, $created, $ExpectedParent) -FailureMessage 'branch compare-and-swap failed'
     $newHead = Get-ExactGitHead
-    if ($newHead -ceq $ExpectedParent) {
-        throw 'commit did not produce a new HEAD'
+    if ($newHead -cne $created) {
+        throw 'branch moved after compare-and-swap'
     }
     $parents = Invoke-CheckedGit -Arguments @('rev-list', '--parents', '-n', '1', $newHead) -FailureMessage 'new commit parent lookup failed'
     $parentParts = (($parents -join ' ').Trim() -split '\s+')

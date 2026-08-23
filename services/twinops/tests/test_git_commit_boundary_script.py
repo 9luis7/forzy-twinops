@@ -1,5 +1,6 @@
 import subprocess
 import os
+import shutil
 from pathlib import Path
 
 import pytest
@@ -27,7 +28,7 @@ def _repository(tmp_path):
     return repository
 
 
-def _invoke(repository, expected_parent, paths, message="test commit"):
+def _invoke(repository, expected_parent, paths, message="test commit", extra_env=None):
     escaped_paths = ", ".join(f"'{path}'" for path in paths)
     command = (
         ". $env:E1_HELPER_SCRIPT; "
@@ -39,7 +40,7 @@ def _invoke(repository, expected_parent, paths, message="test commit"):
         check=False,
         capture_output=True,
         text=True,
-        env={**os.environ, "E1_HELPER_SCRIPT": str(SCRIPT)},
+        env={**os.environ, "E1_HELPER_SCRIPT": str(SCRIPT), **(extra_env or {})},
     )
 
 
@@ -115,3 +116,31 @@ def test_commit_boundary_helper_rejects_moved_parent_and_unchanged_files(tmp_pat
 
     assert moved.returncode != 0
     assert unchanged.returncode != 0
+
+
+def test_commit_boundary_helper_compare_and_swap_rejects_an_actual_concurrent_ref_move(tmp_path):
+    repository = _repository(tmp_path)
+    parent = _git(repository, "rev-parse", "HEAD").stdout.strip()
+    (repository / "tracked.txt").write_text("changed\n", encoding="utf-8")
+    tree = _git(repository, "write-tree").stdout.strip()
+    other = _git(repository, "commit-tree", tree, "-p", parent, "-m", "concurrent").stdout.strip()
+    shim_dir = tmp_path / "git-shim"
+    shim_dir.mkdir()
+    real_git = shutil.which("git")
+    (shim_dir / "git.cmd").write_text(
+        "@echo off\r\n"
+        "if \"%1\"==\"update-ref\" (\r\n"
+        "  \"%E1_REAL_GIT%\" update-ref %2 %E1_OTHER_SHA% %4\r\n"
+        ")\r\n"
+        "\"%E1_REAL_GIT%\" %*\r\n",
+        encoding="utf-8",
+    )
+
+    result = _invoke(repository, parent, ["tracked.txt"], extra_env={
+        "PATH": f"{shim_dir}{os.pathsep}{os.environ['PATH']}",
+        "E1_REAL_GIT": real_git,
+        "E1_OTHER_SHA": other,
+    })
+
+    assert result.returncode != 0
+    assert _git(repository, "rev-parse", "HEAD").stdout.strip() == other

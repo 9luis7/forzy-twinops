@@ -146,7 +146,7 @@ def _parse_entry(raw: object, criterion_id: str) -> AcceptanceEntry:
     if raw["status"] == "passed":
         if evidence_kind not in allowed or not raw["evidenceRefs"] or code_sha is None:
             raise LedgerError(f"criterion {criterion_id} passed without valid evidence")
-    elif evidence_kind is not None or raw["evidenceRefs"] or code_sha is not None:
+    elif evidence_kind is not None or code_sha is not None:
         raise LedgerError(f"criterion {criterion_id} non-passed state carries closure evidence")
     return AcceptanceEntry(
         criterion_id=criterion_id, owner_plan=owner, gate=gate,
@@ -223,7 +223,7 @@ def verify_acceptance(path: Path) -> AcceptanceReport:
             if not isinstance(verdict, dict):
                 raise LedgerError(f"plan {plan} verdict must be an object")
             _ensure_keys(verdict, {"critical", "important", "minor"}, f"plan {plan} verdict")
-            if not all(isinstance(verdict[key], int) and verdict[key] >= 0 for key in verdict):
+            if not all(type(verdict[key]) is int and verdict[key] >= 0 for key in verdict):
                 raise LedgerError(f"plan {plan} verdict is invalid")
             parsed_verdict = (verdict["critical"], verdict["important"], verdict["minor"])
         ids = value["findingIds"]
@@ -237,6 +237,14 @@ def verify_acceptance(path: Path) -> AcceptanceReport:
         derived = _derive_plan_status(plan, entries, findings, code_sha)
         if value["status"] not in PLAN_STATUSES or value["status"] != derived:
             raise LedgerError(f"plan {plan} status does not match cumulative ledger state")
+        if (code_sha is None) != (parsed_verdict is None):
+            raise LedgerError(f"plan {plan} review SHA and verdict must both be null or both be set")
+        if code_sha is not None and not _git_commit_exists(code_sha):
+            raise LedgerError(f"plan {plan} review SHA is not a commit")
+        if parsed_verdict is not None and plan != "E":
+            counts = tuple(sum(finding.plan == plan and finding.status == "open" and finding.severity == severity for finding in findings.values()) for severity in ("critical", "important", "minor"))
+            if counts != parsed_verdict:
+                raise LedgerError(f"plan {plan} verdict does not match cumulative open findings")
         plans[plan] = PlanLedger(plan, derived, code_sha, parsed_verdict, tuple(ids), tuple(refs))
     for entry in entries.values():
         if entry.status == "passed" and entry.verified_code_commit != plans[entry.owner_plan].verified_code_commit:
@@ -290,11 +298,29 @@ def _atomic_write(path: Path, data: bytes) -> None:
 
 def _write_mutated_ledger(path: Path, ledger: dict) -> None:
     encoded = _canonical_json(ledger)
-    _atomic_write(path, encoded)
-    report = verify_acceptance(path)
+    with tempfile.NamedTemporaryFile(dir=path.parent, suffix=".json", delete=False) as candidate:
+        candidate.write(encoded)
+        candidate.flush()
+        os.fsync(candidate.fileno())
+        candidate_path = Path(candidate.name)
+    try:
+        report = verify_acceptance(candidate_path)
+    finally:
+        if candidate_path.exists():
+            candidate_path.unlink()
     rendered = render_markdown(report).encode("utf-8")
-    _atomic_write(path.with_suffix(".md"), rendered)
-    if path.with_suffix(".md").read_bytes() != rendered:
+    markdown_path = path.with_suffix(".md")
+    before_json = path.read_bytes()
+    before_markdown = markdown_path.read_bytes() if markdown_path.exists() else None
+    try:
+        _atomic_write(path, encoded)
+        _atomic_write(markdown_path, rendered)
+    except Exception:
+        _atomic_write(path, before_json)
+        if before_markdown is not None:
+            _atomic_write(markdown_path, before_markdown)
+        raise
+    if markdown_path.read_bytes() != rendered:
         raise LedgerError("rendered Markdown could not be byte-verified")
 
 
@@ -314,7 +340,7 @@ def _review_input(path: Path) -> dict:
     if not isinstance(review["verdict"], dict):
         raise LedgerError("review verdict must be an object")
     _ensure_keys(review["verdict"], {"critical", "important", "minor"}, "review verdict")
-    if not all(isinstance(review["verdict"][key], int) and review["verdict"][key] >= 0 for key in review["verdict"]):
+    if not all(type(review["verdict"][key]) is int and review["verdict"][key] >= 0 for key in review["verdict"]):
         raise LedgerError("review verdict is invalid")
     if not isinstance(review["findings"], list):
         raise LedgerError("review findings must be a list")
@@ -336,8 +362,11 @@ def _merge_review(ledger: dict, review: dict, *, evidence_only: bool) -> None:
     reviewed_sha = review["reviewedSha"]
     if not evidence_only:
         if current_sha is not None:
-            if reviewed_sha == current_sha or subprocess.run(["git", "merge-base", "--is-ancestor", reviewed_sha, current_sha], capture_output=True, check=False).returncode == 0:
+            ancestry = subprocess.run(["git", "merge-base", "--is-ancestor", current_sha, reviewed_sha], capture_output=True, check=False)
+            if reviewed_sha == current_sha or ancestry.returncode == 1:
                 raise LedgerError("stale reviewed SHA")
+            if ancestry.returncode != 0:
+                raise LedgerError("could not verify review SHA lineage")
         current["verifiedCodeCommit"] = reviewed_sha
         current["reviewVerdict"] = dict(review["verdict"])
     seen: set[str] = set()
@@ -438,14 +467,14 @@ def update_criterion(ledger_path: Path, criterion: str, status: str, evidence_ki
     if status == "passed":
         if evidence_kind not in entry.allowed_evidence_kinds:
             raise LedgerError("evidence kind is not allowed for this criterion")
-        if not evidence_ref or verified_code_commit != expected_sha:
+        if expected_sha is None or not evidence_ref or verified_code_commit != expected_sha:
             raise LedgerError("criterion evidence must bind to its owner code SHA")
     elif evidence_kind is not None or evidence_ref is not None or verified_code_commit is not None:
         raise LedgerError("non-passed criteria cannot carry closure evidence")
     raw_entry = next(item for item in ledger["criteria"] if item["criterionId"] == criterion)
     raw_entry.update({
         "status": status, "evidenceKind": evidence_kind if status == "passed" else None,
-        "evidenceRefs": [evidence_ref] if status == "passed" else [],
+        "evidenceRefs": list(dict.fromkeys([*raw_entry["evidenceRefs"], *([evidence_ref] if status == "passed" else [])])),
         "verifiedCodeCommit": verified_code_commit if status == "passed" else None,
     })
     _rederive_plan(ledger, entry.owner_plan)
@@ -464,16 +493,30 @@ def _parse_rfc3339(value: str) -> datetime:
 
 def export_local_causal_manifest(args: argparse.Namespace) -> None:
     root = Path.cwd().resolve()
-    source = Path(args.source_result).resolve()
-    guarded = (root / "tmp" / "twinops-admin-results").resolve()
-    if source.parent != guarded or source.is_symlink() or not RESULT_NAME.fullmatch(source.name):
+    source = Path(args.source_result)
+    guarded = root / "tmp" / "twinops-admin-results"
+    if source.is_symlink() or source.parent.resolve() != guarded.resolve() or not RESULT_NAME.fullmatch(source.name):
         raise LedgerError("source result must be a direct guarded local-causal result")
+    try:
+        descriptor = os.open(source, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        with os.fdopen(descriptor, "rb") as handle:
+            source_bytes = handle.read()
+            source_stat = os.fstat(handle.fileno())
+    except OSError as error:
+        raise LedgerError("source result is not a guarded regular file") from error
+    if not os.path.isfile(source) or source_stat.st_size != len(source_bytes):
+        raise LedgerError("source result is not a guarded regular file")
     not_before = _parse_rfc3339(args.source_not_before)
-    if source.stat().st_mtime < not_before.timestamp():
+    if source_stat.st_mtime < not_before.timestamp():
         raise LedgerError("source result is stale")
     if not GIT_SHA.fullmatch(args.reviewed_code_commit) or not _git_commit_exists(args.reviewed_code_commit):
         raise LedgerError("reviewed code commit must exist")
-    result = _load_json(source)
+    try:
+        result = json.loads(source_bytes)
+    except json.JSONDecodeError as error:
+        raise LedgerError("local causal result is invalid JSON") from error
+    if not isinstance(result, dict):
+        raise LedgerError("local causal result is invalid JSON")
     expected_keys = {
         "schemaVersion", "kind", "environment", "mode", "writesPerformed", "batchId", "artifactSha256", "reportSha256", "configSha256", "assessmentManifestSha256", "assessmentCount", "candidateCount", "validatedAnchorCount", "validatedEpisodeCount", "anchorInvariantViolationCount", "episodeInvariantViolationCount",
     }
@@ -491,7 +534,7 @@ def export_local_causal_manifest(args: argparse.Namespace) -> None:
         raise LedgerError("local causal result violates causal count invariants")
     output = {
         "schemaVersion": "1.0", "kind": "phase-b-local-causal-manifest", "reviewedCodeCommit": args.reviewed_code_commit,
-        "batchId": result["batchId"], "artifactSha256": result["artifactSha256"], "reportSha256": result["reportSha256"], "configSha256": result["configSha256"], "assessmentManifestSha256": result["assessmentManifestSha256"], "assessmentCount": result["assessmentCount"], "candidateCount": result["candidateCount"], "validatedAnchorCount": result["validatedAnchorCount"], "validatedEpisodeCount": result["validatedEpisodeCount"], "anchorInvariantViolationCount": 0, "episodeInvariantViolationCount": 0, "sourceResultSha256": hashlib.sha256(source.read_bytes()).hexdigest(),
+        "batchId": result["batchId"], "artifactSha256": result["artifactSha256"], "reportSha256": result["reportSha256"], "configSha256": result["configSha256"], "assessmentManifestSha256": result["assessmentManifestSha256"], "assessmentCount": result["assessmentCount"], "candidateCount": result["candidateCount"], "validatedAnchorCount": result["validatedAnchorCount"], "validatedEpisodeCount": result["validatedEpisodeCount"], "anchorInvariantViolationCount": 0, "episodeInvariantViolationCount": 0, "sourceResultSha256": hashlib.sha256(source_bytes).hexdigest(),
     }
     _atomic_write(Path(args.output), _canonical_json(output))
     if _load_json(Path(args.output)) != output:
