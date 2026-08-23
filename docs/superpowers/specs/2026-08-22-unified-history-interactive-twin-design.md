@@ -7,7 +7,7 @@
 | Ativo | `forzy-motor-01` |
 | Data | 2026-08-22 |
 | Branch de desenho | `luis/real-twinops-integration` |
-| Status | Direção consolidada; aguardando aprovação explícita desta especificação |
+| Status | Aprovada explicitamente por Luis em 2026-08-22; pronta para execução pelos planos derivados |
 
 ## 1. Decisão executiva
 
