@@ -11,7 +11,7 @@
 | B | pending | pending | pending |
 | C | pending | pending | pending |
 | D | pending | pending | pending |
-| E | pending | pending | pending |
+| E | in_progress | a57ff73ef5ad53307d8b852a7072333ded570f56 | 0/0/0 |
 
 ## Acceptance criteria
 
@@ -48,4 +48,13 @@
 
 ## Findings
 
-No findings recorded.
+| ID | Plan | Severity | Status | Introduced SHA | Resolved SHA |
+| --- | --- | --- | --- | --- | --- |
+| E1-C-001 | E | critical | fixed | 3720634d74dc3ec0364674a722a6bcdfd6a6657d | a57ff73ef5ad53307d8b852a7072333ded570f56 |
+| E1-I-001 | E | important | fixed | 3720634d74dc3ec0364674a722a6bcdfd6a6657d | a57ff73ef5ad53307d8b852a7072333ded570f56 |
+| E1-I-002 | E | important | fixed | 3720634d74dc3ec0364674a722a6bcdfd6a6657d | a57ff73ef5ad53307d8b852a7072333ded570f56 |
+| E1-I-003 | E | important | fixed | 3720634d74dc3ec0364674a722a6bcdfd6a6657d | a57ff73ef5ad53307d8b852a7072333ded570f56 |
+| E1-I-004 | E | important | fixed | 3720634d74dc3ec0364674a722a6bcdfd6a6657d | a57ff73ef5ad53307d8b852a7072333ded570f56 |
+| E1-I-005 | E | important | fixed | 3720634d74dc3ec0364674a722a6bcdfd6a6657d | a57ff73ef5ad53307d8b852a7072333ded570f56 |
+| E1-I-006 | E | important | fixed | 3720634d74dc3ec0364674a722a6bcdfd6a6657d | a57ff73ef5ad53307d8b852a7072333ded570f56 |
+| E1-I-007 | E | important | fixed | 3720634d74dc3ec0364674a722a6bcdfd6a6657d | a57ff73ef5ad53307d8b852a7072333ded570f56 |
