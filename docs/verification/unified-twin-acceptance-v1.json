@@ -1,0 +1,42 @@
+{
+  "schemaVersion": "unified-twin-acceptance-v1",
+  "specSha256": "20629d860f19a212bc2b941d6270e2316c747a0b85c473f0b51bbee6106e3a44",
+  "criteria": [
+    {"criterionId":"AC-01","ownerPlan":"C","gate":"local","allowedEvidenceKinds":["automated"],"status":"pending","evidenceKind":null,"evidenceRefs":[],"verifiedCodeCommit":null},
+    {"criterionId":"AC-02","ownerPlan":"C","gate":"local","allowedEvidenceKinds":["automated"],"status":"pending","evidenceKind":null,"evidenceRefs":[],"verifiedCodeCommit":null},
+    {"criterionId":"AC-03","ownerPlan":"C","gate":"local","allowedEvidenceKinds":["automated"],"status":"pending","evidenceKind":null,"evidenceRefs":[],"verifiedCodeCommit":null},
+    {"criterionId":"AC-04","ownerPlan":"C","gate":"local","allowedEvidenceKinds":["automated"],"status":"pending","evidenceKind":null,"evidenceRefs":[],"verifiedCodeCommit":null},
+    {"criterionId":"AC-05","ownerPlan":"C","gate":"local","allowedEvidenceKinds":["automated"],"status":"pending","evidenceKind":null,"evidenceRefs":[],"verifiedCodeCommit":null},
+    {"criterionId":"AC-06","ownerPlan":"A","gate":"database","allowedEvidenceKinds":["database"],"status":"pending","evidenceKind":null,"evidenceRefs":[],"verifiedCodeCommit":null},
+    {"criterionId":"AC-07","ownerPlan":"C","gate":"local","allowedEvidenceKinds":["automated"],"status":"pending","evidenceKind":null,"evidenceRefs":[],"verifiedCodeCommit":null},
+    {"criterionId":"AC-08","ownerPlan":"D","gate":"local","allowedEvidenceKinds":["automated"],"status":"pending","evidenceKind":null,"evidenceRefs":[],"verifiedCodeCommit":null},
+    {"criterionId":"AC-09","ownerPlan":"D","gate":"local","allowedEvidenceKinds":["automated"],"status":"pending","evidenceKind":null,"evidenceRefs":[],"verifiedCodeCommit":null},
+    {"criterionId":"AC-10","ownerPlan":"D","gate":"local","allowedEvidenceKinds":["automated"],"status":"pending","evidenceKind":null,"evidenceRefs":[],"verifiedCodeCommit":null},
+    {"criterionId":"AC-11","ownerPlan":"C","gate":"local","allowedEvidenceKinds":["automated"],"status":"pending","evidenceKind":null,"evidenceRefs":[],"verifiedCodeCommit":null},
+    {"criterionId":"AC-12","ownerPlan":"E","gate":"preview","allowedEvidenceKinds":["preview"],"status":"pending","evidenceKind":null,"evidenceRefs":[],"verifiedCodeCommit":null},
+    {"criterionId":"AC-13","ownerPlan":"B","gate":"local","allowedEvidenceKinds":["automated"],"status":"pending","evidenceKind":null,"evidenceRefs":[],"verifiedCodeCommit":null},
+    {"criterionId":"AC-14","ownerPlan":"B","gate":"local","allowedEvidenceKinds":["automated"],"status":"pending","evidenceKind":null,"evidenceRefs":[],"verifiedCodeCommit":null},
+    {"criterionId":"AC-15","ownerPlan":"E","gate":"local","allowedEvidenceKinds":["automated"],"status":"pending","evidenceKind":null,"evidenceRefs":[],"verifiedCodeCommit":null},
+    {"criterionId":"AC-16","ownerPlan":"C","gate":"local","allowedEvidenceKinds":["automated"],"status":"pending","evidenceKind":null,"evidenceRefs":[],"verifiedCodeCommit":null},
+    {"criterionId":"AC-17","ownerPlan":"C","gate":"local","allowedEvidenceKinds":["automated"],"status":"pending","evidenceKind":null,"evidenceRefs":[],"verifiedCodeCommit":null},
+    {"criterionId":"AC-18","ownerPlan":"E","gate":"human","allowedEvidenceKinds":["human"],"status":"pending","evidenceKind":null,"evidenceRefs":[],"verifiedCodeCommit":null},
+    {"criterionId":"AC-19","ownerPlan":"C","gate":"local","allowedEvidenceKinds":["automated"],"status":"pending","evidenceKind":null,"evidenceRefs":[],"verifiedCodeCommit":null},
+    {"criterionId":"AC-20","ownerPlan":"D","gate":"local","allowedEvidenceKinds":["automated"],"status":"pending","evidenceKind":null,"evidenceRefs":[],"verifiedCodeCommit":null},
+    {"criterionId":"AC-21","ownerPlan":"C","gate":"local","allowedEvidenceKinds":["automated"],"status":"pending","evidenceKind":null,"evidenceRefs":[],"verifiedCodeCommit":null},
+    {"criterionId":"AC-22","ownerPlan":"C","gate":"local","allowedEvidenceKinds":["automated"],"status":"pending","evidenceKind":null,"evidenceRefs":[],"verifiedCodeCommit":null},
+    {"criterionId":"AC-23","ownerPlan":"D","gate":"local","allowedEvidenceKinds":["automated"],"status":"pending","evidenceKind":null,"evidenceRefs":[],"verifiedCodeCommit":null},
+    {"criterionId":"AC-24","ownerPlan":"E","gate":"preview","allowedEvidenceKinds":["preview"],"status":"pending","evidenceKind":null,"evidenceRefs":[],"verifiedCodeCommit":null},
+    {"criterionId":"AC-25","ownerPlan":"C","gate":"local","allowedEvidenceKinds":["automated"],"status":"pending","evidenceKind":null,"evidenceRefs":[],"verifiedCodeCommit":null},
+    {"criterionId":"AC-26","ownerPlan":"C","gate":"local","allowedEvidenceKinds":["automated"],"status":"pending","evidenceKind":null,"evidenceRefs":[],"verifiedCodeCommit":null},
+    {"criterionId":"AC-27","ownerPlan":"C","gate":"local","allowedEvidenceKinds":["automated"],"status":"pending","evidenceKind":null,"evidenceRefs":[],"verifiedCodeCommit":null},
+    {"criterionId":"AC-28","ownerPlan":"E","gate":"human","allowedEvidenceKinds":["human"],"status":"pending","evidenceKind":null,"evidenceRefs":[],"verifiedCodeCommit":null}
+  ],
+  "plans": {
+    "A": {"status":"pending","verifiedCodeCommit":null,"reviewVerdict":null,"findingIds":[],"evidenceRefs":[]},
+    "B": {"status":"pending","verifiedCodeCommit":null,"reviewVerdict":null,"findingIds":[],"evidenceRefs":[]},
+    "C": {"status":"pending","verifiedCodeCommit":null,"reviewVerdict":null,"findingIds":[],"evidenceRefs":[]},
+    "D": {"status":"pending","verifiedCodeCommit":null,"reviewVerdict":null,"findingIds":[],"evidenceRefs":[]},
+    "E": {"status":"pending","verifiedCodeCommit":null,"reviewVerdict":null,"findingIds":[],"evidenceRefs":[]}
+  },
+  "findings": {}
+}

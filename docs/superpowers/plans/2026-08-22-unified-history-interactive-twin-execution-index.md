@@ -65,7 +65,7 @@ flowchart LR
     B --> E2_9
 ```
 
-Somente E1 é antecipada e precisa receber review independente antes do handoff para A. Depois de C1, C2–C10 e D1–D7 podem avançar em paralelo; a ordem obrigatória de integração visual é `D7 → C11 → D8`. As Tasks E2–E9 permanecem bloqueadas até A+B+C+D integrados e revisados. C autoria o cenário AC-15, mas somente E9 o executa e fecha no `verifiedCodeCommit` integrado exato.
+Somente E1 é antecipada e precisa receber review independente antes do handoff para A; o commit de código do bootstrap e seu commit de evidência revisada permanecem fronteiras separadas. Depois de C1, C2–C10 e D1–D7 podem avançar em paralelo; a ordem obrigatória de integração visual é `D7 → C11 revisado → D8`. As Tasks E2–E9 permanecem bloqueadas até A+B+C+D integrados e revisados. C autoria o cenário AC-15, mas somente E9 o executa e fecha no `verifiedCodeCommit` integrado exato.
 
 ## Ownership sem colisões
 
