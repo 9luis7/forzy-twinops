@@ -1,0 +1,151 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "forzy://contracts/timeline/v1/timeline-context",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion", "assetId", "selectedAt", "segmentId", "anchor", "channels",
+    "assessment", "decisionFacts", "provenance", "capabilities", "limitations"
+  ],
+  "properties": {
+    "schemaVersion": { "const": "1.0" },
+    "assetId": { "const": "forzy-motor-01" },
+    "selectedAt": { "$ref": "#/definitions/timestamp" },
+    "segmentId": {
+      "oneOf": [{ "$ref": "#/definitions/uuid5" }, { "type": "null" }]
+    },
+    "anchor": {
+      "oneOf": [
+        { "$ref": "forzy://contracts/timeline/v1/timeline-point" },
+        { "type": "null" }
+      ]
+    },
+    "channels": { "$ref": "#/definitions/channels" },
+    "assessment": {
+      "oneOf": [
+        { "$ref": "forzy://contracts/timeline/v1/historical-assessment" },
+        { "$ref": "forzy://contracts/v2/asset-condition-assessment" },
+        { "type": "null" }
+      ]
+    },
+    "decisionFacts": { "$ref": "forzy://contracts/timeline/v1/timeline-decision-facts" },
+    "provenance": { "$ref": "#/definitions/provenance" },
+    "capabilities": { "$ref": "#/definitions/capabilities" },
+    "limitations": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "uniqueItems": true
+    }
+  },
+  "oneOf": [
+    {
+      "type": "object",
+      "properties": {
+        "segmentId": { "type": "null" },
+        "anchor": { "type": "null" },
+        "channels": { "$ref": "#/definitions/emptyChannels" },
+        "assessment": { "type": "null" },
+        "decisionFacts": {
+          "allOf": [
+            { "$ref": "forzy://contracts/timeline/v1/timeline-decision-facts" },
+            {
+              "type": "object",
+              "properties": { "collectionState": { "const": "historical_gap" } }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "type": "object",
+      "properties": {
+        "decisionFacts": {
+          "allOf": [
+            { "$ref": "forzy://contracts/timeline/v1/timeline-decision-facts" },
+            {
+              "type": "object",
+              "properties": {
+                "collectionState": {
+                  "enum": ["received_now", "last_known", "expected_idle", "unavailable", "historical_context"]
+                }
+              }
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "definitions": {
+    "uuid5": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    },
+    "timestamp": {
+      "type": "string",
+      "pattern": "^\\d{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\\d|3[01])T(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d\\.\\d{3}Z$"
+    },
+    "hash": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "nullablePoint": {
+      "oneOf": [
+        { "$ref": "forzy://contracts/timeline/v1/timeline-point" },
+        { "type": "null" }
+      ]
+    },
+    "channels": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["s1", "s2"],
+      "properties": {
+        "s1": { "$ref": "#/definitions/nullablePoint" },
+        "s2": { "$ref": "#/definitions/nullablePoint" }
+      }
+    },
+    "emptyChannels": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["s1", "s2"],
+      "properties": {
+        "s1": { "type": "null" },
+        "s2": { "type": "null" }
+      }
+    },
+    "provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "pointSourceKind", "pointSourceSystem", "activeHistoricalBatchId",
+        "collectionPolicyId", "assessmentSource"
+      ],
+      "properties": {
+        "pointSourceKind": {
+          "enum": ["historical_archive", "live_collection", null]
+        },
+        "pointSourceSystem": { "enum": ["forzy-csv", "forzy-api", null] },
+        "activeHistoricalBatchId": {
+          "oneOf": [{ "$ref": "#/definitions/hash" }, { "type": "null" }]
+        },
+        "collectionPolicyId": {
+          "oneOf": [{ "type": "string", "minLength": 1 }, { "type": "null" }]
+        },
+        "assessmentSource": {
+          "enum": ["live_assessment", "historical_walk_forward", "none"]
+        }
+      }
+    },
+    "capabilities": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "historicalNavigation", "pairedChannels", "causalAssessment",
+        "baselineComparison", "previousCycleComparison"
+      ],
+      "properties": {
+        "historicalNavigation": { "type": "boolean" },
+        "pairedChannels": { "type": "boolean" },
+        "causalAssessment": { "type": "boolean" },
+        "baselineComparison": { "type": "boolean" },
+        "previousCycleComparison": { "type": "boolean" }
+      }
+    }
+  }
+}

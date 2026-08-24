@@ -1,0 +1,300 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "forzy://contracts/timeline/v1/timeline-overview",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion", "assetId", "queryFingerprint", "activeHistoricalBatchId",
+    "requestedRange", "effectiveRange", "availableRange", "aggregationSummary",
+    "segments", "gaps", "operatingCycles", "series", "eventCandidates", "capabilities"
+  ],
+  "properties": {
+    "schemaVersion": { "const": "1.0" },
+    "assetId": { "const": "forzy-motor-01" },
+    "queryFingerprint": { "$ref": "#/definitions/hash" },
+    "activeHistoricalBatchId": {
+      "oneOf": [{ "$ref": "#/definitions/hash" }, { "type": "null" }]
+    },
+    "requestedRange": { "$ref": "#/definitions/requestedRange" },
+    "effectiveRange": {
+      "oneOf": [{ "$ref": "#/definitions/halfOpenRange" }, { "type": "null" }]
+    },
+    "availableRange": {
+      "oneOf": [{ "$ref": "#/definitions/halfOpenRange" }, { "type": "null" }]
+    },
+    "aggregationSummary": { "$ref": "#/definitions/aggregationSummary" },
+    "segments": { "type": "array", "items": { "$ref": "#/definitions/segment" } },
+    "gaps": { "type": "array", "items": { "$ref": "#/definitions/gap" } },
+    "operatingCycles": {
+      "type": "array",
+      "items": { "$ref": "#/definitions/operatingCycle" }
+    },
+    "series": { "type": "array", "items": { "$ref": "#/definitions/series" } },
+    "eventCandidates": {
+      "type": "array",
+      "items": { "$ref": "forzy://contracts/timeline/v1/timeline-event-candidate" }
+    },
+    "capabilities": { "$ref": "#/definitions/capabilities" }
+  },
+  "definitions": {
+    "uuid5": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    },
+    "timestamp": {
+      "type": "string",
+      "pattern": "^\\d{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\\d|3[01])T(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d\\.\\d{3}Z$"
+    },
+    "hash": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "requestedRange": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["from", "to"],
+      "properties": {
+        "from": {
+          "oneOf": [{ "$ref": "#/definitions/timestamp" }, { "type": "null" }]
+        },
+        "to": {
+          "oneOf": [{ "$ref": "#/definitions/timestamp" }, { "type": "null" }]
+        }
+      }
+    },
+    "halfOpenRange": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["from", "to"],
+      "properties": {
+        "from": { "$ref": "#/definitions/timestamp" },
+        "to": { "$ref": "#/definitions/timestamp" }
+      }
+    },
+    "sensorCounts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["s1", "s2"],
+      "properties": {
+        "s1": { "type": "integer", "minimum": 0 },
+        "s2": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "aggregationSummary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "requestedMaxPoints", "originalPointCount", "returnedPointCount",
+        "omittedPointCount", "reducedSeriesCount"
+      ],
+      "properties": {
+        "requestedMaxPoints": { "type": "integer", "minimum": 40, "maximum": 4000 },
+        "originalPointCount": { "type": "integer", "minimum": 0 },
+        "returnedPointCount": { "type": "integer", "minimum": 0 },
+        "omittedPointCount": { "type": "integer", "minimum": 0 },
+        "reducedSeriesCount": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "operatingCycle": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "operatingCycleId", "sourceKind", "batchId", "startAt", "endAt",
+        "durationSeconds", "totalPoints", "sensorCounts", "candidateCount",
+        "gapBeforeSeconds", "previousOperatingCycleId", "assumptions"
+      ],
+      "properties": {
+        "operatingCycleId": { "$ref": "#/definitions/uuid5" },
+        "sourceKind": { "const": "historical_archive" },
+        "batchId": { "$ref": "#/definitions/hash" },
+        "startAt": { "$ref": "#/definitions/timestamp" },
+        "endAt": { "$ref": "#/definitions/timestamp" },
+        "durationSeconds": { "type": "number", "minimum": 0 },
+        "totalPoints": { "type": "integer", "minimum": 1 },
+        "sensorCounts": { "$ref": "#/definitions/sensorCounts" },
+        "candidateCount": { "type": "integer", "minimum": 0 },
+        "gapBeforeSeconds": {
+          "oneOf": [{ "type": "number", "minimum": 0 }, { "type": "null" }]
+        },
+        "previousOperatingCycleId": {
+          "oneOf": [{ "$ref": "#/definitions/uuid5" }, { "type": "null" }]
+        },
+        "assumptions": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "uniqueItems": true
+        }
+      }
+    },
+    "segment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "segmentId", "sourceKind", "startAt", "endAt", "totalPoints", "sensorCounts",
+        "timestampQuality", "batchId", "collectionPolicyId", "assumptions"
+      ],
+      "properties": {
+        "segmentId": { "$ref": "#/definitions/uuid5" },
+        "sourceKind": { "enum": ["historical_archive", "live_collection"] },
+        "startAt": { "$ref": "#/definitions/timestamp" },
+        "endAt": { "$ref": "#/definitions/timestamp" },
+        "totalPoints": { "type": "integer", "minimum": 1 },
+        "sensorCounts": { "$ref": "#/definitions/sensorCounts" },
+        "timestampQuality": {
+          "enum": ["source_without_offset_assumed_timezone", "assumed_from_retrieval"]
+        },
+        "batchId": {
+          "oneOf": [{ "$ref": "#/definitions/hash" }, { "type": "null" }]
+        },
+        "collectionPolicyId": {
+          "oneOf": [{ "type": "string", "minLength": 1 }, { "type": "null" }]
+        },
+        "assumptions": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "uniqueItems": true
+        }
+      },
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "sourceKind": { "const": "historical_archive" },
+            "timestampQuality": { "const": "source_without_offset_assumed_timezone" },
+            "batchId": { "$ref": "#/definitions/hash" },
+            "collectionPolicyId": { "type": "null" }
+          }
+        },
+        {
+          "type": "object",
+          "properties": {
+            "sourceKind": { "const": "live_collection" },
+            "timestampQuality": { "const": "assumed_from_retrieval" },
+            "batchId": { "type": "null" },
+            "collectionPolicyId": {
+              "oneOf": [{ "type": "string", "minLength": 1 }, { "type": "null" }]
+            }
+          }
+        }
+      ]
+    },
+    "gap": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "gapId", "leftSegmentId", "rightSegmentId", "startAt", "endAt", "gapType",
+        "durationSeconds", "ruleVersion", "messageCode"
+      ],
+      "properties": {
+        "gapId": { "$ref": "#/definitions/uuid5" },
+        "leftSegmentId": {
+          "oneOf": [{ "$ref": "#/definitions/uuid5" }, { "type": "null" }]
+        },
+        "rightSegmentId": {
+          "oneOf": [{ "$ref": "#/definitions/uuid5" }, { "type": "null" }]
+        },
+        "startAt": { "$ref": "#/definitions/timestamp" },
+        "endAt": { "$ref": "#/definitions/timestamp" },
+        "gapType": {
+          "enum": [
+            "source_discontinuity", "archive_sampling_gap",
+            "live_expected_collection_gap", "expected_idle",
+            "unclassified_coverage_gap"
+          ]
+        },
+        "durationSeconds": { "type": "number", "exclusiveMinimum": 0 },
+        "ruleVersion": { "const": "timeline-gap-v1" },
+        "messageCode": {
+          "enum": [
+            "timeline_gap_source_discontinuity", "timeline_gap_archive_sampling",
+            "timeline_gap_live_expected_collection", "timeline_gap_expected_idle",
+            "timeline_gap_unclassified_coverage"
+          ]
+        }
+      },
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "gapType": { "const": "source_discontinuity" },
+            "messageCode": { "const": "timeline_gap_source_discontinuity" }
+          }
+        },
+        {
+          "type": "object",
+          "properties": {
+            "gapType": { "const": "archive_sampling_gap" },
+            "messageCode": { "const": "timeline_gap_archive_sampling" }
+          }
+        },
+        {
+          "type": "object",
+          "properties": {
+            "gapType": { "const": "live_expected_collection_gap" },
+            "messageCode": { "const": "timeline_gap_live_expected_collection" }
+          }
+        },
+        {
+          "type": "object",
+          "properties": {
+            "gapType": { "const": "expected_idle" },
+            "messageCode": { "const": "timeline_gap_expected_idle" }
+          }
+        },
+        {
+          "type": "object",
+          "properties": {
+            "gapType": { "const": "unclassified_coverage_gap" },
+            "messageCode": { "const": "timeline_gap_unclassified_coverage" }
+          }
+        }
+      ]
+    },
+    "seriesPoint": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["pointId", "eventAt", "value"],
+      "properties": {
+        "pointId": { "$ref": "#/definitions/uuid5" },
+        "eventAt": { "$ref": "#/definitions/timestamp" },
+        "value": { "type": "number" }
+      }
+    },
+    "seriesAggregation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "method", "requestedMaxPoints", "originalPointCount",
+        "returnedPointCount", "omittedPointCount"
+      ],
+      "properties": {
+        "method": { "enum": ["none", "time_bucket_envelope_v1"] },
+        "requestedMaxPoints": { "type": "integer", "minimum": 40, "maximum": 4000 },
+        "originalPointCount": { "type": "integer", "minimum": 0 },
+        "returnedPointCount": { "type": "integer", "minimum": 0 },
+        "omittedPointCount": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "series": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["segmentId", "sensorId", "sourceKind", "metric", "points", "aggregation"],
+      "properties": {
+        "segmentId": { "$ref": "#/definitions/uuid5" },
+        "sensorId": { "enum": ["s1", "s2"] },
+        "sourceKind": { "enum": ["historical_archive", "live_collection"] },
+        "metric": {
+          "enum": ["vibrationVelocityRms", "vibrationAcceleration", "temperature"]
+        },
+        "points": { "type": "array", "items": { "$ref": "#/definitions/seriesPoint" } },
+        "aggregation": { "$ref": "#/definitions/seriesAggregation" }
+      }
+    },
+    "capabilities": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["historical", "live"],
+      "properties": {
+        "historical": { "type": "boolean" },
+        "live": { "type": "boolean" }
+      }
+    }
+  }
+}

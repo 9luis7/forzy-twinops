@@ -1,0 +1,164 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "forzy://contracts/timeline/v1/historical-assessment",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion", "assessmentId", "foldId", "sensorId", "operatingCycleId",
+    "trainingWindow", "assessmentWindow", "assessmentAt", "anchorPointId", "status",
+    "anomalyScore", "deteriorationScore", "scoreSemantics", "persistence", "quality",
+    "evidence", "modelFamily", "modelVersion", "modelHash", "foldHash", "reportHash",
+    "componentTag", "humanValidationRequired", "limitations"
+  ],
+  "properties": {
+    "schemaVersion": { "const": "1.0" },
+    "assessmentId": { "$ref": "#/definitions/uuid5" },
+    "foldId": { "type": "string", "minLength": 1 },
+    "sensorId": { "enum": ["s1", "s2"] },
+    "operatingCycleId": { "$ref": "#/definitions/uuid5" },
+    "trainingWindow": { "$ref": "#/definitions/closedRange" },
+    "assessmentWindow": { "$ref": "#/definitions/closedRange" },
+    "assessmentAt": { "$ref": "#/definitions/timestamp" },
+    "anchorPointId": { "$ref": "#/definitions/uuid5" },
+    "status": { "enum": ["normal", "watch", "alert", "insufficient_data"] },
+    "anomalyScore": { "type": ["number", "null"] },
+    "deteriorationScore": { "type": ["number", "null"] },
+    "scoreSemantics": {
+      "const": "relative_to_walk_forward_historical_baseline_not_failure_probability"
+    },
+    "persistence": { "$ref": "#/definitions/persistence" },
+    "quality": { "$ref": "#/definitions/quality" },
+    "evidence": {
+      "type": "array",
+      "items": { "$ref": "#/definitions/evidence" }
+    },
+    "modelFamily": { "type": "string", "minLength": 1 },
+    "modelVersion": { "type": "string", "minLength": 1 },
+    "modelHash": { "$ref": "#/definitions/hash" },
+    "foldHash": { "$ref": "#/definitions/hash" },
+    "reportHash": { "$ref": "#/definitions/hash" },
+    "componentTag": { "type": "null" },
+    "humanValidationRequired": { "const": true },
+    "limitations": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "uniqueItems": true
+    }
+  },
+  "oneOf": [
+    {
+      "type": "object",
+      "properties": {
+        "status": { "enum": ["watch", "alert"] },
+        "anomalyScore": { "type": "number" },
+        "deteriorationScore": { "type": "number" },
+        "persistence": { "$ref": "#/definitions/activePersistence" }
+      }
+    },
+    {
+      "type": "object",
+      "properties": {
+        "status": { "const": "normal" },
+        "anomalyScore": { "type": "number" },
+        "deteriorationScore": { "type": "number" },
+        "persistence": { "$ref": "#/definitions/inactivePersistence" }
+      }
+    },
+    {
+      "type": "object",
+      "properties": {
+        "status": { "const": "insufficient_data" },
+        "anomalyScore": { "type": "null" },
+        "deteriorationScore": { "type": "null" },
+        "persistence": { "$ref": "#/definitions/inactivePersistence" }
+      }
+    }
+  ],
+  "definitions": {
+    "uuid5": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    },
+    "timestamp": {
+      "type": "string",
+      "pattern": "^\\d{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\\d|3[01])T(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d\\.\\d{3}Z$"
+    },
+    "hash": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "closedRange": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["start", "end"],
+      "properties": {
+        "start": { "$ref": "#/definitions/timestamp" },
+        "end": { "$ref": "#/definitions/timestamp" }
+      }
+    },
+    "persistence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["episodeId", "episodeStartedAt", "persistenceSeconds", "persistenceCount"],
+      "properties": {
+        "episodeId": {
+          "oneOf": [{ "type": "string", "minLength": 1 }, { "type": "null" }]
+        },
+        "episodeStartedAt": {
+          "oneOf": [{ "$ref": "#/definitions/timestamp" }, { "type": "null" }]
+        },
+        "persistenceSeconds": { "type": "number", "minimum": 0 },
+        "persistenceCount": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "activePersistence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["episodeId", "episodeStartedAt", "persistenceSeconds", "persistenceCount"],
+      "properties": {
+        "episodeId": { "type": "string", "minLength": 1 },
+        "episodeStartedAt": { "$ref": "#/definitions/timestamp" },
+        "persistenceSeconds": { "type": "number", "minimum": 0 },
+        "persistenceCount": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "inactivePersistence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["episodeId", "episodeStartedAt", "persistenceSeconds", "persistenceCount"],
+      "properties": {
+        "episodeId": { "type": "null" },
+        "episodeStartedAt": { "type": "null" },
+        "persistenceSeconds": { "const": 0 },
+        "persistenceCount": { "const": 0 }
+      }
+    },
+    "quality": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "flags"],
+      "properties": {
+        "status": { "enum": ["ok", "degraded", "insufficient_data"] },
+        "flags": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "uniqueItems": true
+        }
+      }
+    },
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id", "feature", "value", "unit", "baseline", "deviation", "direction", "windowSeconds"
+      ],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "feature": { "type": "string", "minLength": 1 },
+        "value": { "type": "number" },
+        "unit": { "type": "string", "minLength": 1 },
+        "baseline": { "type": ["number", "null"] },
+        "deviation": { "type": ["number", "null"] },
+        "direction": { "enum": ["up", "down", "stable", "unknown", null] },
+        "windowSeconds": { "type": ["number", "null"], "minimum": 0 }
+      }
+    }
+  }
+}

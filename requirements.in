@@ -2,6 +2,7 @@
 # service pyproject, but are intentionally excluded from the Vercel function.
 fastapi>=0.115,<1
 httpx>=0.27,<1
+jsonschema>=4.23,<5
 joblib>=1.4,<2
 numpy>=1.26,<3
 pandas>=2.2,<3

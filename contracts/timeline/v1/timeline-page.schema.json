@@ -1,0 +1,30 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "forzy://contracts/timeline/v1/timeline-page",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion", "assetId", "queryFingerprint", "activeHistoricalBatchId",
+    "items", "nextCursor", "hasMore", "limit"
+  ],
+  "properties": {
+    "schemaVersion": { "const": "1.0" },
+    "assetId": { "const": "forzy-motor-01" },
+    "queryFingerprint": { "$ref": "#/definitions/hash" },
+    "activeHistoricalBatchId": {
+      "oneOf": [{ "$ref": "#/definitions/hash" }, { "type": "null" }]
+    },
+    "items": {
+      "type": "array",
+      "items": { "$ref": "forzy://contracts/timeline/v1/timeline-point" }
+    },
+    "nextCursor": {
+      "oneOf": [{ "type": "string", "minLength": 1 }, { "type": "null" }]
+    },
+    "hasMore": { "type": "boolean" },
+    "limit": { "type": "integer", "minimum": 1, "maximum": 4000 }
+  },
+  "definitions": {
+    "hash": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" }
+  }
+}

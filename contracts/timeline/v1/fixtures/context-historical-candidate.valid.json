@@ -1,0 +1,145 @@
+{
+  "schemaVersion": "1.0",
+  "assetId": "forzy-motor-01",
+  "selectedAt": "2026-08-22T12:00:00.000Z",
+  "segmentId": "00000000-0000-5000-8000-000000000010",
+  "anchor": {
+    "schemaVersion": "1.0",
+    "pointId": "00000000-0000-5000-8000-000000000004",
+    "samplePairId": "00000000-0000-5000-8000-000000000002",
+    "operatingCycleId": "00000000-0000-5000-8000-000000000003",
+    "assetId": "forzy-motor-01",
+    "sensorId": "s1",
+    "eventAt": "2026-08-22T12:00:00.000Z",
+    "sourceKind": "historical_archive",
+    "timestampQuality": "source_without_offset_assumed_timezone",
+    "measurements": {
+      "vibrationVelocityRms": { "value": 1.1, "unit": "mm/s", "semanticConfidence": "confirmed" },
+      "vibrationAcceleration": { "value": 0, "unit": "g", "semanticConfidence": "confirmed", "statistic": "unknown" },
+      "temperature": { "value": 30, "unit": "degC", "semanticConfidence": "confirmed" }
+    },
+    "qualityFlags": [],
+    "provenance": {
+      "sourceSystem": "forzy-csv",
+      "batchId": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "sourceFileSha256": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "recordOrdinal": 1,
+      "sourceLineNumber": 4,
+      "rowSha256": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "ingestedAt": "2026-08-22T12:00:01.000Z"
+    }
+  },
+  "channels": {
+    "s1": {
+      "schemaVersion": "1.0",
+      "pointId": "00000000-0000-5000-8000-000000000004",
+      "samplePairId": "00000000-0000-5000-8000-000000000002",
+      "operatingCycleId": "00000000-0000-5000-8000-000000000003",
+      "assetId": "forzy-motor-01",
+      "sensorId": "s1",
+      "eventAt": "2026-08-22T12:00:00.000Z",
+      "sourceKind": "historical_archive",
+      "timestampQuality": "source_without_offset_assumed_timezone",
+      "measurements": {
+        "vibrationVelocityRms": { "value": 1.1, "unit": "mm/s", "semanticConfidence": "confirmed" },
+        "vibrationAcceleration": { "value": 0, "unit": "g", "semanticConfidence": "confirmed", "statistic": "unknown" },
+        "temperature": { "value": 30, "unit": "degC", "semanticConfidence": "confirmed" }
+      },
+      "qualityFlags": [],
+      "provenance": {
+        "sourceSystem": "forzy-csv",
+        "batchId": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "sourceFileSha256": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "recordOrdinal": 1,
+        "sourceLineNumber": 4,
+        "rowSha256": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "ingestedAt": "2026-08-22T12:00:01.000Z"
+      }
+    },
+    "s2": {
+      "schemaVersion": "1.0",
+      "pointId": "00000000-0000-5000-8000-000000000007",
+      "samplePairId": "00000000-0000-5000-8000-000000000002",
+      "operatingCycleId": "00000000-0000-5000-8000-000000000003",
+      "assetId": "forzy-motor-01",
+      "sensorId": "s2",
+      "eventAt": "2026-08-22T12:00:00.000Z",
+      "sourceKind": "historical_archive",
+      "timestampQuality": "source_without_offset_assumed_timezone",
+      "measurements": {
+        "vibrationVelocityRms": { "value": 1.2, "unit": "mm/s", "semanticConfidence": "confirmed" },
+        "vibrationAcceleration": { "value": 0, "unit": "g", "semanticConfidence": "confirmed", "statistic": "unknown" },
+        "temperature": { "value": 30.2, "unit": "degC", "semanticConfidence": "confirmed" }
+      },
+      "qualityFlags": [],
+      "provenance": {
+        "sourceSystem": "forzy-csv",
+        "batchId": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "sourceFileSha256": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "recordOrdinal": 1,
+        "sourceLineNumber": 4,
+        "rowSha256": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "ingestedAt": "2026-08-22T12:00:01.000Z"
+      }
+    }
+  },
+  "assessment": {
+    "schemaVersion": "1.0",
+    "assessmentId": "00000000-0000-5000-8000-000000000005",
+    "foldId": "fold-1",
+    "sensorId": "s1",
+    "operatingCycleId": "00000000-0000-5000-8000-000000000003",
+    "trainingWindow": { "start": "2026-08-22T11:00:00.000Z", "end": "2026-08-22T11:30:00.000Z" },
+    "assessmentWindow": { "start": "2026-08-22T11:30:00.001Z", "end": "2026-08-22T12:00:00.000Z" },
+    "assessmentAt": "2026-08-22T12:00:00.000Z",
+    "anchorPointId": "00000000-0000-5000-8000-000000000004",
+    "status": "watch",
+    "anomalyScore": 0.1,
+    "deteriorationScore": 0.2,
+    "scoreSemantics": "relative_to_walk_forward_historical_baseline_not_failure_probability",
+    "persistence": {
+      "episodeId": "episode-1",
+      "episodeStartedAt": "2026-08-22T11:45:00.000Z",
+      "persistenceSeconds": 900,
+      "persistenceCount": 2
+    },
+    "quality": { "status": "ok", "flags": [] },
+    "evidence": [],
+    "modelFamily": "robust-baseline",
+    "modelVersion": "1.0",
+    "modelHash": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+    "foldHash": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+    "reportHash": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+    "componentTag": null,
+    "humanValidationRequired": true,
+    "limitations": []
+  },
+  "decisionFacts": {
+    "schemaVersion": "1.0",
+    "conditionState": "watch",
+    "conditionTemporalScope": "historical",
+    "conditionAsOf": "2026-08-22T12:00:00.000Z",
+    "conditionEpisodeStartedAt": "2026-08-22T11:45:00.000Z",
+    "conditionSource": "historical_walk_forward",
+    "collectionState": "historical_context",
+    "collectionExpectation": "not_applicable",
+    "dataAvailability": "complete",
+    "dataFreshness": "historical",
+    "dataTrust": "sufficient"
+  },
+  "provenance": {
+    "pointSourceKind": "historical_archive",
+    "pointSourceSystem": "forzy-csv",
+    "activeHistoricalBatchId": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "collectionPolicyId": null,
+    "assessmentSource": "historical_walk_forward"
+  },
+  "capabilities": {
+    "historicalNavigation": true,
+    "pairedChannels": true,
+    "causalAssessment": true,
+    "baselineComparison": true,
+    "previousCycleComparison": false
+  },
+  "limitations": []
+}

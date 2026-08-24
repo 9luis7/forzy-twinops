@@ -1,0 +1,154 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "forzy://contracts/timeline/v1/timeline-point",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion", "pointId", "samplePairId", "operatingCycleId", "assetId",
+    "sensorId", "eventAt", "sourceKind", "timestampQuality", "measurements",
+    "qualityFlags", "provenance"
+  ],
+  "properties": {
+    "schemaVersion": { "const": "1.0" },
+    "pointId": { "$ref": "#/definitions/uuid5" },
+    "samplePairId": { "$ref": "#/definitions/uuid5" },
+    "operatingCycleId": {
+      "oneOf": [{ "$ref": "#/definitions/uuid5" }, { "type": "null" }]
+    },
+    "assetId": { "const": "forzy-motor-01" },
+    "sensorId": { "enum": ["s1", "s2"] },
+    "eventAt": { "$ref": "#/definitions/timestamp" },
+    "sourceKind": { "enum": ["historical_archive", "live_collection"] },
+    "timestampQuality": {
+      "enum": ["source_without_offset_assumed_timezone", "assumed_from_retrieval"]
+    },
+    "measurements": { "$ref": "#/definitions/measurements" },
+    "qualityFlags": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "uniqueItems": true
+    },
+    "provenance": {
+      "oneOf": [
+        { "$ref": "#/definitions/historicalProvenance" },
+        { "$ref": "#/definitions/liveProvenance" }
+      ]
+    }
+  },
+  "oneOf": [
+    {
+      "type": "object",
+      "required": ["sourceKind", "timestampQuality", "operatingCycleId", "provenance"],
+      "properties": {
+        "sourceKind": { "const": "historical_archive" },
+        "timestampQuality": { "const": "source_without_offset_assumed_timezone" },
+        "operatingCycleId": { "$ref": "#/definitions/uuid5" },
+        "provenance": { "$ref": "#/definitions/historicalProvenance" }
+      }
+    },
+    {
+      "type": "object",
+      "required": ["sourceKind", "timestampQuality", "operatingCycleId", "provenance"],
+      "properties": {
+        "sourceKind": { "const": "live_collection" },
+        "timestampQuality": { "const": "assumed_from_retrieval" },
+        "operatingCycleId": {
+          "oneOf": [{ "$ref": "#/definitions/uuid5" }, { "type": "null" }]
+        },
+        "provenance": { "$ref": "#/definitions/liveProvenance" }
+      }
+    }
+  ],
+  "definitions": {
+    "uuid5": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    },
+    "timestamp": {
+      "type": "string",
+      "pattern": "^\\d{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\\d|3[01])T(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d\\.\\d{3}Z$"
+    },
+    "hash": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "velocity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["value", "unit", "semanticConfidence"],
+      "properties": {
+        "value": { "type": "number" },
+        "unit": { "const": "mm/s" },
+        "semanticConfidence": {
+          "enum": ["confirmed", "inferred_from_datasheet", "unconfirmed"]
+        }
+      }
+    },
+    "acceleration": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["value", "unit", "semanticConfidence", "statistic"],
+      "properties": {
+        "value": { "type": "number" },
+        "unit": { "const": "g" },
+        "semanticConfidence": {
+          "enum": ["confirmed", "inferred_from_datasheet", "unconfirmed"]
+        },
+        "statistic": { "const": "unknown" }
+      }
+    },
+    "temperature": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["value", "unit", "semanticConfidence"],
+      "properties": {
+        "value": { "type": "number" },
+        "unit": { "const": "degC" },
+        "semanticConfidence": {
+          "enum": ["confirmed", "inferred_from_datasheet", "unconfirmed"]
+        }
+      }
+    },
+    "measurements": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["vibrationVelocityRms", "vibrationAcceleration", "temperature"],
+      "properties": {
+        "vibrationVelocityRms": { "$ref": "#/definitions/velocity" },
+        "vibrationAcceleration": { "$ref": "#/definitions/acceleration" },
+        "temperature": { "$ref": "#/definitions/temperature" }
+      }
+    },
+    "historicalProvenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "sourceSystem", "batchId", "sourceFileSha256", "recordOrdinal",
+        "sourceLineNumber", "rowSha256", "ingestedAt"
+      ],
+      "properties": {
+        "sourceSystem": { "const": "forzy-csv" },
+        "batchId": { "$ref": "#/definitions/hash" },
+        "sourceFileSha256": { "$ref": "#/definitions/hash" },
+        "recordOrdinal": { "type": "integer", "minimum": 1 },
+        "sourceLineNumber": { "type": "integer", "minimum": 4 },
+        "rowSha256": { "$ref": "#/definitions/hash" },
+        "ingestedAt": { "$ref": "#/definitions/timestamp" }
+      }
+    },
+    "liveProvenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sourceSystem", "readingId", "scheduledAt", "receivedAt", "collectionPolicyId"],
+      "properties": {
+        "sourceSystem": { "const": "forzy-api" },
+        "readingId": { "$ref": "#/definitions/uuid5" },
+        "scheduledAt": { "$ref": "#/definitions/timestamp" },
+        "receivedAt": { "$ref": "#/definitions/timestamp" },
+        "collectionPolicyId": {
+          "oneOf": [
+            { "type": "string", "minLength": 1 },
+            { "type": "null" }
+          ]
+        }
+      }
+    }
+  }
+}

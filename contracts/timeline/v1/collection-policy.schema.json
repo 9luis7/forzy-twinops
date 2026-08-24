@@ -1,0 +1,47 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "forzy://contracts/timeline/v1/collection-policy",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion", "collectionPolicyId", "assetId", "timezone", "activeWeekdays",
+    "windowStartLocal", "windowEndLocal", "pollIntervalSeconds", "gapThresholdSeconds",
+    "effectiveFrom", "effectiveTo", "configurationHash"
+  ],
+  "properties": {
+    "schemaVersion": { "const": "1.0" },
+    "collectionPolicyId": { "type": "string", "minLength": 1 },
+    "assetId": { "const": "forzy-motor-01" },
+    "timezone": { "const": "America/Sao_Paulo" },
+    "activeWeekdays": {
+      "type": "array",
+      "items": [
+        { "const": "monday" },
+        { "const": "tuesday" },
+        { "const": "wednesday" }
+      ],
+      "additionalItems": false,
+      "minItems": 3,
+      "maxItems": 3,
+      "uniqueItems": true
+    },
+    "windowStartLocal": { "const": "12:00:00" },
+    "windowEndLocal": { "const": "14:00:00" },
+    "pollIntervalSeconds": { "const": 5 },
+    "gapThresholdSeconds": { "const": 15 },
+    "effectiveFrom": { "$ref": "#/definitions/timestamp" },
+    "effectiveTo": {
+      "oneOf": [{ "$ref": "#/definitions/timestamp" }, { "type": "null" }]
+    },
+    "configurationHash": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    }
+  },
+  "definitions": {
+    "timestamp": {
+      "type": "string",
+      "pattern": "^\\d{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\\d|3[01])T(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d\\.\\d{3}Z$"
+    }
+  }
+}

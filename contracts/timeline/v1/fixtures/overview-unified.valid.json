@@ -1,0 +1,175 @@
+{
+  "schemaVersion": "1.0",
+  "assetId": "forzy-motor-01",
+  "queryFingerprint": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "activeHistoricalBatchId": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "requestedRange": { "from": null, "to": null },
+  "effectiveRange": {
+    "from": "2026-08-22T12:00:00.000Z",
+    "to": "2026-08-22T12:03:09.001Z"
+  },
+  "availableRange": {
+    "from": "2026-08-22T12:00:00.000Z",
+    "to": "2026-08-22T12:03:09.001Z"
+  },
+  "aggregationSummary": {
+    "requestedMaxPoints": 40,
+    "originalPointCount": 44,
+    "returnedPointCount": 4,
+    "omittedPointCount": 40,
+    "reducedSeriesCount": 4
+  },
+  "segments": [
+    {
+      "segmentId": "00000000-0000-5000-8000-000000000010",
+      "sourceKind": "historical_archive",
+      "startAt": "2026-08-22T12:00:00.000Z",
+      "endAt": "2026-08-22T12:00:09.000Z",
+      "totalPoints": 11,
+      "sensorCounts": { "s1": 11, "s2": 0 },
+      "timestampQuality": "source_without_offset_assumed_timezone",
+      "batchId": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "collectionPolicyId": null,
+      "assumptions": []
+    },
+    {
+      "segmentId": "00000000-0000-5000-8000-000000000011",
+      "sourceKind": "historical_archive",
+      "startAt": "2026-08-22T12:01:00.000Z",
+      "endAt": "2026-08-22T12:01:09.000Z",
+      "totalPoints": 11,
+      "sensorCounts": { "s1": 11, "s2": 0 },
+      "timestampQuality": "source_without_offset_assumed_timezone",
+      "batchId": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "collectionPolicyId": null,
+      "assumptions": []
+    },
+    {
+      "segmentId": "00000000-0000-5000-8000-000000000012",
+      "sourceKind": "historical_archive",
+      "startAt": "2026-08-22T12:02:00.000Z",
+      "endAt": "2026-08-22T12:02:09.000Z",
+      "totalPoints": 11,
+      "sensorCounts": { "s1": 11, "s2": 0 },
+      "timestampQuality": "source_without_offset_assumed_timezone",
+      "batchId": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "collectionPolicyId": null,
+      "assumptions": []
+    },
+    {
+      "segmentId": "00000000-0000-5000-8000-000000000013",
+      "sourceKind": "historical_archive",
+      "startAt": "2026-08-22T12:03:00.000Z",
+      "endAt": "2026-08-22T12:03:09.000Z",
+      "totalPoints": 11,
+      "sensorCounts": { "s1": 11, "s2": 0 },
+      "timestampQuality": "source_without_offset_assumed_timezone",
+      "batchId": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "collectionPolicyId": null,
+      "assumptions": []
+    }
+  ],
+  "gaps": [
+    {
+      "gapId": "3374ee11-91f2-528d-b23e-198ee91b3d70",
+      "leftSegmentId": "00000000-0000-5000-8000-000000000010",
+      "rightSegmentId": "00000000-0000-5000-8000-000000000011",
+      "startAt": "2026-08-22T12:00:09.000Z",
+      "endAt": "2026-08-22T12:01:00.000Z",
+      "gapType": "archive_sampling_gap",
+      "durationSeconds": 51,
+      "ruleVersion": "timeline-gap-v1",
+      "messageCode": "timeline_gap_archive_sampling"
+    },
+    {
+      "gapId": "f1e79407-d635-52b6-8ea2-e63f13ac3e16",
+      "leftSegmentId": "00000000-0000-5000-8000-000000000011",
+      "rightSegmentId": "00000000-0000-5000-8000-000000000012",
+      "startAt": "2026-08-22T12:01:09.000Z",
+      "endAt": "2026-08-22T12:02:00.000Z",
+      "gapType": "archive_sampling_gap",
+      "durationSeconds": 51,
+      "ruleVersion": "timeline-gap-v1",
+      "messageCode": "timeline_gap_archive_sampling"
+    },
+    {
+      "gapId": "922b114a-8ef4-547b-845b-ee355359a06c",
+      "leftSegmentId": "00000000-0000-5000-8000-000000000012",
+      "rightSegmentId": "00000000-0000-5000-8000-000000000013",
+      "startAt": "2026-08-22T12:02:09.000Z",
+      "endAt": "2026-08-22T12:03:00.000Z",
+      "gapType": "archive_sampling_gap",
+      "durationSeconds": 51,
+      "ruleVersion": "timeline-gap-v1",
+      "messageCode": "timeline_gap_archive_sampling"
+    }
+  ],
+  "operatingCycles": [],
+  "series": [
+    {
+      "segmentId": "00000000-0000-5000-8000-000000000010",
+      "sensorId": "s1",
+      "sourceKind": "historical_archive",
+      "metric": "temperature",
+      "points": [
+        { "pointId": "00000000-0000-5000-8000-000000000100", "eventAt": "2026-08-22T12:00:00.000Z", "value": 30 },
+        { "pointId": "00000000-0000-5000-8000-000000000101", "eventAt": "2026-08-22T12:00:09.000Z", "value": 30.5 }
+      ],
+      "aggregation": {
+        "method": "time_bucket_envelope_v1",
+        "requestedMaxPoints": 40,
+        "originalPointCount": 11,
+        "returnedPointCount": 2,
+        "omittedPointCount": 9
+      }
+    },
+    {
+      "segmentId": "00000000-0000-5000-8000-000000000011",
+      "sensorId": "s1",
+      "sourceKind": "historical_archive",
+      "metric": "temperature",
+      "points": [
+        { "pointId": "00000000-0000-5000-8000-000000000110", "eventAt": "2026-08-22T12:01:00.000Z", "value": 31 }
+      ],
+      "aggregation": {
+        "method": "time_bucket_envelope_v1",
+        "requestedMaxPoints": 40,
+        "originalPointCount": 11,
+        "returnedPointCount": 1,
+        "omittedPointCount": 10
+      }
+    },
+    {
+      "segmentId": "00000000-0000-5000-8000-000000000012",
+      "sensorId": "s1",
+      "sourceKind": "historical_archive",
+      "metric": "temperature",
+      "points": [
+        { "pointId": "00000000-0000-5000-8000-000000000120", "eventAt": "2026-08-22T12:02:00.000Z", "value": 32 }
+      ],
+      "aggregation": {
+        "method": "time_bucket_envelope_v1",
+        "requestedMaxPoints": 40,
+        "originalPointCount": 11,
+        "returnedPointCount": 1,
+        "omittedPointCount": 10
+      }
+    },
+    {
+      "segmentId": "00000000-0000-5000-8000-000000000013",
+      "sensorId": "s1",
+      "sourceKind": "historical_archive",
+      "metric": "temperature",
+      "points": [],
+      "aggregation": {
+        "method": "time_bucket_envelope_v1",
+        "requestedMaxPoints": 40,
+        "originalPointCount": 11,
+        "returnedPointCount": 0,
+        "omittedPointCount": 11
+      }
+    }
+  ],
+  "eventCandidates": [],
+  "capabilities": { "historical": true, "live": true }
+}

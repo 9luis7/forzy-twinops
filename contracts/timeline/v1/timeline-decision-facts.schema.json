@@ -1,0 +1,97 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "forzy://contracts/timeline/v1/timeline-decision-facts",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion", "conditionState", "conditionTemporalScope", "conditionAsOf",
+    "conditionEpisodeStartedAt", "conditionSource", "collectionState",
+    "collectionExpectation", "dataAvailability", "dataFreshness", "dataTrust"
+  ],
+  "properties": {
+    "schemaVersion": { "const": "1.0" },
+    "conditionState": {
+      "enum": ["normal", "watch", "alert", "insufficient_data", "unknown"]
+    },
+    "conditionTemporalScope": {
+      "enum": ["current", "last_known", "historical", "none"]
+    },
+    "conditionAsOf": {
+      "oneOf": [{ "$ref": "#/definitions/timestamp" }, { "type": "null" }]
+    },
+    "conditionEpisodeStartedAt": {
+      "oneOf": [{ "$ref": "#/definitions/timestamp" }, { "type": "null" }]
+    },
+    "conditionSource": {
+      "enum": ["live_assessment", "historical_walk_forward", "none"]
+    },
+    "collectionState": {
+      "enum": [
+        "received_now", "last_known", "expected_idle", "unavailable",
+        "historical_context", "historical_gap"
+      ]
+    },
+    "collectionExpectation": {
+      "enum": ["expected_now", "expected_idle", "not_applicable"]
+    },
+    "dataAvailability": { "enum": ["complete", "partial", "gap", "unavailable"] },
+    "dataFreshness": { "enum": ["fresh", "stale", "historical", "unknown"] },
+    "dataTrust": { "enum": ["sufficient", "degraded", "insufficient"] }
+  },
+  "allOf": [
+    {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "conditionTemporalScope": { "const": "none" },
+            "conditionAsOf": { "type": "null" },
+            "conditionEpisodeStartedAt": { "type": "null" },
+            "conditionSource": { "const": "none" }
+          }
+        },
+        {
+          "type": "object",
+          "properties": {
+            "conditionTemporalScope": { "enum": ["current", "last_known", "historical"] },
+            "conditionAsOf": { "$ref": "#/definitions/timestamp" },
+            "conditionSource": { "enum": ["live_assessment", "historical_walk_forward"] }
+          }
+        }
+      ]
+    },
+    {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "conditionState": { "const": "unknown" },
+            "conditionTemporalScope": { "const": "none" },
+            "conditionAsOf": { "type": "null" },
+            "conditionEpisodeStartedAt": { "type": "null" },
+            "conditionSource": { "const": "none" },
+            "collectionState": { "const": "historical_gap" },
+            "collectionExpectation": { "const": "not_applicable" },
+            "dataAvailability": { "const": "gap" },
+            "dataFreshness": { "const": "historical" },
+            "dataTrust": { "const": "insufficient" }
+          }
+        },
+        {
+          "type": "object",
+          "properties": {
+            "collectionState": {
+              "enum": ["received_now", "last_known", "expected_idle", "unavailable", "historical_context"]
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "definitions": {
+    "timestamp": {
+      "type": "string",
+      "pattern": "^\\d{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\\d|3[01])T(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d\\.\\d{3}Z$"
+    }
+  }
+}
