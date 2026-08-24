@@ -68,9 +68,14 @@ _FORZY_HISTORY_2026_05_19_V1 = HistoryProfileV1(
         "sha256:f09a6613bf6ba3416555a15de6b381bd842474f5f3f33c20660416c7164f0be4"
     ),
     header_records=(
-        b";1;2;4;5;6;7;8;9\r\n",
         (
-            ";PDI;PDI;1.1. Velocidade;1.2. Aceleração;1.3. Temperatura;"
+            b";IOLM/Port 1/Attached Device/PDI Data Byte Array;"
+            b"IOLM/Port 2/Attached Device/PDI Data Byte Array;4;5;6;7;8;9"
+            + b"\r\n"
+        ),
+        (
+            ";PDI Data Byte Array;PDI Data Byte Array;1.1. Velocidade;"
+            "1.2. Aceleração;1.3. Temperatura;"
             "2.1. Velocidade;2.2. Aceleração;2.3. Temperatura"
         ).encode("utf-8")
         + b"\r\n",

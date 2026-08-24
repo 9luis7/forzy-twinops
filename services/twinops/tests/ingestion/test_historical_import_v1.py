@@ -29,9 +29,14 @@ pytestmark = pytest.mark.skipif(
 )
 
 HEADER_RECORDS = (
-    b";1;2;4;5;6;7;8;9\r\n",
     (
-        ";PDI;PDI;1.1. Velocidade;1.2. Aceleração;1.3. Temperatura;"
+        b";IOLM/Port 1/Attached Device/PDI Data Byte Array;"
+        b"IOLM/Port 2/Attached Device/PDI Data Byte Array;4;5;6;7;8;9"
+        + b"\r\n"
+    ),
+    (
+        ";PDI Data Byte Array;PDI Data Byte Array;1.1. Velocidade;"
+        "1.2. Aceleração;1.3. Temperatura;"
         "2.1. Velocidade;2.2. Aceleração;2.3. Temperatura"
     ).encode("utf-8")
     + b"\r\n",
@@ -334,7 +339,9 @@ def test_byte_framing_is_rejected_before_decoding(source_bytes: bytes, message: 
 
 
 def test_exact_header_bytes_are_required_even_when_size_and_hash_match() -> None:
-    source_bytes = _replace_row(_source(), b";1;2;4;5;6;7;8;9", b";1;2;3;5;6;7;8;9")
+    source_bytes = bytearray(_source())
+    source_bytes[0] ^= 0x01
+    source_bytes = bytes(source_bytes)
 
     with pytest.raises(ValueError, match="header"):
         _prepare(source_bytes, _profile(source_bytes))

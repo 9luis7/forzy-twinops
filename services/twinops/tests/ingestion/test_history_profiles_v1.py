@@ -18,9 +18,14 @@ if _IMPORTER_AVAILABLE:
 
 
 EXPECTED_HEADER_RECORDS = (
-    b";1;2;4;5;6;7;8;9\r\n",
     (
-        ";PDI;PDI;1.1. Velocidade;1.2. Aceleração;1.3. Temperatura;"
+        b";IOLM/Port 1/Attached Device/PDI Data Byte Array;"
+        b"IOLM/Port 2/Attached Device/PDI Data Byte Array;4;5;6;7;8;9"
+        + b"\r\n"
+    ),
+    (
+        ";PDI Data Byte Array;PDI Data Byte Array;1.1. Velocidade;"
+        "1.2. Aceleração;1.3. Temperatura;"
         "2.1. Velocidade;2.2. Aceleração;2.3. Temperatura"
     ).encode("utf-8")
     + b"\r\n",
