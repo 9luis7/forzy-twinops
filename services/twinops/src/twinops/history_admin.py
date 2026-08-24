@@ -20,15 +20,20 @@ import psycopg
 from twinops.contracts.timeline_v1_models import parse_public_utc_millis_v1
 from twinops.ingestion.historical_import_v1 import prepare_historical_batch
 from twinops.ingestion.history_profiles_v1 import registered_profile
-from twinops.security.admin_result_writer_v1 import AdminResultWriterV1
+from twinops.security.admin_result_writer_v1 import (
+    AdminResultWriterV1,
+    validate_admin_result_v1,
+)
 from twinops.security.local_write_guard_v1 import (
     AttestedTempDirectoryV1,
     LocalDatabasePermitV1,
+    _open_attested_sqlite_connection,
+    _retain_new_local_database,
     attest_local_database,
     compute_local_target_fingerprint,
     create_attested_temp_dir,
-    preflight_new_local_database,
     reattest_local_database,
+    reattest_local_staged_handoff,
     remove_attested_temp_dir,
 )
 from twinops.storage.collection_policy_v1 import (
@@ -44,7 +49,6 @@ from twinops.storage.postgres_historical_repository_v1 import (
 from twinops.storage.schema_migrations import (
     DeploymentIdentityV1,
     apply_sqlite_migrations,
-    ensure_deployment_identity,
     registered_migration_specs,
     verify_schema_version,
 )
@@ -276,7 +280,7 @@ def _parse_args(argv: Sequence[str] | None):
         _canonical_sha256(args.expected_sha256, "source hash")
         if args.profile != _PROFILE_ID or args.asset_id != _ASSET_ID:
             raise ValueError("historical registration mismatch")
-    if args.command in {"activate-history", "verify-active"}:
+    if args.command in {"activate-history", "show-active", "verify-active"}:
         if args.asset_id != _ASSET_ID:
             raise ValueError("historical asset mismatch")
     if args.command == "activate-history":
@@ -335,22 +339,18 @@ def repository_from_target(target: RepositoryTargetV1) -> HistoricalRepositoryV1
         if target.database_path is None:
             raise HistoryAdminError("local_target")
         def guarded_connect(path: Path) -> sqlite3.Connection:
-            connection = sqlite3.connect(path, timeout=5)
-            try:
-                if target.local_permit is None:
-                    raise HistoryAdminError("local_target")
-                reattest_local_database(
-                    target.local_permit,
-                    opened_connection=connection,
-                )
-                return connection
-            except BaseException:
-                connection.close()
-                raise
+            del path
+            if target.local_permit is None:
+                raise HistoryAdminError("local_target")
+            return _open_attested_sqlite_connection(target.local_permit)
 
         return SQLiteHistoricalRepositoryV1(
             target.database_path,
             connection_factory=guarded_connect,
+            before_begin=lambda connection: reattest_local_database(
+                target.local_permit,
+                opened_connection=connection,
+            ),
         )
     if (
         target.database_url is None
@@ -488,10 +488,42 @@ def _emit(result: dict[str, object], result_path: Path | None) -> None:
 
 def _validate_result_shape(result: dict[str, object]) -> None:
     command = result.get("command")
-    expected = _RESULT_KEYS.get(command)
-    if expected is not None and set(result) != expected:
-        raise HistoryAdminError("result_shape")
-    if any(isinstance(value, (Path, bytes, bytearray, memoryview)) for value in result.values()):
+    if command == "seed-collection-policy":
+        expected = {
+            "command",
+            "mode",
+            "environment",
+            "targetFingerprint",
+            "schemaVersion",
+            "policyId",
+            "policyConfigurationHash",
+            "policyInserted",
+            "writesPerformed",
+        }
+        valid = (
+            set(result) == expected
+            and result["mode"] in {"dry-run", "apply"}
+            and result["environment"] in {"local", "preview", "production"}
+            and result["schemaVersion"] == _EXPECTED_SCHEMA_VERSION
+            and result["policyId"] == INITIAL_COLLECTION_POLICY_ID
+            and isinstance(result["targetFingerprint"], str)
+            and bool(_SHA256_RE.fullmatch(result["targetFingerprint"]))
+            and result["policyConfigurationHash"]
+            == INITIAL_COLLECTION_POLICY_CONFIGURATION_HASH
+            and type(result["policyInserted"]) is bool
+            and type(result["writesPerformed"]) is int
+            and result["writesPerformed"] >= 0
+            and (
+                result["mode"] != "dry-run"
+                or result["writesPerformed"] == 0
+            )
+        )
+        if not valid:
+            raise HistoryAdminError("result_shape")
+        return
+    try:
+        validate_admin_result_v1(result)
+    except (TypeError, ValueError):
         raise HistoryAdminError("result_shape")
 
 
@@ -545,18 +577,19 @@ def _migrate_local(args, clock: Callable[[], datetime]) -> dict[str, object]:
         if permit.target_fingerprint != args.expected_target_fingerprint:
             raise HistoryAdminError("target_identity")
         if args.mode == "dry-run":
-            repository = SQLiteHistoricalRepositoryV1(path)
             target = _target(args, {}, permit=permit)
+            repository = repository_from_target(target)
             _preflight_repository(repository, target)
             inserted = False
             applied_count = 0
             writes = 0
         else:
-            connection = sqlite3.connect(path, timeout=5)
+            connection = _open_attested_sqlite_connection(permit)
             try:
                 reattest_local_database(permit, opened_connection=connection)
                 before = 0
                 policy_before = 0
+                identity_before = 0
                 try:
                     before = connection.execute(
                         "SELECT COUNT(*) FROM schema_migrations_v1"
@@ -565,19 +598,24 @@ def _migrate_local(args, clock: Callable[[], datetime]) -> dict[str, object]:
                         "SELECT COUNT(*) FROM collection_policies_v1 WHERE policy_id=?",
                         (INITIAL_COLLECTION_POLICY_ID,),
                     ).fetchone()[0]
+                    identity_before = connection.execute(
+                        "SELECT COUNT(*) FROM deployment_identity_v1 "
+                        "WHERE identity_key='primary'"
+                    ).fetchone()[0]
                 except sqlite3.Error:
                     pass
                 apply_sqlite_migrations(
                     connection,
                     registered_migration_specs(),
                     initial_policy_effective_from=effective_from,
+                    deployment_identity=_expected_identity(
+                        _target(args, {}, permit=permit)
+                    ),
+                    before_begin=lambda opened: reattest_local_database(
+                        permit,
+                        opened_connection=opened,
+                    ),
                 )
-                connection.execute("BEGIN IMMEDIATE")
-                inserted_identity = ensure_deployment_identity(
-                    connection,
-                    _expected_identity(_target(args, {}, permit=permit)),
-                )
-                connection.commit()
                 after = connection.execute(
                     "SELECT COUNT(*) FROM schema_migrations_v1"
                 ).fetchone()[0]
@@ -585,20 +623,30 @@ def _migrate_local(args, clock: Callable[[], datetime]) -> dict[str, object]:
                     "SELECT COUNT(*) FROM collection_policies_v1 WHERE policy_id=?",
                     (INITIAL_COLLECTION_POLICY_ID,),
                 ).fetchone()[0]
+                identity_count = connection.execute(
+                    "SELECT COUNT(*) FROM deployment_identity_v1 "
+                    "WHERE identity_key='primary'"
+                ).fetchone()[0]
                 if policy_count != 1 or not verify_schema_version(
                     connection, args.expected_schema_version
                 ).is_current:
                     raise HistoryAdminError("migration_reread")
                 applied_count = after - before
                 inserted = policy_before == 0 and policy_count == 1
-                writes = applied_count + int(inserted) + int(inserted_identity)
+                writes = (
+                    applied_count
+                    + int(inserted)
+                    + int(identity_before == 0 and identity_count == 1)
+                )
             finally:
                 connection.close()
     else:
-        fingerprint = preflight_new_local_database(
+        absence_permit = attest_local_database(
             path,
             expected_schema_version=args.expected_schema_version,
+            require_existing=False,
         )
+        fingerprint = absence_permit.target_fingerprint
         if fingerprint != args.expected_target_fingerprint:
             raise HistoryAdminError("target_identity")
         if args.mode == "dry-run":
@@ -606,41 +654,39 @@ def _migrate_local(args, clock: Callable[[], datetime]) -> dict[str, object]:
             inserted = False
             writes = 0
         else:
+            retained = _retain_new_local_database(absence_permit)
             descriptor = None
             connection = None
             created_permit = None
             try:
-                descriptor = os.open(
-                    path,
-                    os.O_RDWR | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0),
-                    0o600,
-                )
-                created_identity = os.fstat(descriptor)
-                connection = sqlite3.connect(path, timeout=5)
+                descriptor = retained.create()
                 created_permit = attest_local_database(
                     path,
                     expected_schema_version=args.expected_schema_version,
                     require_existing=True,
                 )
-                if created_permit.target_identity != (
-                    int(created_identity.st_dev),
-                    int(created_identity.st_ino),
+                if (
+                    created_permit.root_identity != absence_permit.root_identity
+                    or created_permit.parent_identity
+                    != absence_permit.parent_identity
+                    or created_permit.target_identity != retained.created_identity
                 ):
                     raise HistoryAdminError("local_target")
-                reattest_local_database(created_permit, opened_connection=connection)
                 os.close(descriptor)
                 descriptor = None
+                connection = _open_attested_sqlite_connection(created_permit)
                 apply_sqlite_migrations(
                     connection,
                     registered_migration_specs(),
                     initial_policy_effective_from=effective_from,
+                    deployment_identity=_expected_identity(
+                        _target(args, {}, permit=created_permit)
+                    ),
+                    before_begin=lambda opened: reattest_local_database(
+                        created_permit,
+                        opened_connection=opened,
+                    ),
                 )
-                connection.execute("BEGIN IMMEDIATE")
-                ensure_deployment_identity(
-                    connection,
-                    _expected_identity(_target(args, {}, permit=created_permit)),
-                )
-                connection.commit()
                 verification = verify_schema_version(
                     connection, args.expected_schema_version
                 )
@@ -656,18 +702,14 @@ def _migrate_local(args, clock: Callable[[], datetime]) -> dict[str, object]:
                 if connection is not None:
                     connection.close()
                     connection = None
-                if created_permit is not None:
-                    try:
-                        reattest_local_database(created_permit)
-                        path.unlink(missing_ok=True)
-                    except BaseException:
-                        pass
+                retained.cleanup_created()
                 raise
             finally:
                 if descriptor is not None:
                     os.close(descriptor)
                 if connection is not None:
                     connection.close()
+                retained.close()
     return {
         "command": "migrate-local",
         "mode": args.mode,
@@ -685,6 +727,7 @@ def _migrate_local(args, clock: Callable[[], datetime]) -> dict[str, object]:
 
 def _stage(args, env, clock, repository_factory):
     writer = AdminResultWriterV1(args.result_json)
+    writer.preflight()
     source_bytes = _read_attested_source(args.input)
     actual_source = "sha256:" + sha256(source_bytes).hexdigest()
     if actual_source != args.expected_sha256:
@@ -711,16 +754,33 @@ def _stage(args, env, clock, repository_factory):
     repository = repository_factory(target)
     _preflight_repository(repository, target)
     _policy(repository, prepared.imported_at)
+    expected_summary = SimpleBatchSummary.from_prepared(prepared)
     if args.mode == "apply":
         if permit is not None:
             reattest_local_database(permit)
         stored = repository.stage_batch(prepared)
-        summary = stored.batch
+        _preflight_repository(repository, target)
+        _policy(repository, prepared.imported_at)
+        summary = _batch_summary(repository, prepared.batch_id)
+        _require_same_stage_evidence(summary, expected_summary)
         inserted = stored.inserted
         writes = stored.writes_performed
     else:
-        summary = SimpleBatchSummary.from_prepared(prepared)
+        summary = expected_summary
         inserted = True
+        try:
+            existing = _batch_summary(repository, prepared.batch_id)
+        except HistoryAdminError:
+            existing = None
+        if existing is not None:
+            try:
+                _require_same_stage_evidence(existing, expected_summary)
+            except HistoryAdminError:
+                if hasattr(repository, "_connection"):
+                    raise
+            else:
+                summary = existing
+                inserted = False
         writes = 0
     result = {
         "command": "stage-history",
@@ -768,6 +828,37 @@ class SimpleBatchSummary:
         )
 
 
+def _batch_evidence(summary) -> tuple[object, ...]:
+    return (
+        summary.asset_id,
+        summary.batch_id,
+        summary.source_sha256,
+        summary.manifest_sha256,
+        summary.raw_row_count,
+        summary.sample_count,
+        summary.operating_cycle_count,
+        summary.assessment_count,
+        summary.assessment_manifest_sha256,
+    )
+
+
+def _require_same_stage_evidence(actual, expected) -> None:
+    if _batch_evidence(actual)[:7] != _batch_evidence(expected)[:7]:
+        raise HistoryAdminError("batch_identity")
+
+
+def _require_same_batch_evidence(
+    actual,
+    expected,
+    *,
+    status: str | None,
+) -> None:
+    if _batch_evidence(actual) != _batch_evidence(expected):
+        raise HistoryAdminError("batch_identity")
+    if status is not None and actual.status != status:
+        raise HistoryAdminError("batch_identity")
+
+
 def _repository_for_existing(args, env, repository_factory):
     permit = None
     if args.environment == "local":
@@ -784,13 +875,115 @@ def _repository_for_existing(args, env, repository_factory):
     return repository, permit
 
 
+def _activation_timestamp(value: object) -> datetime:
+    if isinstance(value, datetime):
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise HistoryAdminError("active_batch")
+        normalized = value.astimezone(timezone.utc)
+        if normalized.microsecond % 1_000 != 0:
+            raise HistoryAdminError("active_batch")
+        return normalized
+    if isinstance(value, str):
+        try:
+            return parse_public_utc_millis_v1(value)
+        except (TypeError, ValueError) as exc:
+            raise HistoryAdminError("active_batch") from exc
+    raise HistoryAdminError("active_batch")
+
+
+def _prove_direct_activation_predecessor(
+    repository,
+    *,
+    asset_id: str,
+    target_summary,
+    expected_predecessor: str | None,
+) -> None:
+    """Prove the unique immediately preceding activation from fresh state."""
+
+    if not isinstance(
+        repository,
+        (SQLiteHistoricalRepositoryV1, PostgresHistoricalRepositoryV1),
+    ):
+        proof = getattr(repository, "_activation_predecessor_for_retry", None)
+        if not callable(proof):
+            raise HistoryAdminError("active_batch")
+        try:
+            actual = proof(asset_id=asset_id, batch_id=target_summary.batch_id)
+            if actual is not None:
+                _canonical_sha256(actual, "activation predecessor")
+        except HistoryAdminError:
+            raise
+        except BaseException as exc:
+            raise HistoryAdminError("active_batch") from exc
+        if actual != expected_predecessor:
+            raise HistoryAdminError("active_batch")
+        return
+
+    placeholder = (
+        "?" if isinstance(repository, SQLiteHistoricalRepositoryV1) else "%s"
+    )
+    try:
+        with repository._connection() as connection:
+            rows = connection.execute(
+                "SELECT batch_id,status,activated_at "
+                "FROM historical_import_batches_v1 "
+                f"WHERE asset_id={placeholder} AND activated_at IS NOT NULL",
+                (asset_id,),
+            ).fetchall()
+    except BaseException as exc:
+        raise HistoryAdminError("active_batch") from exc
+
+    activations: list[tuple[datetime, str, str]] = []
+    try:
+        for row in rows:
+            batch_id = _canonical_sha256(row["batch_id"], "activation batch")
+            status = row["status"]
+            if status not in {"active", "superseded"}:
+                raise HistoryAdminError("active_batch")
+            activations.append(
+                (_activation_timestamp(row["activated_at"]), batch_id, status)
+            )
+    except HistoryAdminError:
+        raise
+    except BaseException as exc:
+        raise HistoryAdminError("active_batch") from exc
+
+    target_rows = [
+        row for row in activations if row[1] == target_summary.batch_id
+    ]
+    if len(target_rows) != 1 or target_rows[0][2] != "active":
+        raise HistoryAdminError("active_batch")
+    if target_rows[0][0] != _activation_timestamp(
+        getattr(target_summary, "activated_at", None)
+    ):
+        raise HistoryAdminError("active_batch")
+    if any(
+        batch_id != target_summary.batch_id and status != "superseded"
+        for _, batch_id, status in activations
+    ):
+        raise HistoryAdminError("active_batch")
+
+    by_timestamp: dict[datetime, list[str]] = {}
+    for activated_at, batch_id, _ in activations:
+        by_timestamp.setdefault(activated_at, []).append(batch_id)
+    if any(len(batch_ids) != 1 for batch_ids in by_timestamp.values()):
+        raise HistoryAdminError("active_batch")
+
+    ordered = sorted(activations, key=lambda row: row[0])
+    if not ordered or ordered[-1][1] != target_summary.batch_id:
+        raise HistoryAdminError("active_batch")
+    actual_predecessor = None if len(ordered) == 1 else ordered[-2][1]
+    if actual_predecessor != expected_predecessor:
+        raise HistoryAdminError("active_batch")
+
+
 def _activate(args, env, clock, repository_factory):
     writer = AdminResultWriterV1(args.result_json)
+    writer.preflight()
     repository, permit = _repository_for_existing(args, env, repository_factory)
     summary = _batch_summary(repository, args.batch_id)
     if (
         summary.asset_id != args.asset_id
-        or summary.status != "staged"
         or summary.source_sha256 != args.expected_source_sha256
         or summary.manifest_sha256 != args.expected_manifest_sha256
         or summary.assessment_manifest_sha256
@@ -799,21 +992,60 @@ def _activate(args, env, clock, repository_factory):
         raise HistoryAdminError("activation_identity")
     active = repository.active_batch(args.asset_id)
     current = None if active is None else active.batch_id
-    if current != args.expected_active_batch:
-        raise HistoryAdminError("active_batch")
+    retry_committed = (
+        args.mode == "apply"
+        and summary.status == "active"
+        and current == args.batch_id
+        and args.expected_active_batch != args.batch_id
+    )
+    if not retry_committed:
+        if summary.status != "staged":
+            raise HistoryAdminError("activation_identity")
+        if current != args.expected_active_batch:
+            raise HistoryAdminError("active_batch")
+    else:
+        _prove_direct_activation_predecessor(
+            repository,
+            asset_id=args.asset_id,
+            target_summary=summary,
+            expected_predecessor=args.expected_active_batch,
+        )
     _policy(repository, clock())
     if args.mode == "apply":
-        if permit is not None:
-            reattest_local_database(permit)
-        activated = repository.activate_batch(
-            asset_id=args.asset_id,
-            batch_id=args.batch_id,
-            expected_active_batch_id=args.expected_active_batch,
+        if retry_committed:
+            previous = args.expected_active_batch
+            did_activate = True
+            writes = 1 + int(previous is not None)
+        else:
+            if permit is not None:
+                reattest_local_database(permit)
+            activated = repository.activate_batch(
+                asset_id=args.asset_id,
+                batch_id=args.batch_id,
+                expected_active_batch_id=args.expected_active_batch,
+            )
+            if (
+                activated.previous_active_batch_id
+                != args.expected_active_batch
+                or activated.active_batch_id != args.batch_id
+                or activated.activated is not True
+            ):
+                raise HistoryAdminError("activation_reread")
+            previous = activated.previous_active_batch_id
+            did_activate = True
+            writes = activated.writes_performed
+        _preflight_repository(repository, _target(args, env, permit=permit))
+        _policy(repository, clock())
+        fresh_active = repository.active_batch(args.asset_id)
+        if fresh_active is None:
+            raise HistoryAdminError("activation_reread")
+        _require_same_batch_evidence(
+            fresh_active,
+            summary,
+            status="active",
         )
-        previous = activated.previous_active_batch_id
-        active_id = activated.active_batch_id
-        did_activate = activated.activated
-        writes = activated.writes_performed
+        summary = fresh_active
+        active_id = fresh_active.batch_id
     else:
         previous = current
         active_id = args.batch_id
@@ -844,6 +1076,7 @@ def _activate(args, env, clock, repository_factory):
 
 def _active_result(args, env, clock, repository_factory, *, verify: bool):
     writer = AdminResultWriterV1(args.result_json)
+    writer.preflight()
     repository, _ = _repository_for_existing(args, env, repository_factory)
     active = repository.active_batch(args.asset_id)
     if verify:
@@ -897,7 +1130,7 @@ def _seed(args, env, repository_factory):
             reattest_local_database(permit)
         with repository._connection() as connection:
             if isinstance(connection, sqlite3.Connection):
-                connection.execute("BEGIN IMMEDIATE")
+                repository._begin_immediate(connection)
             result = ensure_initial_collection_policy(
                 connection,
                 effective_from=effective_from,
@@ -930,6 +1163,7 @@ def main(
         source_env = os.environ if env is None else env
         if args.command == "migrate-local":
             writer = AdminResultWriterV1(args.result_json)
+            writer.preflight()
             result = _migrate_local(args, clock)
         elif args.command == "stage-history":
             result, writer = _stage(args, source_env, clock, repository_factory)
@@ -971,6 +1205,7 @@ __all__ = (
     "compute_postgres_target_fingerprint",
     "create_attested_temp_dir",
     "main",
+    "reattest_local_staged_handoff",
     "remove_attested_temp_dir",
     "repository_from_target",
     "utc_now",

@@ -4,6 +4,7 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 from importlib.util import find_spec
 import json
+import os
 from pathlib import Path
 import sqlite3
 from typing import Iterable
@@ -25,6 +26,7 @@ def test_sqlite_historical_repository_surface_exists() -> None:
 if _REPOSITORY_AVAILABLE:
     from historical_repository_contract import (
         HistoricalRepositoryContract,
+        _assessment,
         synthetic_prepared_batch,
     )
     from twinops.contracts.timeline_v1_models import CollectionPolicyV1
@@ -375,3 +377,117 @@ if _REPOSITORY_AVAILABLE:
         )
         assert begin < first_write
         assert "PRAGMA foreign_keys=ON" in statements[: begin + 1]
+
+
+    def test_pre_begin_callback_runs_immediately_before_every_repository_begin(
+        sqlite_database_path: Path,
+    ) -> None:
+        """Catches a repository write transaction that bypasses the guard callback."""
+
+        events: list[str] = []
+
+        class RecordingConnection(sqlite3.Connection):
+            def execute(self, sql, parameters=(), /):
+                events.append(_normalized(sql))
+                return super().execute(sql, parameters)
+
+            def executemany(self, sql, parameters, /):
+                events.append(_normalized(sql))
+                return super().executemany(sql, parameters)
+
+        def factory(path: Path) -> sqlite3.Connection:
+            return sqlite3.connect(path, timeout=5, factory=RecordingConnection)
+
+        def before_begin(connection: sqlite3.Connection) -> None:
+            assert connection.in_transaction is False
+            events.append("PRE_BEGIN_CALLBACK")
+
+        repository = SQLiteHistoricalRepositoryV1(
+            sqlite_database_path,
+            connection_factory=factory,
+            before_begin=before_begin,
+        )
+        first = synthetic_prepared_batch(0)
+        second = synthetic_prepared_batch(1)
+
+        repository.stage_batch(first)
+        repository.store_assessments(first.batch_id, [_assessment(first)])
+        repository.stage_batch(second)
+        repository.activate_batch(
+            asset_id=first.asset_id,
+            batch_id=first.batch_id,
+            expected_active_batch_id=None,
+        )
+        repository.activate_batch(
+            asset_id=second.asset_id,
+            batch_id=second.batch_id,
+            expected_active_batch_id=first.batch_id,
+        )
+
+        begin_indexes = [
+            index for index, event in enumerate(events) if event == "BEGIN IMMEDIATE"
+        ]
+        assert len(begin_indexes) == 5
+        assert all(events[index - 1] == "PRE_BEGIN_CALLBACK" for index in begin_indexes)
+
+
+    def test_pre_begin_callback_blocks_connect_begin_aba_before_any_sql_write(
+        sqlite_database_path: Path,
+        tmp_path: Path,
+    ) -> None:
+        """Catches an opened-file identity ABA before BEGIN reaches SQLite."""
+
+        replacement = tmp_path / "replacement.sqlite3"
+        replacement.write_bytes(sqlite_database_path.read_bytes())
+        opened_identity = (
+            os.stat(sqlite_database_path).st_dev,
+            os.stat(sqlite_database_path).st_ino,
+        )
+        replacement_before = replacement.read_bytes()
+        original_before = sqlite_database_path.read_bytes()
+        statements: list[str] = []
+        identity_swapped = False
+
+        class AbaConnection(sqlite3.Connection):
+            def execute(self, sql, parameters=(), /):
+                nonlocal identity_swapped
+                normalized = _normalized(sql)
+                statements.append(normalized)
+                cursor = super().execute(sql, parameters)
+                if normalized == "PRAGMA foreign_keys":
+                    # SQLite denies renaming its open file on Windows. Substitute
+                    # the independently observed pathname identity at the same
+                    # connect/BEGIN boundary while retaining a real connection.
+                    identity_swapped = True
+                return cursor
+
+        def factory(path: Path) -> sqlite3.Connection:
+            return sqlite3.connect(path, timeout=5, factory=AbaConnection)
+
+        def verify_opened_identity(connection: sqlite3.Connection) -> None:
+            del connection
+            current = (
+                os.stat(replacement)
+                if identity_swapped
+                else os.stat(sqlite_database_path)
+            )
+            if (current.st_dev, current.st_ino) != opened_identity:
+                raise RuntimeError("opened SQLite identity changed before BEGIN")
+
+        repository = SQLiteHistoricalRepositoryV1(
+            sqlite_database_path,
+            connection_factory=factory,
+            before_begin=verify_opened_identity,
+        )
+
+        with pytest.raises(RuntimeError, match="identity changed before BEGIN"):
+            repository.stage_batch(synthetic_prepared_batch(0))
+
+        assert identity_swapped is True
+        assert "BEGIN IMMEDIATE" not in statements
+        assert not any(
+            statement.startswith(("INSERT ", "UPDATE ", "DELETE "))
+            for statement in statements
+        )
+        assert sqlite_database_path.read_bytes() == replacement_before
+        assert replacement.read_bytes() == original_before

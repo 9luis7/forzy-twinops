@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from hashlib import sha256
 import json
 import os
@@ -15,6 +14,7 @@ import stat as stat_module
 import tempfile
 from types import MappingProxyType
 from urllib.parse import quote
+from weakref import WeakKeyDictionary
 
 from twinops.storage.schema_migrations import (
     registered_migration_specs,
@@ -32,30 +32,108 @@ class LocalWriteGuardError(RuntimeError):
     """Raised without path-bearing details when local attestation fails."""
 
 
-@dataclass(frozen=True)
 class AttestedTempDirectoryV1:
+    """Opaque process-local capability for one freshly-created temp root."""
+
+    __slots__ = ("path", "__weakref__")
+
     path: Path
-    _token: str
-    _creator_pid: int
-    _identity: tuple[int, int]
+
+    def __init__(self, path: Path) -> None:
+        object.__setattr__(self, "path", Path(path))
+
+    def __setattr__(self, name: str, value: object) -> None:
+        del name, value
+        raise AttributeError("attested temp capability is immutable")
+
+    def __repr__(self) -> str:
+        return "AttestedTempDirectoryV1(<opaque>)"
+
+    def __copy__(self):
+        return type(self)(self.path)
+
+    def __reduce__(self):
+        raise TypeError("attested temp capability is not serializable")
+
+    def __reduce_ex__(self, protocol):
+        del protocol
+        raise TypeError("attested temp capability is not serializable")
 
 
-@dataclass(frozen=True)
 class LocalDatabasePermitV1:
-    path: Path
-    expected_schema_version: str
-    target_fingerprint: str
-    root: Path
-    root_identity: tuple[int, int]
-    parent_identity: tuple[int, int]
-    target_identity: tuple[int, int] | None
-    creator_pid: int
-    _token: str
-    _temp_permit_id: int | None
+    """Opaque process-local authorization bound to attested filesystem state."""
+
+    __slots__ = (
+        "path",
+        "expected_schema_version",
+        "target_fingerprint",
+        "root",
+        "root_identity",
+        "parent_identity",
+        "target_identity",
+        "creator_pid",
+        "__weakref__",
+    )
+
+    def __init__(
+        self,
+        *,
+        path: Path,
+        expected_schema_version: str,
+        target_fingerprint: str,
+        root: Path,
+        root_identity: tuple[int, int],
+        parent_identity: tuple[int, int],
+        target_identity: tuple[int, int] | None,
+        creator_pid: int,
+    ) -> None:
+        for name, value in (
+            ("path", Path(path)),
+            ("expected_schema_version", expected_schema_version),
+            ("target_fingerprint", target_fingerprint),
+            ("root", Path(root)),
+            ("root_identity", root_identity),
+            ("parent_identity", parent_identity),
+            ("target_identity", target_identity),
+            ("creator_pid", creator_pid),
+        ):
+            object.__setattr__(self, name, value)
+
+    def __setattr__(self, name: str, value: object) -> None:
+        del name, value
+        raise AttributeError("local database capability is immutable")
+
+    def __repr__(self) -> str:
+        return "LocalDatabasePermitV1(<opaque>)"
+
+    def __copy__(self):
+        return type(self)(
+            path=self.path,
+            expected_schema_version=self.expected_schema_version,
+            target_fingerprint=self.target_fingerprint,
+            root=self.root,
+            root_identity=self.root_identity,
+            parent_identity=self.parent_identity,
+            target_identity=self.target_identity,
+            creator_pid=self.creator_pid,
+        )
+
+    def __reduce__(self):
+        raise TypeError("local database capability is not serializable")
+
+    def __reduce_ex__(self, protocol):
+        del protocol
+        raise TypeError("local database capability is not serializable")
 
 
-_TEMP_PERMITS: dict[int, tuple[str, int, Path, tuple[int, int]]] = {}
-_DATABASE_PERMITS: dict[int, str] = {}
+_TempRecord = tuple[str, int, Path, tuple[int, int]]
+_DatabaseRecord = tuple[str, int, AttestedTempDirectoryV1 | None]
+_TEMP_PERMITS: WeakKeyDictionary[AttestedTempDirectoryV1, _TempRecord] = (
+    WeakKeyDictionary()
+)
+_DATABASE_PERMITS: WeakKeyDictionary[LocalDatabasePermitV1, _DatabaseRecord] = (
+    WeakKeyDictionary()
+)
 
 
 def _identity(value: os.stat_result) -> tuple[int, int]:
@@ -112,7 +190,8 @@ def _validate_path_grammar(path: Path) -> Path:
     if not isinstance(raw, str) or not raw or "\x00" in raw:
         raise LocalWriteGuardError("local database path is invalid")
     windows = PureWindowsPath(raw)
-    if raw.startswith(("\\\\", "\\?\\", "\\.\\")):
+    normalized_windows = raw.replace("\\", "/")
+    if normalized_windows.startswith("//"):
         raise LocalWriteGuardError("UNC and device paths are forbidden")
     if windows.drive and not windows.root:
         raise LocalWriteGuardError("drive-relative paths are forbidden")
@@ -160,15 +239,14 @@ def _canonical_contained(path: Path, root: Path) -> Path:
 
 
 def _registered_temp_permit(permit: AttestedTempDirectoryV1) -> tuple[Path, tuple[int, int]]:
-    record = _TEMP_PERMITS.get(id(permit))
+    if not isinstance(permit, AttestedTempDirectoryV1):
+        raise LocalWriteGuardError("temporary directory permit is forged or stale")
+    record = _TEMP_PERMITS.get(permit)
     if record is None:
         raise LocalWriteGuardError("temporary directory permit is forged or stale")
-    token, creator_pid, root, expected_identity = record
+    _secret, creator_pid, root, expected_identity = record
     if (
-        token != permit._token
-        or creator_pid != permit._creator_pid
-        or root != permit.path
-        or expected_identity != permit._identity
+        root != permit.path
         or creator_pid != os.getpid()
     ):
         raise LocalWriteGuardError("temporary directory permit is forged or stale")
@@ -180,8 +258,10 @@ def _registered_temp_permit(permit: AttestedTempDirectoryV1) -> tuple[Path, tupl
 
 def _automatic_temp_permit(
     path: Path,
-) -> tuple[int, Path, tuple[int, int]] | None:
-    for permit_id, (token, creator_pid, root, identity) in tuple(_TEMP_PERMITS.items()):
+) -> tuple[AttestedTempDirectoryV1, Path, tuple[int, int]] | None:
+    for permit, (_secret, creator_pid, root, identity) in tuple(
+        _TEMP_PERMITS.items()
+    ):
         if creator_pid != os.getpid():
             continue
         try:
@@ -191,25 +271,19 @@ def _automatic_temp_permit(
         value = _guarded_lstat(root)
         if _identity(value) != identity:
             raise LocalWriteGuardError("temporary directory identity changed")
-        return permit_id, root, identity
+        return permit, root, identity
     return None
 
 
 def create_attested_temp_dir() -> AttestedTempDirectoryV1:
     root = Path(tempfile.mkdtemp(prefix="twinops-history-admin-"))
     value = _guarded_lstat(root)
-    token = secrets.token_hex(32)
-    permit = AttestedTempDirectoryV1(
-        path=root.resolve(strict=True),
-        _token=token,
-        _creator_pid=os.getpid(),
-        _identity=_identity(value),
-    )
-    _TEMP_PERMITS[id(permit)] = (
-        token,
-        permit._creator_pid,
+    permit = AttestedTempDirectoryV1(root.resolve(strict=True))
+    _TEMP_PERMITS[permit] = (
+        secrets.token_hex(32),
+        os.getpid(),
         permit.path,
-        permit._identity,
+        _identity(value),
     )
     return permit
 
@@ -219,8 +293,8 @@ def remove_attested_temp_dir(permit: AttestedTempDirectoryV1) -> None:
     value = _guarded_lstat(root)
     if _identity(value) != expected_identity:
         raise LocalWriteGuardError("temporary directory identity changed")
-    _TEMP_PERMITS.pop(id(permit), None)
     shutil.rmtree(root)
+    _TEMP_PERMITS.pop(permit, None)
 
 
 def _validated_migration_hashes(migration_hashes) -> dict[str, str]:
@@ -270,10 +344,10 @@ def _registered_hashes() -> MappingProxyType:
 def _allowed_root(
     path: Path,
     temp_permit: AttestedTempDirectoryV1 | None,
-) -> tuple[Path, tuple[int, int], int | None]:
+) -> tuple[Path, tuple[int, int], AttestedTempDirectoryV1 | None]:
     if temp_permit is not None:
         root, root_identity = _registered_temp_permit(temp_permit)
-        return root, root_identity, id(temp_permit)
+        return root, root_identity, temp_permit
     worktree = _launcher_worktree_root()
     try:
         path.absolute().relative_to(worktree.absolute())
@@ -282,8 +356,8 @@ def _allowed_root(
         automatic = _automatic_temp_permit(path)
         if automatic is None:
             raise LocalWriteGuardError("local path is outside an allowed root")
-        permit_id, root, root_identity = automatic
-        return root, root_identity, permit_id
+        permit, root, root_identity = automatic
+        return root, root_identity, permit
 
 
 def _attest(
@@ -296,7 +370,7 @@ def _attest(
     candidate = _validate_path_grammar(Path(path))
     if not _VERSION_RE.fullmatch(expected_schema_version):
         raise ValueError("expected schema version is invalid")
-    root, root_identity, temp_id = _allowed_root(candidate, temp_permit)
+    root, root_identity, owning_temp_permit = _allowed_root(candidate, temp_permit)
     canonical = _canonical_contained(candidate, root)
     parent = canonical.parent
     if not parent.exists():
@@ -314,7 +388,10 @@ def _attest(
         raise LocalWriteGuardError("local database already exists")
     if target_exists:
         target_stat = _guarded_lstat(canonical)
-        if not stat_module.S_ISREG(target_stat.st_mode):
+        if (
+            not stat_module.S_ISREG(target_stat.st_mode)
+            or int(target_stat.st_nlink) != 1
+        ):
             raise LocalWriteGuardError("local database is not a regular file")
         target_identity = _identity(target_stat)
 
@@ -323,7 +400,6 @@ def _attest(
         expected_schema_version=expected_schema_version,
         migration_hashes=_registered_hashes(),
     )
-    token = secrets.token_hex(32)
     permit = LocalDatabasePermitV1(
         path=canonical,
         expected_schema_version=expected_schema_version,
@@ -333,10 +409,12 @@ def _attest(
         parent_identity=_identity(parent_stat),
         target_identity=target_identity,
         creator_pid=os.getpid(),
-        _token=token,
-        _temp_permit_id=temp_id,
     )
-    _DATABASE_PERMITS[id(permit)] = token
+    _DATABASE_PERMITS[permit] = (
+        secrets.token_hex(32),
+        os.getpid(),
+        owning_temp_permit,
+    )
     return permit
 
 
@@ -375,16 +453,14 @@ def reattest_local_database(
     *,
     opened_connection: sqlite3.Connection | None = None,
 ) -> None:
-    if (
-        not isinstance(permit, LocalDatabasePermitV1)
-        or _DATABASE_PERMITS.get(id(permit)) != permit._token
-        or permit.creator_pid != os.getpid()
-    ):
+    if not isinstance(permit, LocalDatabasePermitV1):
         raise LocalWriteGuardError("local database permit is forged or stale")
-    if permit._temp_permit_id is not None:
-        record = _TEMP_PERMITS.get(permit._temp_permit_id)
-        if record is None or record[1] != os.getpid():
-            raise LocalWriteGuardError("temporary directory permit is stale")
+    record = _DATABASE_PERMITS.get(permit)
+    if record is None or record[1] != os.getpid() or permit.creator_pid != os.getpid():
+        raise LocalWriteGuardError("local database permit is forged or stale")
+    owning_temp_permit = record[2]
+    if owning_temp_permit is not None:
+        _registered_temp_permit(owning_temp_permit)
     root_stat = _guarded_lstat(permit.root)
     if _identity(root_stat) != permit.root_identity:
         raise LocalWriteGuardError("allowed root identity changed")
@@ -402,6 +478,7 @@ def reattest_local_database(
         target_stat = _guarded_lstat(permit.path)
         if (
             not stat_module.S_ISREG(target_stat.st_mode)
+            or int(target_stat.st_nlink) != 1
             or _identity(target_stat) != permit.target_identity
         ):
             raise LocalWriteGuardError("local database identity changed")
@@ -411,15 +488,392 @@ def reattest_local_database(
             raise LocalWriteGuardError("opened SQLite target identity mismatch")
 
 
-def _readonly_connection(path: Path) -> sqlite3.Connection:
-    uri = "file:" + quote(path.as_posix(), safe="/:" ) + "?mode=ro"
-    connection = sqlite3.connect(uri, uri=True, timeout=5)
-    connection.row_factory = sqlite3.Row
-    connection.execute("PRAGMA query_only=ON")
-    if connection.execute("PRAGMA query_only").fetchone()[0] != 1:
-        connection.close()
-        raise LocalWriteGuardError("SQLite query-only mode is unavailable")
-    return connection
+def _pin_windows_directory(path: Path) -> int | None:
+    if os.name != "nt":
+        return None
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        create_file = ctypes.windll.kernel32.CreateFileW
+        create_file.argtypes = (
+            wintypes.LPCWSTR,
+            wintypes.DWORD,
+            wintypes.DWORD,
+            wintypes.LPVOID,
+            wintypes.DWORD,
+            wintypes.DWORD,
+            wintypes.HANDLE,
+        )
+        create_file.restype = wintypes.HANDLE
+        handle = create_file(
+            str(path),
+            0x10000 | 0x80,
+            0x1 | 0x2,
+            None,
+            3,
+            0x02000000 | 0x00200000,
+            None,
+        )
+        invalid = ctypes.c_void_p(-1).value
+        if handle in (None, invalid):
+            raise OSError("directory handle unavailable")
+        return int(handle)
+    except BaseException as exc:
+        raise LocalWriteGuardError("local directory pinning failed") from exc
+
+
+class _RetainedNewLocalDatabaseV1:
+    """Retain the attested root and parent through create and cleanup."""
+
+    def __init__(self, permit: LocalDatabasePermitV1) -> None:
+        if not isinstance(permit, LocalDatabasePermitV1):
+            raise LocalWriteGuardError("local database permit is forged or stale")
+        if permit.target_identity is not None:
+            raise LocalWriteGuardError("fresh local database permit is required")
+        self.permit = permit
+        self._root_descriptor: int | None = None
+        self._parent_descriptor: int | None = None
+        self._windows_root_handle: int | None = None
+        self._windows_parent_handle: int | None = None
+        self.created_identity: tuple[int, int] | None = None
+
+    def pin(self) -> None:
+        reattest_local_database(self.permit)
+        try:
+            if os.name == "nt":
+                self._windows_root_handle = _pin_windows_directory(
+                    self.permit.root
+                )
+                if self.permit.path.parent != self.permit.root:
+                    self._windows_parent_handle = _pin_windows_directory(
+                        self.permit.path.parent
+                    )
+            else:
+                flags = (
+                    os.O_RDONLY
+                    | getattr(os, "O_DIRECTORY", 0)
+                    | getattr(os, "O_NOFOLLOW", 0)
+                    | getattr(os, "O_CLOEXEC", 0)
+                )
+                self._root_descriptor = os.open(self.permit.root, flags)
+                if _identity(os.fstat(self._root_descriptor)) != self.permit.root_identity:
+                    raise LocalWriteGuardError("allowed root identity changed")
+                current = os.dup(self._root_descriptor)
+                try:
+                    relative_parent = self.permit.path.parent.relative_to(
+                        self.permit.root
+                    )
+                    for component in relative_parent.parts:
+                        following = os.open(component, flags, dir_fd=current)
+                        os.close(current)
+                        current = following
+                    self._parent_descriptor = current
+                    current = None
+                finally:
+                    if current is not None:
+                        os.close(current)
+                if (
+                    _identity(os.fstat(self._parent_descriptor))
+                    != self.permit.parent_identity
+                ):
+                    raise LocalWriteGuardError(
+                        "local database parent identity changed"
+                    )
+            reattest_local_database(self.permit)
+        except BaseException:
+            self.close()
+            raise
+
+    def _created_stat(self) -> os.stat_result:
+        if self._parent_descriptor is not None:
+            return os.stat(
+                self.permit.path.name,
+                dir_fd=self._parent_descriptor,
+                follow_symlinks=False,
+            )
+        return os.lstat(self.permit.path)
+
+    def _attest_created_path(self) -> None:
+        if self.created_identity is None:
+            raise LocalWriteGuardError("created local database identity is unavailable")
+        root_stat = _guarded_lstat(self.permit.root)
+        parent_stat = _guarded_lstat(self.permit.path.parent)
+        if (
+            _identity(root_stat) != self.permit.root_identity
+            or _identity(parent_stat) != self.permit.parent_identity
+        ):
+            raise LocalWriteGuardError("local database parent identity changed")
+        _walk_existing(self.permit.root, self.permit.path)
+        path_stat = _guarded_lstat(self.permit.path)
+        retained_stat = self._created_stat()
+        for value in (path_stat, retained_stat):
+            if (
+                not stat_module.S_ISREG(value.st_mode)
+                or stat_module.S_ISLNK(value.st_mode)
+                or _is_windows_reparse_point(self.permit.path, value)
+                or int(value.st_nlink) != 1
+                or _identity(value) != self.created_identity
+            ):
+                raise LocalWriteGuardError("created local database identity changed")
+        if (
+            self._root_descriptor is not None
+            and _identity(os.fstat(self._root_descriptor))
+            != self.permit.root_identity
+        ):
+            raise LocalWriteGuardError("allowed root identity changed")
+        if (
+            self._parent_descriptor is not None
+            and _identity(os.fstat(self._parent_descriptor))
+            != self.permit.parent_identity
+        ):
+            raise LocalWriteGuardError("local database parent identity changed")
+
+    def create(self) -> int:
+        if (
+            self._root_descriptor is None
+            and self._windows_root_handle is None
+        ):
+            raise LocalWriteGuardError("local directory pin is unavailable")
+        reattest_local_database(self.permit)
+        descriptor: int | None = None
+        try:
+            flags = (
+                os.O_RDWR
+                | os.O_CREAT
+                | os.O_EXCL
+                | getattr(os, "O_BINARY", 0)
+                | getattr(os, "O_NOFOLLOW", 0)
+            )
+            if self._parent_descriptor is not None:
+                descriptor = os.open(
+                    self.permit.path.name,
+                    flags,
+                    0o600,
+                    dir_fd=self._parent_descriptor,
+                )
+            else:
+                descriptor = os.open(self.permit.path, flags, 0o600)
+            created = os.fstat(descriptor)
+            self.created_identity = _identity(created)
+            if (
+                not stat_module.S_ISREG(created.st_mode)
+                or int(created.st_nlink) != 1
+            ):
+                raise LocalWriteGuardError("created local database is not regular")
+            self._attest_created_path()
+            return descriptor
+        except BaseException:
+            if descriptor is not None:
+                os.close(descriptor)
+            self.cleanup_created()
+            raise
+
+    def cleanup_created(self) -> None:
+        if self.created_identity is None:
+            return
+        try:
+            current = self._created_stat()
+        except FileNotFoundError:
+            self.created_identity = None
+            return
+        except OSError as exc:
+            raise LocalWriteGuardError(
+                "created local database cleanup attestation failed"
+            ) from exc
+        if (
+            not stat_module.S_ISREG(current.st_mode)
+            or stat_module.S_ISLNK(current.st_mode)
+            or _is_windows_reparse_point(self.permit.path, current)
+            or int(current.st_nlink) != 1
+            or _identity(current) != self.created_identity
+        ):
+            raise LocalWriteGuardError(
+                "created local database cleanup identity changed"
+            )
+        try:
+            if self._parent_descriptor is not None:
+                os.unlink(
+                    self.permit.path.name,
+                    dir_fd=self._parent_descriptor,
+                )
+            else:
+                parent = _guarded_lstat(self.permit.path.parent)
+                if _identity(parent) != self.permit.parent_identity:
+                    raise LocalWriteGuardError(
+                        "local database parent identity changed"
+                    )
+                os.unlink(self.permit.path)
+        except LocalWriteGuardError:
+            raise
+        except OSError as exc:
+            raise LocalWriteGuardError(
+                "created local database cleanup failed"
+            ) from exc
+        self.created_identity = None
+
+    def close(self) -> None:
+        for name in ("_parent_descriptor", "_root_descriptor"):
+            descriptor = getattr(self, name)
+            if descriptor is not None:
+                try:
+                    os.close(descriptor)
+                finally:
+                    setattr(self, name, None)
+        for name in ("_windows_parent_handle", "_windows_root_handle"):
+            handle = getattr(self, name)
+            if handle is not None:
+                try:
+                    _close_windows_handle(handle)
+                finally:
+                    setattr(self, name, None)
+
+
+def _retain_new_local_database(
+    permit: LocalDatabasePermitV1,
+) -> _RetainedNewLocalDatabaseV1:
+    retained = _RetainedNewLocalDatabaseV1(permit)
+    retained.pin()
+    return retained
+
+
+def _pin_windows_file(path: Path) -> int | None:
+    if os.name != "nt":
+        return None
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        create_file = ctypes.windll.kernel32.CreateFileW
+        create_file.argtypes = (
+            wintypes.LPCWSTR,
+            wintypes.DWORD,
+            wintypes.DWORD,
+            wintypes.LPVOID,
+            wintypes.DWORD,
+            wintypes.DWORD,
+            wintypes.HANDLE,
+        )
+        create_file.restype = wintypes.HANDLE
+        handle = create_file(
+            str(path),
+            0x80,
+            0x1 | 0x2,
+            None,
+            3,
+            0x00200000,
+            None,
+        )
+        invalid = ctypes.c_void_p(-1).value
+        if handle in (None, invalid):
+            raise OSError("file handle unavailable")
+        return int(handle)
+    except BaseException as exc:
+        raise LocalWriteGuardError("SQLite file pinning failed") from exc
+
+
+def _close_windows_handle(handle: int | None) -> None:
+    if handle is None:
+        return
+    import ctypes
+    from ctypes import wintypes
+
+    close_handle = ctypes.windll.kernel32.CloseHandle
+    close_handle.argtypes = (wintypes.HANDLE,)
+    close_handle.restype = wintypes.BOOL
+    close_handle(wintypes.HANDLE(handle))
+
+
+def _proc_fd_inventory() -> frozenset[int] | None:
+    root = Path("/proc/self/fd")
+    if not root.is_dir():
+        return None
+    descriptors: set[int] = set()
+    try:
+        for name in os.listdir(root):
+            try:
+                descriptors.add(int(name))
+            except ValueError:
+                continue
+    except OSError as exc:
+        raise LocalWriteGuardError(
+            "opened SQLite identity verification failed"
+        ) from exc
+    return frozenset(descriptors)
+
+
+def _new_fd_identities(before: frozenset[int]) -> frozenset[tuple[int, int]]:
+    after = _proc_fd_inventory()
+    if after is None:
+        raise LocalWriteGuardError("opened SQLite identity verification unavailable")
+    identities: set[tuple[int, int]] = set()
+    for descriptor in after - before:
+        try:
+            value = os.fstat(descriptor)
+        except OSError:
+            continue
+        if stat_module.S_ISREG(value.st_mode):
+            identities.add(_identity(value))
+    return frozenset(identities)
+
+
+def _open_attested_sqlite_connection(
+    permit: LocalDatabasePermitV1,
+    *,
+    read_only: bool = False,
+) -> sqlite3.Connection:
+    """Open and prove the actual SQLite file while an identity pin is held."""
+
+    reattest_local_database(permit)
+    descriptor: int | None = None
+    windows_handle: int | None = None
+    connection: sqlite3.Connection | None = None
+    try:
+        descriptor = os.open(
+            permit.path,
+            os.O_RDONLY | getattr(os, "O_BINARY", 0),
+        )
+        opened = os.fstat(descriptor)
+        if (
+            not stat_module.S_ISREG(opened.st_mode)
+            or int(opened.st_nlink) != 1
+            or _identity(opened) != permit.target_identity
+        ):
+            raise LocalWriteGuardError("opened SQLite target identity mismatch")
+        windows_handle = _pin_windows_file(permit.path)
+        reattest_local_database(permit)
+        before_fds = _proc_fd_inventory()
+        if os.name != "nt" and before_fds is None:
+            raise LocalWriteGuardError(
+                "opened SQLite identity verification unavailable"
+            )
+        if read_only:
+            uri = "file:" + quote(permit.path.as_posix(), safe="/:") + "?mode=ro"
+            connection = sqlite3.connect(uri, uri=True, timeout=5)
+        else:
+            connection = sqlite3.connect(permit.path, timeout=5)
+        connection.row_factory = sqlite3.Row
+        reattest_local_database(permit, opened_connection=connection)
+        if before_fds is not None:
+            if permit.target_identity not in _new_fd_identities(before_fds):
+                raise LocalWriteGuardError("opened SQLite target identity mismatch")
+        if read_only:
+            connection.execute("PRAGMA query_only=ON")
+            if connection.execute("PRAGMA query_only").fetchone()[0] != 1:
+                raise LocalWriteGuardError("SQLite query-only mode is unavailable")
+        return connection
+    except BaseException:
+        if connection is not None:
+            connection.close()
+        raise
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+        _close_windows_handle(windows_handle)
+
+
+def _readonly_connection(permit: LocalDatabasePermitV1) -> sqlite3.Connection:
+    return _open_attested_sqlite_connection(permit, read_only=True)
 
 
 def reattest_local_staged_handoff(
@@ -451,7 +905,7 @@ def reattest_local_staged_handoff(
     if permit.target_fingerprint != expected_target_fingerprint:
         raise LocalWriteGuardError("local target fingerprint mismatch")
     before_identity = permit.target_identity
-    connection = _readonly_connection(permit.path)
+    connection = _readonly_connection(permit)
     try:
         reattest_local_database(permit, opened_connection=connection)
         verification = verify_schema_version(connection, expected_schema_version)
@@ -514,7 +968,7 @@ def reattest_local_staged_handoff(
 
         repository = SQLiteHistoricalRepositoryV1(
             permit.path,
-            connection_factory=lambda ignored: _readonly_connection(permit.path),
+            connection_factory=lambda ignored: _readonly_connection(permit),
         )
         reconstructed = repository.reconstruct_source(expected_batch_id)
         summary = repository._stored_batch(connection, expected_batch_id).summary

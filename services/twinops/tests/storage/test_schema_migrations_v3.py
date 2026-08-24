@@ -470,3 +470,88 @@ def test_fastapi_import_and_construction_do_not_create_or_migrate_database(
 
     assert app.state.repository.path == database_path
     assert database_path.exists() is False
+
+
+@requires_surface
+def test_sqlite_migration_policy_and_deployment_identity_share_one_commit(
+    connection,
+):
+    """Catches deployment identity being committed after the migration transaction."""
+
+    migrations = _migration_api()
+    identity = migrations.DeploymentIdentityV1(
+        environment="local",
+        label="local-history-admin",
+        target_fingerprint="sha256:" + "1" * 64,
+        schema_version="003",
+    )
+    statements: list[str] = []
+    connection.set_trace_callback(statements.append)
+
+    migrations.apply_sqlite_migrations(
+        connection,
+        migrations.registered_migration_specs(),
+        initial_policy_effective_from=INITIAL_EFFECTIVE_FROM,
+        deployment_identity=identity,
+    )
+
+    normalized = [" ".join(statement.split()).upper() for statement in statements]
+    assert normalized.count("BEGIN IMMEDIATE") == 1
+    assert normalized.count("COMMIT") == 1
+    assert migrations.read_deployment_identity(connection) == identity
+    assert connection.execute(
+        "SELECT COUNT(*) FROM collection_policies_v1 "
+        "WHERE policy_id='forzy-live-window-v1'"
+    ).fetchone()[0] == 1
+    assert migrations.verify_schema_version(connection, "003").is_current is True
+
+
+@requires_surface
+def test_identity_binding_failure_rolls_back_existing_pre003_database_bytes(
+    tmp_path,
+    monkeypatch,
+):
+    """Catches migration/policy commits that survive a deployment-identity failure."""
+
+    migrations = _migration_api()
+    path = tmp_path / "atomic-migration.sqlite3"
+    with sqlite3.connect(path) as connection:
+        connection.executescript(MIGRATION_002.read_text(encoding="utf-8"))
+    before = path.read_bytes()
+    identity = migrations.DeploymentIdentityV1(
+        environment="local",
+        label="local-history-admin",
+        target_fingerprint="sha256:" + "2" * 64,
+        schema_version="003",
+    )
+
+    def fail_identity_binding(connection, requested_identity):
+        assert connection.in_transaction is True
+        assert requested_identity == identity
+        raise RuntimeError("injected identity binding failure")
+
+    monkeypatch.setattr(
+        migrations,
+        "ensure_deployment_identity",
+        fail_identity_binding,
+    )
+    connection = sqlite3.connect(path)
+    try:
+        with pytest.raises(RuntimeError, match="injected identity binding failure"):
+            migrations.apply_sqlite_migrations(
+                connection,
+                migrations.registered_migration_specs(),
+                initial_policy_effective_from=INITIAL_EFFECTIVE_FROM,
+                deployment_identity=identity,
+            )
+    finally:
+        connection.close()
+
+    assert path.read_bytes() == before
+    with sqlite3.connect(path) as verification:
+        assert verification.execute(
+            "SELECT COUNT(*) FROM sqlite_master "
+            "WHERE type='table' AND name IN ("
+            "'schema_migrations_v1','deployment_identity_v1',"
+            "'collection_policies_v1','historical_import_batches_v1')"
+        ).fetchone()[0] == 0

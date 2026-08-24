@@ -613,9 +613,16 @@ class SQLiteHistoricalRepositoryV1:
         path: Path,
         *,
         connection_factory: ConnectionFactory | None = None,
+        before_begin: Callable[[sqlite3.Connection], None] | None = None,
     ) -> None:
         self.path = Path(path)
         self._connection_factory = connection_factory
+        self._before_begin = before_begin
+
+    def _begin_immediate(self, connection: sqlite3.Connection) -> None:
+        if self._before_begin is not None:
+            self._before_begin(connection)
+        connection.execute("BEGIN IMMEDIATE")
 
     def _connect(self) -> sqlite3.Connection:
         if not self.path.is_file():
@@ -881,7 +888,7 @@ class SQLiteHistoricalRepositoryV1:
         facts = _validate_prepared_batch(batch)
         connection = self._connect()
         try:
-            connection.execute("BEGIN IMMEDIATE")
+            self._begin_immediate(connection)
             existing = connection.execute(
                 "SELECT 1 FROM historical_import_batches_v1 WHERE batch_id=?",
                 (batch.batch_id,),
@@ -976,7 +983,7 @@ class SQLiteHistoricalRepositoryV1:
 
         connection = self._connect()
         try:
-            connection.execute("BEGIN IMMEDIATE")
+            self._begin_immediate(connection)
             stored_before = self._stored_batch(connection, batch_id)
             if stored_before.summary.status != "staged":
                 raise HistoricalBatchConflict(
@@ -1075,7 +1082,7 @@ class SQLiteHistoricalRepositoryV1:
 
         connection = self._connect()
         try:
-            connection.execute("BEGIN IMMEDIATE")
+            self._begin_immediate(connection)
             target_row = connection.execute(
                 "SELECT batch_id,asset_id,status "
                 "FROM historical_import_batches_v1 WHERE batch_id=?",

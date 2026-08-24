@@ -2,10 +2,12 @@ from __future__ import annotations
 
 from contextlib import closing
 from copy import copy
+from dataclasses import asdict
 from hashlib import sha256
 import json
 import os
 from pathlib import Path
+import pickle
 import shutil
 import sqlite3
 import subprocess
@@ -136,6 +138,9 @@ class TestLocalPathGrammarAndContainment:
             Path("\\\\server\\share\\history.sqlite3"),
             Path("\\\\?\\C:\\history.sqlite3"),
             Path("\\.\\PhysicalDrive0"),
+            Path("//server/share/history.sqlite3"),
+            Path("//?/C:/history.sqlite3"),
+            Path("//./PhysicalDrive0"),
         ],
     )
     def test_rejects_non_absolute_root_unc_and_device_paths(self, candidate: Path):
@@ -458,6 +463,124 @@ class TestAttestationIdentityAndRaces:
                 reattest_local_database(permit, opened_connection=connection)
         finally:
             connection.close()
+
+    def test_existing_database_hard_link_is_rejected_without_changing_external_bytes(
+        self,
+        attested_dir,
+        tmp_path,
+    ):
+        """Catches initial attestation accepting an existing multiply-linked inode."""
+
+        external = tmp_path / "external-hard-linked.sqlite3"
+        external.write_bytes(b"external database bytes")
+        target = Path(attested_dir.path) / "history.db"
+        os.link(external, target)
+        before = external.read_bytes()
+
+        with pytest.raises(LocalWriteGuardError):
+            attest_local_database(
+                target,
+                expected_schema_version=SCHEMA_VERSION,
+                temp_permit=attested_dir,
+                require_existing=True,
+            )
+
+        assert external.read_bytes() == before
+        assert target.read_bytes() == before
+
+    def test_new_hard_link_after_attestation_is_rejected_on_every_reattest(
+        self,
+        attested_dir,
+    ):
+        """Catches repeated attestation ignoring an increased hard-link count."""
+
+        target = Path(attested_dir.path) / "history.db"
+        target.write_bytes(b"guarded database bytes")
+        permit = attest_local_database(
+            target,
+            expected_schema_version=SCHEMA_VERSION,
+            temp_permit=attested_dir,
+            require_existing=True,
+        )
+        external = Path(attested_dir.path) / "external-alias.db"
+        os.link(target, external)
+        before = external.read_bytes()
+
+        with pytest.raises(LocalWriteGuardError):
+            reattest_local_database(permit)
+
+        assert target.read_bytes() == before
+        assert external.read_bytes() == before
+
+
+@requires_guard
+class TestPermitCredentialConfinement:
+    def test_permit_credentials_are_absent_from_repr_and_dataclass_export(
+        self,
+        attested_dir,
+    ):
+        """Catches capability tokens leaking through repr or dataclasses.asdict."""
+
+        target = Path(attested_dir.path) / "history.db"
+        target.write_bytes(b"regular")
+        database_permit = attest_local_database(
+            target,
+            expected_schema_version=SCHEMA_VERSION,
+            temp_permit=attested_dir,
+            require_existing=True,
+        )
+
+        for permit in (attested_dir, database_permit):
+            rendered = repr(permit)
+            assert "_token" not in rendered
+            assert "token=" not in rendered.lower()
+            with pytest.raises(TypeError):
+                asdict(permit)
+
+    def test_permits_are_not_pickle_serializable(self, attested_dir):
+        """Catches capability credentials leaving process memory through pickle."""
+
+        target = Path(attested_dir.path) / "history.db"
+        target.write_bytes(b"regular")
+        database_permit = attest_local_database(
+            target,
+            expected_schema_version=SCHEMA_VERSION,
+            temp_permit=attested_dir,
+            require_existing=True,
+        )
+
+        for permit in (attested_dir, database_permit):
+            with pytest.raises((TypeError, pickle.PicklingError)):
+                pickle.dumps(permit)
+
+    def test_forced_stale_object_id_reuse_cannot_authorize_a_copied_permit(
+        self,
+        monkeypatch,
+    ):
+        """Catches registries that trust reusable id(obj) plus copied token fields."""
+
+        monkeypatch.setattr(guard_module, "id", lambda value: 424242, raising=False)
+        temp_permit = create_attested_temp_dir()
+        try:
+            target = Path(temp_permit.path) / "history.db"
+            target.write_bytes(b"regular")
+            database_permit = attest_local_database(
+                target,
+                expected_schema_version=SCHEMA_VERSION,
+                temp_permit=temp_permit,
+                require_existing=True,
+            )
+            try:
+                copied = copy(database_permit)
+            except TypeError:
+                return
+
+            with pytest.raises(LocalWriteGuardError):
+                reattest_local_database(copied)
+        finally:
+            path = Path(temp_permit.path)
+            if path.exists():
+                guard_module.remove_attested_temp_dir(temp_permit)
 
 
 @requires_guard

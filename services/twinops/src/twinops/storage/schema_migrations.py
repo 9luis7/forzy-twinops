@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import hashlib
@@ -496,11 +496,15 @@ def apply_sqlite_migrations(
     specs: Sequence[MigrationSpec],
     *,
     initial_policy_effective_from: datetime,
+    deployment_identity: DeploymentIdentityV1 | None = None,
+    before_begin: Callable[[sqlite3.Connection], None] | None = None,
 ) -> None:
     loaded = _validate_specs(specs, "sqlite")
     expected = _expected_hashes(specs, "sqlite")
     if connection.in_transaction:
         raise ValueError("SQLite migrator requires transaction ownership")
+    if before_begin is not None:
+        before_begin(connection)
     connection.execute("BEGIN IMMEDIATE")
     try:
         had_v2_baseline = _sqlite_v2_schema_is_current(connection)
@@ -521,6 +525,8 @@ def apply_sqlite_migrations(
                 connection,
                 effective_from=initial_policy_effective_from,
             )
+        if deployment_identity is not None:
+            ensure_deployment_identity(connection, deployment_identity)
         verification = _verify_against_specs(
             connection,
             specs,
