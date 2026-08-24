@@ -40,6 +40,23 @@ def test_history_admin_surface_exists_before_behavior_tests_run() -> None:
     assert SURFACE_READY, "RED:A6:history-admin-missing"
 
 
+def test_utc_now_truncates_submillisecond_wall_clock(monkeypatch) -> None:
+    """Catches production clock output becoming non-canonical for ingestion."""
+
+    observed = datetime(2026, 5, 19, 15, 0, 0, 123456, tzinfo=timezone.utc)
+
+    class ControlledDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return observed.astimezone(tz) if tz is not None else observed
+
+    monkeypatch.setattr(history_admin_module, "datetime", ControlledDateTime)
+
+    assert history_admin_module.utc_now() == datetime(
+        2026, 5, 19, 15, 0, 0, 123000, tzinfo=timezone.utc
+    )
+
+
 if SURFACE_READY:
     from twinops import history_admin as history_admin_module
     from twinops.history_admin import main

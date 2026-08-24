@@ -156,7 +156,8 @@ RepositoryFactory: TypeAlias = Callable[[RepositoryTargetV1], HistoricalReposito
 
 
 def utc_now() -> datetime:
-    return datetime.now(timezone.utc)
+    observed = datetime.now(timezone.utc)
+    return observed.replace(microsecond=(observed.microsecond // 1_000) * 1_000)
 
 
 def _canonical_sha256(value: str, label: str) -> str:
