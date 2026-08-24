@@ -1,13 +1,14 @@
 import json
 import os
 from contextlib import contextmanager
-import threading
+from datetime import datetime, timezone
 
 import psycopg
 import pytest
 
 from test_sqlite_v2_repository import repository_contract as assert_repository_contract
 from twinops.storage import postgres_repository
+from twinops.storage.schema_migrations import SchemaVerification
 
 
 @pytest.fixture
@@ -65,31 +66,48 @@ def test_postgres_repository_satisfies_shared_contract(
     ]
 
 
-class _OneRow:
-    def __init__(self, row):
-        self.row = row
-
-    def fetchone(self):
-        return self.row
-
-
-class _SchemaConnection:
-    def __init__(self, schema_states):
-        self.schema_states = iter(schema_states)
+class _NoRuntimeDdlConnection:
+    def __init__(self):
         self.calls = []
 
     def execute(self, query, params=None, **kwargs):
         self.calls.append((query, params, kwargs))
-        if "AS tables_current" in query:
-            current = next(self.schema_states)
-            return _OneRow(
-                {"tables_current": current, "indexes_current": current}
-            )
-        return _OneRow(None)
+        raise AssertionError("runtime initialization must not execute DDL or locks")
 
 
-def test_initialize_skips_migration_file_and_lock_when_schema_is_current(monkeypatch):
-    connection = _SchemaConnection([True])
+def _verification(*, current: bool) -> SchemaVerification:
+    return SchemaVerification(
+        expected_version="003",
+        current_version="003" if current else "002",
+        applied_migration_hashes={},
+        is_current=current,
+    )
+
+
+def test_initialize_is_verification_only_and_never_reads_or_applies_sql(monkeypatch):
+    connection = _NoRuntimeDdlConnection()
+    repository = postgres_repository.PostgresTelemetryRepository("redacted")
+    verification_calls = []
+
+    @contextmanager
+    def fake_connection():
+        yield connection
+
+    def verify(candidate, expected_version):
+        verification_calls.append((candidate, expected_version))
+        return _verification(current=True)
+
+    monkeypatch.setattr(repository, "_connection", fake_connection)
+    monkeypatch.setattr(postgres_repository, "verify_schema_version", verify)
+
+    repository.initialize()
+
+    assert verification_calls == [(connection, "003")]
+    assert connection.calls == []
+
+
+def test_initialize_fails_closed_when_schema_003_is_not_current(monkeypatch):
+    connection = _NoRuntimeDdlConnection()
     repository = postgres_repository.PostgresTelemetryRepository("redacted")
 
     @contextmanager
@@ -97,118 +115,51 @@ def test_initialize_skips_migration_file_and_lock_when_schema_is_current(monkeyp
         yield connection
 
     monkeypatch.setattr(repository, "_connection", fake_connection)
-
-    repository.initialize()
-
-    assert len(connection.calls) == 1
-    assert "AS tables_current" in connection.calls[0][0]
-
-
-def test_schema_migration_rechecks_after_fixed_transaction_lock():
-    connection = _SchemaConnection([False, False])
-    migration = "SELECT 'exact migration';"
-
-    applied = postgres_repository.ensure_postgres_schema(
-        connection,
-        lambda: migration,
+    monkeypatch.setattr(
+        postgres_repository,
+        "verify_schema_version",
+        lambda connection, expected_version: _verification(current=False),
     )
 
-    assert applied is True
-    assert [
-        "schema" if "AS tables_current" in query else "lock"
-        if "pg_advisory_xact_lock" in query
-        else "migration"
-        for query, _, _ in connection.calls
-    ] == ["schema", "lock", "schema", "migration"]
-    assert connection.calls[1][1] == (
-        postgres_repository.POSTGRES_SCHEMA_MIGRATION_LOCK_KEY,
+    with pytest.raises(RuntimeError, match="schema 003"):
+        repository.initialize()
+
+    assert connection.calls == []
+
+
+def test_repository_policy_reads_delegate_without_writes(monkeypatch):
+    connection = _NoRuntimeDdlConnection()
+    repository = postgres_repository.PostgresTelemetryRepository("redacted")
+    instant = datetime(2026, 8, 22, tzinfo=timezone.utc)
+    expected_by_id = object()
+    expected_effective = object()
+    calls = []
+
+    @contextmanager
+    def fake_connection():
+        yield connection
+
+    monkeypatch.setattr(repository, "_connection", fake_connection)
+    monkeypatch.setattr(
+        postgres_repository,
+        "read_collection_policy",
+        lambda candidate, policy_id: calls.append((candidate, policy_id))
+        or expected_by_id,
     )
-    assert connection.calls[-1] == (migration, None, {"prepare": False})
-
-
-def test_schema_migration_skips_ddl_when_other_cold_start_wins_lock():
-    connection = _SchemaConnection([False, True])
-
-    applied = postgres_repository.ensure_postgres_schema(
-        connection,
-        lambda: (_ for _ in ()).throw(AssertionError("migration read")),
+    monkeypatch.setattr(
+        postgres_repository,
+        "read_effective_collection_policy",
+        lambda candidate, asset_id, at: calls.append((candidate, asset_id, at))
+        or expected_effective,
     )
 
-    assert applied is False
-    assert [
-        "schema" if "AS tables_current" in query else "lock"
-        for query, _, _ in connection.calls
-    ] == ["schema", "lock", "schema"]
-
-
-class _ConcurrentSchema:
-    def __init__(self):
-        self.current = False
-        self.migration_count = 0
-        self.lock_count = 0
-        self.initial_checks = threading.Barrier(2)
-        self.migration_lock = threading.Lock()
-
-
-class _ConcurrentConnection:
-    def __init__(self, shared):
-        self.shared = shared
-        self.holds_lock = False
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, exc_type, exc, traceback):
-        if self.holds_lock:
-            self.shared.migration_lock.release()
-        return False
-
-    def execute(self, query, params=None, **kwargs):
-        if "AS tables_current" in query:
-            current = self.shared.current
-            if not self.holds_lock:
-                self.shared.initial_checks.wait(timeout=5)
-            return _OneRow(
-                {"tables_current": current, "indexes_current": current}
-            )
-        if "pg_advisory_xact_lock" in query:
-            self.shared.migration_lock.acquire(timeout=5)
-            self.holds_lock = True
-            self.shared.lock_count += 1
-            return _OneRow(None)
-        if query == "SELECT 'exact migration';":
-            assert self.holds_lock is True
-            self.shared.migration_count += 1
-            self.shared.current = True
-            return _OneRow(None)
-        raise AssertionError(f"unexpected query: {query}")
-
-
-def test_two_concurrent_cold_starts_apply_migration_once():
-    shared = _ConcurrentSchema()
-    applied = []
-    failures = []
-
-    def initialize():
-        try:
-            with _ConcurrentConnection(shared) as connection:
-                applied.append(
-                    postgres_repository.ensure_postgres_schema(
-                        connection,
-                        lambda: "SELECT 'exact migration';",
-                    )
-                )
-        except Exception as exc:  # pragma: no cover - asserted below
-            failures.append(exc)
-
-    threads = [threading.Thread(target=initialize) for _ in range(2)]
-    for thread in threads:
-        thread.start()
-    for thread in threads:
-        thread.join(timeout=5)
-
-    assert failures == []
-    assert all(not thread.is_alive() for thread in threads)
-    assert sorted(applied) == [False, True]
-    assert shared.lock_count == 2
-    assert shared.migration_count == 1
+    assert repository.collection_policy("forzy-live-window-v1") is expected_by_id
+    assert (
+        repository.effective_collection_policy("forzy-motor-01", instant)
+        is expected_effective
+    )
+    assert calls == [
+        (connection, "forzy-live-window-v1"),
+        (connection, "forzy-motor-01", instant),
+    ]
+    assert connection.calls == []

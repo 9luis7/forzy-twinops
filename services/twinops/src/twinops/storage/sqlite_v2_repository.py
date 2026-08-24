@@ -7,6 +7,11 @@ from pathlib import Path
 import sqlite3
 
 from twinops.contracts.v2_models import CanonicalSensorReadingV2
+from twinops.storage.collection_policy_v1 import (
+    read_collection_policy,
+    read_effective_collection_policy,
+)
+from twinops.storage.schema_migrations import verify_schema_version
 from twinops.storage.v2_repository import (
     CollectionAttemptV2,
     HistoryQueryV2,
@@ -104,6 +109,25 @@ class SQLiteTelemetryRepositoryV2:
             connection.execute("PRAGMA journal_mode=WAL")
             connection.execute("PRAGMA foreign_keys=ON")
             connection.executescript(migration)
+
+    def verify_schema(self, expected_version: str):
+        with self._connection() as connection:
+            connection.execute("PRAGMA foreign_keys=ON")
+            return verify_schema_version(connection, expected_version)
+
+    def collection_policy(self, policy_id: str):
+        with self._connection() as connection:
+            connection.execute("PRAGMA foreign_keys=ON")
+            return read_collection_policy(connection, policy_id)
+
+    def effective_collection_policy(
+        self,
+        asset_id: str,
+        at: datetime,
+    ):
+        with self._connection() as connection:
+            connection.execute("PRAGMA foreign_keys=ON")
+            return read_effective_collection_policy(connection, asset_id, at)
 
     def _insert_distinct_sample(
         self,
