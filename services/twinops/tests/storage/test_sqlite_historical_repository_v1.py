@@ -233,6 +233,7 @@ if _REPOSITORY_AVAILABLE:
         ):
             trigger = {
                 "stage": "INSERT INTO historical_samples_v1",
+                "assessment": "INSERT INTO historical_assessments_v1",
                 "activation": (
                     "UPDATE historical_import_batches_v1 SET status='superseded'"
                 ),

@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from dataclasses import FrozenInstanceError, replace
+from dataclasses import FrozenInstanceError, fields, replace
 from datetime import datetime, timedelta, timezone
 from hashlib import sha256
+from inspect import Parameter, signature
 import json
 from typing import Callable, Protocol
 from uuid import NAMESPACE_URL, uuid5
@@ -244,6 +245,91 @@ class HistoricalRepositoryContract:
         historical_repository: HistoricalRepositoryV1,
         prepared_batch_factory: PreparedBatchFactory,
     ) -> None:
+        expected_result_fields = {
+            HistoricalBatchSummaryV1: (
+                "batch_id",
+                "asset_id",
+                "status",
+                "source_sha256",
+                "manifest_sha256",
+                "raw_row_count",
+                "sample_count",
+                "operating_cycle_count",
+                "assessment_count",
+                "assessment_manifest_sha256",
+                "staged_at",
+                "activated_at",
+            ),
+            StageHistoryResultV1: (
+                "batch",
+                "inserted",
+                "writes_performed",
+            ),
+            AssessmentStoreResultV1: (
+                "batch_id",
+                "inserted_count",
+                "existing_count",
+                "total_count",
+                "assessment_manifest_sha256",
+                "writes_performed",
+            ),
+            ActivateHistoryResultV1: (
+                "asset_id",
+                "batch_id",
+                "previous_active_batch_id",
+                "active_batch_id",
+                "activated",
+                "assessment_count",
+                "assessment_manifest_sha256",
+                "writes_performed",
+            ),
+        }
+        for result_type, expected_fields in expected_result_fields.items():
+            assert result_type.__dataclass_params__.frozen is True
+            assert tuple(field.name for field in fields(result_type)) == expected_fields
+
+        positional = Parameter.POSITIONAL_OR_KEYWORD
+        keyword_only = Parameter.KEYWORD_ONLY
+        expected_protocol_parameters = {
+            "verify_schema": (("self", positional), ("expected_version", positional)),
+            "target_identity": (("self", positional),),
+            "stage_batch": (("self", positional), ("batch", positional)),
+            "store_assessments": (
+                ("self", positional),
+                ("batch_id", positional),
+                ("assessments", positional),
+            ),
+            "activate_batch": (
+                ("self", positional),
+                ("asset_id", keyword_only),
+                ("batch_id", keyword_only),
+                ("expected_active_batch_id", keyword_only),
+            ),
+            "active_batch": (("self", positional), ("asset_id", positional)),
+            "reconstruct_source": (("self", positional), ("batch_id", positional)),
+            "collection_policy": (("self", positional), ("policy_id", positional)),
+            "collection_policies": (("self", positional), ("policy_ids", positional)),
+            "effective_collection_policy": (
+                ("self", positional),
+                ("asset_id", positional),
+                ("at", positional),
+            ),
+        }
+        protocol_methods = tuple(
+            name
+            for name, member in HistoricalRepositoryV1.__dict__.items()
+            if callable(member) and not name.startswith("_")
+        )
+        assert protocol_methods == tuple(expected_protocol_parameters)
+        for method_name, expected_parameters in expected_protocol_parameters.items():
+            parameters = tuple(
+                signature(getattr(HistoricalRepositoryV1, method_name)).parameters.values()
+            )
+            assert tuple((parameter.name, parameter.kind) for parameter in parameters) == (
+                expected_parameters
+            )
+            assert all(parameter.default is Parameter.empty for parameter in parameters)
+
         verification = historical_repository.verify_schema("003")
 
         assert isinstance(verification, SchemaVerification)
@@ -555,6 +641,67 @@ class HistoricalRepositoryContract:
             activated.assessment_manifest_sha256
             == inserted.assessment_manifest_sha256
         )
+
+    def test_assessment_identity_is_globally_bound_to_its_original_batch(
+        self,
+        historical_repository: HistoricalRepositoryV1,
+        prepared_batch_factory: PreparedBatchFactory,
+        repository_control: RepositoryContractControl,
+    ) -> None:
+        first = prepared_batch_factory(0)
+        second = prepared_batch_factory(1)
+        historical_repository.stage_batch(first)
+        historical_repository.stage_batch(second)
+        first_assessment = _assessment(first)
+        second_assessment = _assessment(second)
+        historical_repository.store_assessments(
+            first.batch_id,
+            [first_assessment],
+        )
+        historical_repository.store_assessments(
+            second.batch_id,
+            [second_assessment],
+        )
+        crossed = replace(first_assessment, batch_id=second.batch_id)
+        assert crossed.assessment is first_assessment.assessment
+        before = repository_control.snapshot()
+
+        with pytest.raises(HistoricalBatchConflict):
+            historical_repository.store_assessments(
+                second.batch_id,
+                [crossed],
+            )
+
+        assert repository_control.snapshot() == before
+
+    @pytest.mark.parametrize(
+        "exception_type",
+        [Exception, KeyboardInterrupt, SystemExit],
+        ids=["exception", "keyboard-interrupt", "system-exit"],
+    )
+    def test_assessment_storage_rolls_back_for_every_base_exception(
+        self,
+        exception_type: type[BaseException],
+        historical_repository: HistoricalRepositoryV1,
+        prepared_batch_factory: PreparedBatchFactory,
+        repository_control: RepositoryContractControl,
+    ) -> None:
+        batch = prepared_batch_factory(0)
+        historical_repository.stage_batch(batch)
+        assessment = _assessment(batch)
+        before = repository_control.snapshot()
+        interrupted = repository_control.interrupting_repository(
+            "assessment",
+            exception_type,
+        )
+
+        with pytest.raises(exception_type):
+            interrupted.store_assessments(
+                batch.batch_id,
+                [assessment],
+            )
+
+        assert repository_control.snapshot() == before
 
     def test_activation_validates_target_before_superseding_current_batch(
         self,

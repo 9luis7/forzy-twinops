@@ -984,12 +984,13 @@ class SQLiteHistoricalRepositoryV1:
                 )
             markers = ",".join("?" for _ in assessment_ids)
             existing_rows = connection.execute(
-                f"SELECT assessment_id,canonical_json FROM historical_assessments_v1 "
+                f"SELECT assessment_id,batch_id,canonical_json "
+                f"FROM historical_assessments_v1 "
                 f"WHERE assessment_id IN ({markers})",
                 assessment_ids,
             ).fetchall()
             existing = {
-                row["assessment_id"]: row["canonical_json"]
+                row["assessment_id"]: (row["batch_id"], row["canonical_json"])
                 for row in existing_rows
             }
             to_insert: list[tuple[object, ...]] = []
@@ -997,7 +998,14 @@ class SQLiteHistoricalRepositoryV1:
             for value in expected_values:
                 assessment_id = str(value[0])
                 if assessment_id in existing:
-                    if existing[assessment_id] != value[-1]:
+                    existing_batch_id, existing_canonical_json = existing[
+                        assessment_id
+                    ]
+                    if existing_batch_id != batch_id:
+                        raise HistoricalBatchConflict(
+                            "historical assessment identity belongs to another batch"
+                        )
+                    if existing_canonical_json != value[-1]:
                         raise HistoricalBatchConflict(
                             "existing historical assessment diverges"
                         )
