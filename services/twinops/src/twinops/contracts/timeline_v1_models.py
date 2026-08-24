@@ -721,9 +721,8 @@ def _assert_historical_assessment(value: dict[str, object]) -> None:
 def _assert_collection_policy(value: dict[str, object]) -> None:
     if value["activeWeekdays"] != ["monday", "tuesday", "wednesday"]:
         raise ValueError("activeWeekdays must be ordered and complete")
-    if value["effectiveTo"] is not None and _timestamp(value["effectiveTo"]) <= _timestamp(
-        value["effectiveFrom"]
-    ):
+    effective_from = _timestamp(value["effectiveFrom"])
+    if value["effectiveTo"] is not None and _timestamp(value["effectiveTo"]) <= effective_from:
         raise ValueError("effectiveTo must be later than effectiveFrom")
     selected_keys = (
         "schemaVersion",
@@ -1012,6 +1011,12 @@ def _assert_overview(value: dict[str, object]) -> None:
             raise ValueError("historical candidate event does not belong to its cycle")
 
     series = value["series"]
+    required_series_groups = {
+        (segment["segmentId"], sensor_id, segment["sourceKind"])
+        for segment in segments
+        for sensor_id in ("s1", "s2")
+        if segment["sensorCounts"][sensor_id] > 0
+    }
     expected_series_keys: list[tuple[datetime, str, str, str, str]] = []
     combinations: dict[tuple[str, str], list[dict[str, object]]] = {}
     totals = [0, 0, 0]
@@ -1036,6 +1041,10 @@ def _assert_overview(value: dict[str, object]) -> None:
         omitted = aggregation["omittedPointCount"]
         if returned != len(points) or omitted != original - returned:
             raise ValueError("series aggregation counts are invalid")
+        if aggregation["method"] == "none" and (
+            returned != original or omitted != 0
+        ):
+            raise ValueError("none aggregation must retain every original point")
         if original != segment["sensorCounts"][row["sensorId"]]:
             raise ValueError("series membership disagrees with segment sensor counts")
         point_keys: list[tuple[datetime, str]] = []
@@ -1068,6 +1077,8 @@ def _assert_overview(value: dict[str, object]) -> None:
         raise ValueError("series must use deterministic segment order")
     if len(resolved_metrics) > 1:
         raise ValueError("one response must resolve exactly one metric")
+    if seen_series_groups != required_series_groups:
+        raise ValueError("series must exactly cover every nonzero segment sensor group")
 
     summary = value["aggregationSummary"]
     for rows in combinations.values():
@@ -1077,6 +1088,7 @@ def _assert_overview(value: dict[str, object]) -> None:
             raise ValueError("series combination ceiling and method must agree")
         original_total = sum(row["aggregation"]["originalPointCount"] for row in rows)
         returned_total = sum(row["aggregation"]["returnedPointCount"] for row in rows)
+        omitted_total = sum(row["aggregation"]["omittedPointCount"] for row in rows)
         method = next(iter(methods))
         expected_method = (
             "none"
@@ -1085,6 +1097,10 @@ def _assert_overview(value: dict[str, object]) -> None:
         )
         if method != expected_method or returned_total > summary["requestedMaxPoints"]:
             raise ValueError("global sensor/source aggregation budget is invalid")
+        if method == "none" and (
+            returned_total != original_total or omitted_total != 0
+        ):
+            raise ValueError("none aggregation combination must retain all originals")
     if [
         summary["originalPointCount"],
         summary["returnedPointCount"],
@@ -1273,17 +1289,41 @@ def _assert_context(value: dict[str, object]) -> None:
             raise ValueError("historical gap context cannot carry point facts")
 
     assessment = value["assessment"]
+    assessment_status = None
+    if assessment is not None:
+        assessment_status = (
+            assessment["status"]
+            if assessment["schemaVersion"] == "1.0"
+            else assessment["assessment"]["status"]
+        )
+    suppressed_normal = (
+        assessment_status == "normal"
+        and facts["conditionState"] == "normal"
+        and facts["conditionTemporalScope"] == "none"
+        and facts["conditionSource"] == "none"
+        and facts["conditionAsOf"] is None
+        and facts["conditionEpisodeStartedAt"] is None
+        and (
+            facts["dataTrust"] in {"degraded", "insufficient"}
+            or facts["dataAvailability"] != "complete"
+        )
+    )
     if assessment is None:
         if facts["conditionEpisodeStartedAt"] is not None or facts["conditionSource"] != "none":
             raise ValueError("condition evidence requires a returned matching assessment")
     elif assessment["schemaVersion"] == "1.0":
         _assert_historical_assessment(assessment)
         if not (
-            facts["conditionSource"] == "historical_walk_forward"
-            and facts["conditionState"] == assessment["status"]
-            and facts["conditionAsOf"] == assessment["assessmentAt"]
-            and facts["conditionEpisodeStartedAt"]
-            == assessment["persistence"]["episodeStartedAt"]
+            facts["conditionState"] == assessment["status"]
+            and (
+                suppressed_normal
+                or (
+                    facts["conditionSource"] == "historical_walk_forward"
+                    and facts["conditionAsOf"] == assessment["assessmentAt"]
+                    and facts["conditionEpisodeStartedAt"]
+                    == assessment["persistence"]["episodeStartedAt"]
+                )
+            )
         ):
             raise ValueError("historical condition facts do not match the assessment")
         anchor = value["anchor"]
@@ -1296,10 +1336,47 @@ def _assert_context(value: dict[str, object]) -> None:
             raise ValueError("historical assessment anchor facts are crossed")
     else:
         if not (
-            facts["conditionSource"] == "live_assessment"
-            and facts["conditionState"] == assessment["assessment"]["status"]
+            facts["conditionState"] == assessment["assessment"]["status"]
+            and (suppressed_normal or facts["conditionSource"] == "live_assessment")
         ):
             raise ValueError("live condition facts do not match the assessment")
+        anchor = value["anchor"]
+        if anchor is None:
+            raise ValueError("live assessment requires an original anchor")
+        window = assessment["window"]
+        window_start = _timestamp(window["start"])
+        window_end = _timestamp(window["end"])
+        window_received = _timestamp(window["receivedAt"])
+        if not window_start <= window_end <= window_received:
+            raise ValueError("live assessment window is not chronological")
+        if window["freshnessMs"] != (window_received - window_end).total_seconds() * 1000:
+            raise ValueError("live assessment freshness does not match its window")
+        if _timestamp(assessment["model"]["trainedUntil"]) > window_start:
+            raise ValueError("live assessment model was trained after its causal window")
+        if not (
+            assessment["assetId"] == value["assetId"] == anchor["assetId"]
+            and assessment["sensorId"] == anchor["sensorId"]
+            and anchor["sourceKind"] == "live_collection"
+        ):
+            raise ValueError("live assessment asset, sensor, and anchor are crossed")
+        if not (
+            assessment["window"]["receivedAt"] == anchor["eventAt"]
+            and value["selectedAt"] == anchor["eventAt"]
+        ):
+            raise ValueError("live assessment does not match anchor event and selectedAt")
+        if not suppressed_normal and facts["conditionAsOf"] != assessment["window"][
+            "receivedAt"
+        ]:
+            raise ValueError("live conditionAsOf must equal assessment window receivedAt")
+        if facts["conditionEpisodeStartedAt"] is not None:
+            raise ValueError("live v2 assessment cannot invent an episode start")
+        quality_status = assessment["quality"]["status"]
+        if quality_status == "insufficient_data" and facts["dataTrust"] != "insufficient":
+            raise ValueError("live assessment quality requires insufficient trust")
+        if quality_status == "degraded" and facts["dataTrust"] == "sufficient":
+            raise ValueError("live assessment trust exceeds degraded quality")
+        if facts["dataAvailability"] != "complete" and facts["dataTrust"] == "sufficient":
+            raise ValueError("live assessment trust exceeds channel availability")
 
 
 def assert_timeline_invariants_v1(

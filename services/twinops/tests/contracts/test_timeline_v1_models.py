@@ -107,6 +107,24 @@ def _live_assessment_context() -> dict[str, object]:
     }
 
 
+def _degraded_normal_context() -> dict[str, object]:
+    payload = _live_assessment_context()
+    payload["assessment"]["assessment"].update(
+        status="normal",
+        episodeId=None,
+        persistenceSeconds=0,
+    )
+    payload["decisionFacts"].update(
+        conditionState="normal",
+        conditionTemporalScope="none",
+        conditionAsOf=None,
+        conditionEpisodeStartedAt=None,
+        conditionSource="none",
+    )
+    payload["provenance"]["assessmentSource"] = "none"
+    return payload
+
+
 VALID_CASES = [
     ("historical-reading.valid.json", "historical-sensor-reading", HistoricalSensorReadingV1),
     ("live-point.valid.json", "timeline-point", TimelinePointV1),
@@ -134,6 +152,14 @@ def _model_accepts(model_type: type, payload: dict[str, object]) -> bool:
 def _composed_accepts(schema_name: str, payload: dict[str, object]) -> bool:
     try:
         validate_timeline_public_v1(schema_name, payload)
+    except Exception:
+        return False
+    return True
+
+
+def _invariants_accept(schema_name: str, payload: dict[str, object]) -> bool:
+    try:
+        contracts.assert_timeline_invariants_v1(payload, schema_name)
     except Exception:
         return False
     return True
@@ -447,6 +473,15 @@ def test_collection_policy_hash_validity_and_versioned_identity_are_composed() -
     _assert_rejected_everywhere("collection-policy", CollectionPolicyV1, reordered)
 
 
+def test_open_ended_policy_still_parses_effective_from_calendar() -> None:
+    policy = _fixture("collection-policy.valid.json")
+    policy["effectiveFrom"] = "2026-02-29T00:00:00.000Z"
+    assert _model_accepts(CollectionPolicyV1, policy) is False
+    assert _composed_accepts("collection-policy", policy) is False, (
+        "RED:FR1:I2:open-ended-policy-skips-effective-from-calendar"
+    )
+
+
 def test_event_candidate_source_quality_model_and_episode_facts_fail_closed() -> None:
     for fixture_name in (
         "event-candidate-cross.invalid.json",
@@ -587,6 +622,45 @@ def test_overview_aggregation_ceiling_method_summary_and_order_are_coherent() ->
         reversed(reversed_points["series"][0]["points"])
     )
     _assert_rejected_everywhere("timeline-overview", TimelineOverviewV1, reversed_points)
+
+
+def test_overview_none_method_requires_full_retention() -> None:
+    payload = _fixture("overview-unified.valid.json")
+    payload["aggregationSummary"]["requestedMaxPoints"] = 100
+    payload["aggregationSummary"]["reducedSeriesCount"] = 0
+    for row in payload["series"]:
+        row["aggregation"]["requestedMaxPoints"] = 100
+        row["aggregation"]["method"] = "none"
+    assert _composed_accepts("timeline-overview", payload) is False, (
+        "RED:FR1:I3:none-method-retains-omissions"
+    )
+    assert _model_accepts(TimelineOverviewV1, payload) is False
+
+
+def test_overview_requires_every_nonzero_segment_sensor_group() -> None:
+    payload = _fixture("overview-unified.valid.json")
+    omitted = payload["series"].pop()
+    assert omitted["aggregation"]["originalPointCount"] > 0
+    assert omitted["points"] == []
+    segments = {segment["segmentId"]: segment for segment in payload["segments"]}
+    for row in payload["series"]:
+        row["aggregation"]["originalPointCount"] = 15
+        row["aggregation"]["omittedPointCount"] = (
+            15 - row["aggregation"]["returnedPointCount"]
+        )
+        segment = segments[row["segmentId"]]
+        segment["sensorCounts"]["s1"] = 15
+        segment["totalPoints"] = 15
+    payload["aggregationSummary"].update(
+        originalPointCount=45,
+        returnedPointCount=4,
+        omittedPointCount=41,
+        reducedSeriesCount=3,
+    )
+    assert _composed_accepts("timeline-overview", payload) is False, (
+        "RED:FR1:I3:nonzero-zero-selected-group-may-be-omitted"
+    )
+    assert _model_accepts(TimelineOverviewV1, payload) is False
 
 
 def _operating_cycles(count: int = 204) -> list[dict[str, object]]:
@@ -774,6 +848,102 @@ def test_context_resolves_unchanged_v2_assessment_and_preserves_public_bytes() -
         TimelineContextV1.model_validate_json(parsed.model_dump_public_json())
         .model_dump_public_json()
         == parsed.model_dump_public_json()
+    )
+
+
+def test_context_retains_degraded_normal_assessment_with_suppressed_claims() -> None:
+    payload = _degraded_normal_context()
+    assert _composed_accepts("timeline-context", payload), (
+        "RED:FR1:I4:degraded-normal-assessment-is-unrepresentable"
+    )
+    assert _model_accepts(TimelineContextV1, payload)
+
+
+def test_context_degraded_normal_suppression_rejects_near_neighbors() -> None:
+    watch = _degraded_normal_context()
+    watch["assessment"]["assessment"]["status"] = "watch"
+    _assert_rejected_everywhere("timeline-context", TimelineContextV1, watch)
+
+    wrong_label = _degraded_normal_context()
+    wrong_label["decisionFacts"]["conditionState"] = "unknown"
+    _assert_rejected_everywhere("timeline-context", TimelineContextV1, wrong_label)
+
+    unsuppressed = _degraded_normal_context()
+    at = unsuppressed["selectedAt"]
+    unsuppressed["decisionFacts"].update(
+        conditionTemporalScope="current",
+        conditionAsOf=at,
+        conditionSource="live_assessment",
+    )
+    unsuppressed["provenance"]["assessmentSource"] = "live_assessment"
+    _assert_rejected_everywhere("timeline-context", TimelineContextV1, unsuppressed)
+
+    sufficient_complete = _degraded_normal_context()
+    second = copy.deepcopy(sufficient_complete["channels"]["s1"])
+    second["sensorId"] = "s2"
+    second["pointId"] = "00000000-0000-5000-8000-000000000005"
+    second["provenance"]["readingId"] = second["pointId"]
+    sufficient_complete["channels"]["s2"] = second
+    sufficient_complete["decisionFacts"]["dataAvailability"] = "complete"
+    sufficient_complete["decisionFacts"]["dataTrust"] = "sufficient"
+    sufficient_complete["capabilities"]["pairedChannels"] = True
+    _assert_rejected_everywhere(
+        "timeline-context", TimelineContextV1, sufficient_complete
+    )
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    (
+        "wrong_sensor",
+        "condition_as_of",
+        "window_order",
+        "anchor_received_at",
+        "selected_at",
+        "invented_episode_start",
+        "freshness_arithmetic",
+        "future_trained_model",
+        "quality_trust",
+    ),
+)
+def test_live_v2_assessment_must_match_causal_context(mutation: str) -> None:
+    payload = _live_assessment_context()
+    if mutation == "wrong_sensor":
+        payload["assessment"]["sensorId"] = "s2"
+    elif mutation == "condition_as_of":
+        payload["decisionFacts"]["conditionAsOf"] = "2026-08-22T12:00:00.124Z"
+    elif mutation == "window_order":
+        payload["assessment"]["window"]["start"] = "2026-08-22T12:00:00.124Z"
+    elif mutation == "anchor_received_at":
+        payload["assessment"]["window"]["receivedAt"] = "2026-08-22T12:00:00.124Z"
+        payload["decisionFacts"]["conditionAsOf"] = "2026-08-22T12:00:00.124Z"
+        payload["selectedAt"] = "2026-08-22T12:00:00.124Z"
+        payload["assessment"]["window"]["freshnessMs"] = 1
+    elif mutation == "selected_at":
+        payload["selectedAt"] = "2026-08-22T12:00:00.124Z"
+    elif mutation == "invented_episode_start":
+        payload["decisionFacts"]["conditionEpisodeStartedAt"] = payload[
+            "decisionFacts"
+        ]["conditionAsOf"]
+    elif mutation == "freshness_arithmetic":
+        payload["assessment"]["window"]["freshnessMs"] = 1
+    elif mutation == "future_trained_model":
+        payload["assessment"]["model"]["trainedUntil"] = (
+            "2026-08-22T12:00:00.124Z"
+        )
+    elif mutation == "quality_trust":
+        payload["assessment"]["quality"]["status"] = "insufficient_data"
+    assert _composed_accepts("timeline-context", payload) is False, (
+        f"RED:FR1:I5:live-assessment-causality:{mutation}"
+    )
+    assert _model_accepts(TimelineContextV1, payload) is False
+
+
+def test_live_v2_assessment_asset_must_match_even_before_schema_validation() -> None:
+    payload = _live_assessment_context()
+    payload["assessment"]["assetId"] = "crossed-asset"
+    assert _invariants_accept("timeline-context", payload) is False, (
+        "RED:FR1:I5:live-assessment-causality:crossed_asset"
     )
 
 

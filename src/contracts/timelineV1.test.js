@@ -1,5 +1,7 @@
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { build } from "vite";
 import { describe, expect, it } from "vitest";
 import {
   assertCollectionPolicyV1,
@@ -8,6 +10,7 @@ import {
   assertTimelineContextV1,
   assertTimelineDecisionFactsV1,
   assertTimelineEventCandidateV1,
+  assertTimelineInvariantsV1,
   assertTimelineOverviewV1,
   assertTimelinePageV1,
   assertTimelinePointV1,
@@ -86,6 +89,24 @@ const liveAssessmentContext = () => {
     },
     limitations: [],
   };
+};
+
+const degradedNormalContext = () => {
+  const payload = liveAssessmentContext();
+  Object.assign(payload.assessment.assessment, {
+    status: "normal",
+    episodeId: null,
+    persistenceSeconds: 0,
+  });
+  Object.assign(payload.decisionFacts, {
+    conditionState: "normal",
+    conditionTemporalScope: "none",
+    conditionAsOf: null,
+    conditionEpisodeStartedAt: null,
+    conditionSource: "none",
+  });
+  payload.provenance.assessmentSource = "none";
+  return payload;
 };
 
 const validCases = [
@@ -173,6 +194,40 @@ const operatingCycles = (count = 204) => {
 };
 
 describe("Timeline v1 composed runtime contract", () => {
+  it("bundles the public validator without Node built-ins while preserving pinned hashes", async () => {
+    const policy = fixture("collection-policy.valid.json");
+    const candidate = fixture("event-candidate-live.valid.json");
+    const overview = fixture("overview-unified.valid.json");
+    expect(policy.configurationHash)
+      .toBe("sha256:89bde17193c7a34c80d48828f4e61fc5802caa92169d83f8a9fd8e4c282b1bce");
+    expect(candidate.candidateId).toBe("7e36965b-20e4-5ce7-a37a-85357559f763");
+    expect(overview.gaps[0].gapId).toBe("3374ee11-91f2-528d-b23e-198ee91b3d70");
+    expect(() => assertCollectionPolicyV1(policy)).not.toThrow();
+    expect(() => assertTimelineEventCandidateV1(candidate)).not.toThrow();
+    expect(() => assertTimelineOverviewV1(overview)).not.toThrow();
+
+    const result = await build({
+      configFile: false,
+      logLevel: "silent",
+      build: {
+        write: false,
+        lib: {
+          entry: fileURLToPath(new URL("./timelineV1.js", import.meta.url)),
+          formats: ["es"],
+          fileName: "timeline-v1-browser",
+        },
+      },
+    });
+    const outputs = (Array.isArray(result) ? result : [result])
+      .flatMap((entry) => entry.output);
+    const chunks = outputs.filter((entry) => entry.type === "chunk");
+    expect(chunks.length).toBeGreaterThan(0);
+    expect(chunks.flatMap((chunk) => chunk.imports).some((specifier) => specifier.startsWith("node:")))
+      .toBe(false);
+    const bundledCode = chunks.map((chunk) => chunk.code).join("\n");
+    expect(bundledCode).not.toMatch(/node:(?:crypto|fs)|__vite-browser-external|\bBuffer\b/);
+  }, 15_000);
+
   it.each(validCases)("accepts and byte-stably revalidates %s", (name, validate) => {
     const payload = fixture(name);
     expect(validate(payload)).toBe(payload);
@@ -302,6 +357,15 @@ describe("Timeline v1 composed runtime contract", () => {
     reject(assertCollectionPolicyV1, reordered);
   });
 
+  it("parses effectiveFrom even when an open-ended policy has no effectiveTo", () => {
+    const policy = fixture("collection-policy.valid.json");
+    policy.effectiveFrom = "2026-02-29T00:00:00.000Z";
+    expect(
+      () => assertCollectionPolicyV1(policy),
+      "RED:FR1:I2:open-ended-policy-skips-effective-from-calendar",
+    ).toThrow();
+  });
+
   it("rejects candidate source, quality, trust, model, and episode crossings", () => {
     reject(assertTimelineEventCandidateV1, fixture("event-candidate-cross.invalid.json"));
     reject(assertTimelineEventCandidateV1, fixture("event-candidate-episode.invalid.json"));
@@ -376,6 +440,45 @@ describe("Timeline v1 composed runtime contract", () => {
     const reversedPoints = structuredClone(payload);
     reversedPoints.series[0].points.reverse();
     reject(assertTimelineOverviewV1, reversedPoints);
+  });
+
+  it("requires method none to retain every original point", () => {
+    const payload = fixture("overview-unified.valid.json");
+    payload.aggregationSummary.requestedMaxPoints = 100;
+    payload.aggregationSummary.reducedSeriesCount = 0;
+    for (const row of payload.series) {
+      row.aggregation.requestedMaxPoints = 100;
+      row.aggregation.method = "none";
+    }
+    expect(
+      () => assertTimelineOverviewV1(payload),
+      "RED:FR1:I3:none-method-retains-omissions",
+    ).toThrow();
+  });
+
+  it("requires every nonzero segment sensor group including zero-selected series", () => {
+    const payload = fixture("overview-unified.valid.json");
+    const omitted = payload.series.pop();
+    expect(omitted.aggregation.originalPointCount).toBeGreaterThan(0);
+    expect(omitted.points).toHaveLength(0);
+    const segments = new Map(payload.segments.map((segment) => [segment.segmentId, segment]));
+    for (const row of payload.series) {
+      row.aggregation.originalPointCount = 15;
+      row.aggregation.omittedPointCount = 15 - row.aggregation.returnedPointCount;
+      const segment = segments.get(row.segmentId);
+      segment.sensorCounts.s1 = 15;
+      segment.totalPoints = 15;
+    }
+    Object.assign(payload.aggregationSummary, {
+      originalPointCount: 45,
+      returnedPointCount: 4,
+      omittedPointCount: 41,
+      reducedSeriesCount: 3,
+    });
+    expect(
+      () => assertTimelineOverviewV1(payload),
+      "RED:FR1:I3:nonzero-zero-selected-group-may-be-omitted",
+    ).toThrow();
   });
 
   it("rejects segment, gap, sensor-membership, and local count crossings", () => {
@@ -570,6 +673,87 @@ describe("Timeline v1 composed runtime contract", () => {
     const payload = liveAssessmentContext();
     expect(assertTimelineContextV1(payload)).toBe(payload);
     expect(JSON.stringify(JSON.parse(JSON.stringify(payload)))).toBe(JSON.stringify(payload));
+  });
+
+  it("retains a degraded normal assessment while suppressing temporal condition claims", () => {
+    const payload = degradedNormalContext();
+    expect(
+      () => assertTimelineContextV1(payload),
+      "RED:FR1:I4:degraded-normal-assessment-is-unrepresentable",
+    ).not.toThrow();
+  });
+
+  it("rejects near-neighbors of degraded normal suppression", () => {
+    const watch = degradedNormalContext();
+    watch.assessment.assessment.status = "watch";
+    reject(assertTimelineContextV1, watch);
+
+    const wrongLabel = degradedNormalContext();
+    wrongLabel.decisionFacts.conditionState = "unknown";
+    reject(assertTimelineContextV1, wrongLabel);
+
+    const unsuppressed = degradedNormalContext();
+    Object.assign(unsuppressed.decisionFacts, {
+      conditionTemporalScope: "current",
+      conditionAsOf: unsuppressed.selectedAt,
+      conditionSource: "live_assessment",
+    });
+    unsuppressed.provenance.assessmentSource = "live_assessment";
+    reject(assertTimelineContextV1, unsuppressed);
+
+    const sufficientComplete = degradedNormalContext();
+    const second = structuredClone(sufficientComplete.channels.s1);
+    second.sensorId = "s2";
+    second.pointId = "00000000-0000-5000-8000-000000000005";
+    second.provenance.readingId = second.pointId;
+    sufficientComplete.channels.s2 = second;
+    sufficientComplete.decisionFacts.dataAvailability = "complete";
+    sufficientComplete.decisionFacts.dataTrust = "sufficient";
+    sufficientComplete.capabilities.pairedChannels = true;
+    reject(assertTimelineContextV1, sufficientComplete);
+  });
+
+  it.each([
+    ["wrong_sensor", (payload) => { payload.assessment.sensorId = "s2"; }],
+    ["condition_as_of", (payload) => {
+      payload.decisionFacts.conditionAsOf = "2026-08-22T12:00:00.124Z";
+    }],
+    ["window_order", (payload) => {
+      payload.assessment.window.start = "2026-08-22T12:00:00.124Z";
+    }],
+    ["anchor_received_at", (payload) => {
+      payload.assessment.window.receivedAt = "2026-08-22T12:00:00.124Z";
+      payload.decisionFacts.conditionAsOf = "2026-08-22T12:00:00.124Z";
+      payload.selectedAt = "2026-08-22T12:00:00.124Z";
+      payload.assessment.window.freshnessMs = 1;
+    }],
+    ["selected_at", (payload) => { payload.selectedAt = "2026-08-22T12:00:00.124Z"; }],
+    ["invented_episode_start", (payload) => {
+      payload.decisionFacts.conditionEpisodeStartedAt = payload.decisionFacts.conditionAsOf;
+    }],
+    ["freshness_arithmetic", (payload) => { payload.assessment.window.freshnessMs = 1; }],
+    ["future_trained_model", (payload) => {
+      payload.assessment.model.trainedUntil = "2026-08-22T12:00:00.124Z";
+    }],
+    ["quality_trust", (payload) => {
+      payload.assessment.quality.status = "insufficient_data";
+    }],
+  ])("rejects noncausal live v2 assessment mutation %s", (mutation, mutate) => {
+    const payload = liveAssessmentContext();
+    mutate(payload);
+    expect(
+      () => assertTimelineContextV1(payload),
+      `RED:FR1:I5:live-assessment-causality:${mutation}`,
+    ).toThrow();
+  });
+
+  it("matches live v2 assessment asset before structural validation", () => {
+    const payload = liveAssessmentContext();
+    payload.assessment.assetId = "crossed-asset";
+    expect(
+      () => assertTimelineInvariantsV1(payload, "timeline-context"),
+      "RED:FR1:I5:live-assessment-causality:crossed_asset",
+    ).toThrow();
   });
 
   it("rejects historical and unavailable decision-fact crossings", () => {

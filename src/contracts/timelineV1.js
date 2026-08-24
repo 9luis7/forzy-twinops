@@ -1,30 +1,32 @@
-import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
 import Ajv from "ajv";
 import addFormats from "ajv-formats";
+import assetConditionAssessmentSchema from "../../contracts/v2/asset-condition-assessment.schema.json";
+import collectionPolicySchema from "../../contracts/timeline/v1/collection-policy.schema.json";
+import historicalAssessmentSchema from "../../contracts/timeline/v1/historical-assessment.schema.json";
+import historicalSensorReadingSchema from "../../contracts/timeline/v1/historical-sensor-reading.schema.json";
+import timelineContextSchema from "../../contracts/timeline/v1/timeline-context.schema.json";
+import timelineDecisionFactsSchema from "../../contracts/timeline/v1/timeline-decision-facts.schema.json";
+import timelineEventCandidateSchema from "../../contracts/timeline/v1/timeline-event-candidate.schema.json";
+import timelineOverviewSchema from "../../contracts/timeline/v1/timeline-overview.schema.json";
+import timelinePageSchema from "../../contracts/timeline/v1/timeline-page.schema.json";
+import timelinePointSchema from "../../contracts/timeline/v1/timeline-point.schema.json";
 
 export const TIMELINE_SCHEMA_VERSION_V1 = "1.0";
 export const PUBLIC_UTC_MILLIS_RE = /^\d{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01])T(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d\.\d{3}Z$/;
 
 const TIMELINE_SCHEMA_PREFIX = "forzy://contracts/timeline/v1/";
-const schemaNames = [
-  "historical-sensor-reading",
-  "timeline-point",
-  "historical-assessment",
-  "collection-policy",
-  "timeline-event-candidate",
-  "timeline-overview",
-  "timeline-page",
-  "timeline-decision-facts",
-  "timeline-context",
+const defaultTimelineSchemas = [
+  historicalSensorReadingSchema,
+  timelinePointSchema,
+  historicalAssessmentSchema,
+  collectionPolicySchema,
+  timelineEventCandidateSchema,
+  timelineOverviewSchema,
+  timelinePageSchema,
+  timelineDecisionFactsSchema,
+  timelineContextSchema,
 ];
-const json = (url) => JSON.parse(readFileSync(url, "utf8"));
-const defaultTimelineSchemas = schemaNames.map((name) => json(
-  new URL(`../../contracts/timeline/v1/${name}.schema.json`, import.meta.url),
-));
-const defaultAssetAssessmentSchema = json(
-  new URL("../../contracts/v2/asset-condition-assessment.schema.json", import.meta.url),
-);
+const defaultAssetAssessmentSchema = assetConditionAssessmentSchema;
 
 const fail = (message) => { throw new TypeError(message); };
 
@@ -157,12 +159,163 @@ const stableJson = (value) => {
   return JSON.stringify(value);
 };
 
+const textEncoder = new TextEncoder();
+const utf8Bytes = (value) => textEncoder.encode(value);
+const concatenateBytes = (...arrays) => {
+  const output = new Uint8Array(arrays.reduce((total, array) => total + array.length, 0));
+  let offset = 0;
+  for (const array of arrays) {
+    output.set(array, offset);
+    offset += array.length;
+  }
+  return output;
+};
+const paddedHashInput = (input) => {
+  const output = new Uint8Array(Math.ceil((input.length + 9) / 64) * 64);
+  output.set(input);
+  output[input.length] = 0x80;
+  const bitLength = input.length * 8;
+  const view = new DataView(output.buffer);
+  view.setUint32(output.length - 8, Math.floor(bitLength / 0x100000000));
+  view.setUint32(output.length - 4, bitLength >>> 0);
+  return output;
+};
+const leftRotate = (value, count) => ((value << count) | (value >>> (32 - count))) >>> 0;
+const rightRotate = (value, count) => ((value >>> count) | (value << (32 - count))) >>> 0;
+const wordsToBytes = (words) => {
+  const output = new Uint8Array(words.length * 4);
+  const view = new DataView(output.buffer);
+  words.forEach((word, index) => view.setUint32(index * 4, word >>> 0));
+  return output;
+};
+const bytesToHex = (bytes) => [...bytes]
+  .map((byte) => byte.toString(16).padStart(2, "0"))
+  .join("");
+
+const sha1Bytes = (input) => {
+  const padded = paddedHashInput(input);
+  const view = new DataView(padded.buffer);
+  const hash = new Uint32Array([
+    0x67452301,
+    0xefcdab89,
+    0x98badcfe,
+    0x10325476,
+    0xc3d2e1f0,
+  ]);
+  const schedule = new Uint32Array(80);
+  for (let offset = 0; offset < padded.length; offset += 64) {
+    for (let index = 0; index < 16; index += 1) {
+      schedule[index] = view.getUint32(offset + index * 4);
+    }
+    for (let index = 16; index < 80; index += 1) {
+      schedule[index] = leftRotate(
+        schedule[index - 3] ^ schedule[index - 8] ^ schedule[index - 14] ^ schedule[index - 16],
+        1,
+      );
+    }
+    let [a, b, c, d, e] = hash;
+    for (let index = 0; index < 80; index += 1) {
+      let f;
+      let k;
+      if (index < 20) {
+        f = (b & c) | (~b & d);
+        k = 0x5a827999;
+      } else if (index < 40) {
+        f = b ^ c ^ d;
+        k = 0x6ed9eba1;
+      } else if (index < 60) {
+        f = (b & c) | (b & d) | (c & d);
+        k = 0x8f1bbcdc;
+      } else {
+        f = b ^ c ^ d;
+        k = 0xca62c1d6;
+      }
+      const next = (leftRotate(a, 5) + f + e + k + schedule[index]) >>> 0;
+      e = d;
+      d = c;
+      c = leftRotate(b, 30);
+      b = a;
+      a = next;
+    }
+    hash[0] = (hash[0] + a) >>> 0;
+    hash[1] = (hash[1] + b) >>> 0;
+    hash[2] = (hash[2] + c) >>> 0;
+    hash[3] = (hash[3] + d) >>> 0;
+    hash[4] = (hash[4] + e) >>> 0;
+  }
+  return wordsToBytes([...hash]);
+};
+
+const SHA256_CONSTANTS = new Uint32Array([
+  0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
+  0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
+  0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
+  0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
+  0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
+  0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
+  0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+  0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2,
+]);
+
+const sha256Bytes = (input) => {
+  const padded = paddedHashInput(input);
+  const view = new DataView(padded.buffer);
+  const hash = new Uint32Array([
+    0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a,
+    0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19,
+  ]);
+  const schedule = new Uint32Array(64);
+  for (let offset = 0; offset < padded.length; offset += 64) {
+    for (let index = 0; index < 16; index += 1) {
+      schedule[index] = view.getUint32(offset + index * 4);
+    }
+    for (let index = 16; index < 64; index += 1) {
+      const s0 = rightRotate(schedule[index - 15], 7)
+        ^ rightRotate(schedule[index - 15], 18)
+        ^ (schedule[index - 15] >>> 3);
+      const s1 = rightRotate(schedule[index - 2], 17)
+        ^ rightRotate(schedule[index - 2], 19)
+        ^ (schedule[index - 2] >>> 10);
+      schedule[index] = (schedule[index - 16] + s0 + schedule[index - 7] + s1) >>> 0;
+    }
+    let [a, b, c, d, e, f, g, h] = hash;
+    for (let index = 0; index < 64; index += 1) {
+      const sigma1 = rightRotate(e, 6) ^ rightRotate(e, 11) ^ rightRotate(e, 25);
+      const choice = (e & f) ^ (~e & g);
+      const first = (h + sigma1 + choice + SHA256_CONSTANTS[index] + schedule[index]) >>> 0;
+      const sigma0 = rightRotate(a, 2) ^ rightRotate(a, 13) ^ rightRotate(a, 22);
+      const majority = (a & b) ^ (a & c) ^ (b & c);
+      const second = (sigma0 + majority) >>> 0;
+      h = g;
+      g = f;
+      f = e;
+      e = (d + first) >>> 0;
+      d = c;
+      c = b;
+      b = a;
+      a = (first + second) >>> 0;
+    }
+    hash[0] = (hash[0] + a) >>> 0;
+    hash[1] = (hash[1] + b) >>> 0;
+    hash[2] = (hash[2] + c) >>> 0;
+    hash[3] = (hash[3] + d) >>> 0;
+    hash[4] = (hash[4] + e) >>> 0;
+    hash[5] = (hash[5] + f) >>> 0;
+    hash[6] = (hash[6] + g) >>> 0;
+    hash[7] = (hash[7] + h) >>> 0;
+  }
+  return wordsToBytes([...hash]);
+};
+
 const uuid5Url = (name) => {
-  const namespace = Buffer.from("6ba7b8119dad11d180b400c04fd430c8", "hex");
-  const bytes = createHash("sha1").update(namespace).update(name, "utf8").digest().subarray(0, 16);
+  const namespace = new Uint8Array([
+    0x6b, 0xa7, 0xb8, 0x11, 0x9d, 0xad, 0x11, 0xd1,
+    0x80, 0xb4, 0x00, 0xc0, 0x4f, 0xd4, 0x30, 0xc8,
+  ]);
+  const bytes = sha1Bytes(concatenateBytes(namespace, utf8Bytes(name))).slice(0, 16);
   bytes[6] = (bytes[6] & 0x0f) | 0x50;
   bytes[8] = (bytes[8] & 0x3f) | 0x80;
-  const hex = bytes.toString("hex");
+  const hex = bytesToHex(bytes);
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 };
 
@@ -246,7 +399,8 @@ const assertCollectionPolicy = (value) => {
   if (JSON.stringify(value.activeWeekdays) !== JSON.stringify(["monday", "tuesday", "wednesday"])) {
     fail("activeWeekdays must be ordered and complete");
   }
-  if (value.effectiveTo !== null && milliseconds(value.effectiveTo) <= milliseconds(value.effectiveFrom)) {
+  const effectiveFrom = milliseconds(value.effectiveFrom);
+  if (value.effectiveTo !== null && milliseconds(value.effectiveTo) <= effectiveFrom) {
     fail("effectiveTo must be later than effectiveFrom");
   }
   const selected = Object.fromEntries([
@@ -260,7 +414,7 @@ const assertCollectionPolicy = (value) => {
     "pollIntervalSeconds",
     "gapThresholdSeconds",
   ].map((key) => [key, value[key]]));
-  const expected = `sha256:${createHash("sha256").update(stableJson(selected), "utf8").digest("hex")}`;
+  const expected = `sha256:${bytesToHex(sha256Bytes(utf8Bytes(stableJson(selected))))}`;
   if (value.configurationHash !== expected) fail("configurationHash does not match canonical policy");
 };
 
@@ -527,6 +681,9 @@ const assertOverview = (value) => {
   }
 
   const combinations = new Map();
+  const requiredSeriesGroups = new Set(value.segments.flatMap((segment) => ["s1", "s2"]
+    .filter((sensorId) => segment.sensorCounts[sensorId] > 0)
+    .map((sensorId) => `${segment.segmentId}|${sensorId}|${segment.sourceKind}`)));
   const totals = { original: 0, returned: 0, omitted: 0 };
   const seenPointIds = new Set();
   const seenSeriesGroups = new Set();
@@ -544,6 +701,11 @@ const assertOverview = (value) => {
     if (aggregation.returnedPointCount !== row.points.length
       || aggregation.omittedPointCount !== aggregation.originalPointCount - aggregation.returnedPointCount) {
       fail("series aggregation counts are invalid");
+    }
+    if (aggregation.method === "none"
+      && (aggregation.returnedPointCount !== aggregation.originalPointCount
+        || aggregation.omittedPointCount !== 0)) {
+      fail("none aggregation must retain every original point");
     }
     if (aggregation.originalPointCount !== segment.sensorCounts[row.sensorId]) {
       fail("series membership disagrees with segment sensor counts");
@@ -572,6 +734,10 @@ const assertOverview = (value) => {
     fail("series must use deterministic segment order");
   }
   if (resolvedMetrics.size > 1) fail("one response must resolve exactly one metric");
+  if (seenSeriesGroups.size !== requiredSeriesGroups.size
+    || [...seenSeriesGroups].some((group) => !requiredSeriesGroups.has(group))) {
+    fail("series must exactly cover every nonzero segment sensor group");
+  }
 
   const summary = value.aggregationSummary;
   for (const rows of combinations.values()) {
@@ -582,9 +748,13 @@ const assertOverview = (value) => {
     }
     const original = rows.reduce((sum, row) => sum + row.aggregation.originalPointCount, 0);
     const returned = rows.reduce((sum, row) => sum + row.aggregation.returnedPointCount, 0);
+    const omitted = rows.reduce((sum, row) => sum + row.aggregation.omittedPointCount, 0);
     const expectedMethod = original <= summary.requestedMaxPoints ? "none" : "time_bucket_envelope_v1";
     if (!methods.has(expectedMethod) || returned > summary.requestedMaxPoints) {
       fail("global sensor/source aggregation budget is invalid");
+    }
+    if (methods.has("none") && (returned !== original || omitted !== 0)) {
+      fail("none aggregation combination must retain all originals");
     }
   }
   if (summary.originalPointCount !== totals.original
@@ -768,16 +938,30 @@ const assertContext = (value) => {
   }
 
   const assessment = value.assessment;
+  const assessmentStatus = assessment === null
+    ? null
+    : assessment.schemaVersion === "1.0"
+      ? assessment.status
+      : assessment.assessment.status;
+  const suppressedNormal = assessmentStatus === "normal"
+    && facts.conditionState === "normal"
+    && facts.conditionTemporalScope === "none"
+    && facts.conditionSource === "none"
+    && facts.conditionAsOf === null
+    && facts.conditionEpisodeStartedAt === null
+    && (['degraded', 'insufficient'].includes(facts.dataTrust)
+      || facts.dataAvailability !== "complete");
   if (assessment === null) {
     if (facts.conditionEpisodeStartedAt !== null || facts.conditionSource !== "none") {
       fail("condition evidence requires a returned matching assessment");
     }
   } else if (assessment.schemaVersion === "1.0") {
     assertHistoricalAssessment(assessment);
-    if (facts.conditionSource !== "historical_walk_forward"
-      || facts.conditionState !== assessment.status
-      || facts.conditionAsOf !== assessment.assessmentAt
-      || facts.conditionEpisodeStartedAt !== assessment.persistence.episodeStartedAt) {
+    if (facts.conditionState !== assessment.status
+      || (!suppressedNormal
+        && (facts.conditionSource !== "historical_walk_forward"
+          || facts.conditionAsOf !== assessment.assessmentAt
+          || facts.conditionEpisodeStartedAt !== assessment.persistence.episodeStartedAt))) {
       fail("historical condition facts do not match the assessment");
     }
     if (value.anchor !== null
@@ -787,9 +971,49 @@ const assertContext = (value) => {
         && milliseconds(assessment.assessmentAt) <= milliseconds(value.anchor.eventAt))) {
       fail("historical assessment anchor facts are crossed");
     }
-  } else if (facts.conditionSource !== "live_assessment"
-    || facts.conditionState !== assessment.assessment.status) {
+  } else if (facts.conditionState !== assessment.assessment.status
+    || (!suppressedNormal && facts.conditionSource !== "live_assessment")) {
     fail("live condition facts do not match the assessment");
+  } else {
+    if (value.anchor === null) fail("live assessment requires an original anchor");
+    const windowStart = milliseconds(assessment.window.start);
+    const windowEnd = milliseconds(assessment.window.end);
+    const windowReceived = milliseconds(assessment.window.receivedAt);
+    if (!(windowStart <= windowEnd && windowEnd <= windowReceived)) {
+      fail("live assessment window is not chronological");
+    }
+    if (assessment.window.freshnessMs !== windowReceived - windowEnd) {
+      fail("live assessment freshness does not match its window");
+    }
+    if (milliseconds(assessment.model.trainedUntil) > windowStart) {
+      fail("live assessment model was trained after its causal window");
+    }
+    if (assessment.assetId !== value.assetId
+      || assessment.assetId !== value.anchor.assetId
+      || assessment.sensorId !== value.anchor.sensorId
+      || value.anchor.sourceKind !== "live_collection") {
+      fail("live assessment asset, sensor, and anchor are crossed");
+    }
+    if (assessment.window.receivedAt !== value.anchor.eventAt
+      || value.selectedAt !== value.anchor.eventAt) {
+      fail("live assessment does not match anchor event and selectedAt");
+    }
+    if (!suppressedNormal && facts.conditionAsOf !== assessment.window.receivedAt) {
+      fail("live conditionAsOf must equal assessment window receivedAt");
+    }
+    if (facts.conditionEpisodeStartedAt !== null) {
+      fail("live v2 assessment cannot invent an episode start");
+    }
+    const qualityStatus = assessment.quality.status;
+    if (qualityStatus === "insufficient_data" && facts.dataTrust !== "insufficient") {
+      fail("live assessment quality requires insufficient trust");
+    }
+    if (qualityStatus === "degraded" && facts.dataTrust === "sufficient") {
+      fail("live assessment trust exceeds degraded quality");
+    }
+    if (facts.dataAvailability !== "complete" && facts.dataTrust === "sufficient") {
+      fail("live assessment trust exceeds channel availability");
+    }
   }
 };
 
