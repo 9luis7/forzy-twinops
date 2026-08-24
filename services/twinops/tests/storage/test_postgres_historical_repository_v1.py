@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from importlib.util import find_spec
@@ -9,10 +9,12 @@ import json
 import os
 from threading import Barrier, Event, Lock
 from time import monotonic
+from types import SimpleNamespace
 from typing import Iterable
 
 import psycopg
-from psycopg.rows import dict_row
+from psycopg.pq import TransactionStatus
+from psycopg.rows import dict_row, tuple_row
 import pytest
 
 from historical_repository_contract import _assessment, synthetic_prepared_batch
@@ -52,7 +54,6 @@ _POLICY_COLUMNS = (
     "poll_interval_seconds", "gap_threshold_seconds", "effective_from",
     "effective_to", "configuration_hash",
 )
-_DML_PREFIXES = ("INSERT ", "UPDATE ", "DELETE ", "TRUNCATE ")
 _RACE_COORDINATION_TIMEOUT_SECONDS = 30
 _RACE_BLOCKED_OBSERVATION_SECONDS = 0.5
 
@@ -278,6 +279,69 @@ if _REPOSITORY_AVAILABLE:
         pass
 
 
+    @pytest.mark.parametrize(
+        ("initially_closed", "transaction_status", "row_factory", "error"),
+        [
+            pytest.param(
+                True,
+                TransactionStatus.IDLE,
+                dict_row,
+                "open connection",
+                id="closed",
+            ),
+            pytest.param(
+                False,
+                TransactionStatus.INTRANS,
+                dict_row,
+                "idle connection",
+                id="non-idle",
+            ),
+            pytest.param(
+                False,
+                TransactionStatus.IDLE,
+                tuple_row,
+                "dict_row",
+                id="wrong-row-factory",
+            ),
+        ],
+    )
+    def test_connection_factory_guard_rejects_before_sql_and_closes(
+        initially_closed: bool,
+        transaction_status: TransactionStatus,
+        row_factory,
+        error: str,
+    ) -> None:
+        class GuardConnection:
+            def __init__(self) -> None:
+                self.closed = initially_closed
+                self.autocommit = False
+                self.info = SimpleNamespace(transaction_status=transaction_status)
+                self.row_factory = row_factory
+                self.statements: list[str] = []
+                self.close_calls = 0
+
+            def execute(self, query, params=None, **kwargs):
+                self.statements.append(" ".join(query.split()))
+                raise AssertionError("repository SQL executed on a rejected connection")
+
+            def close(self) -> None:
+                self.close_calls += 1
+                self.closed = True
+
+        connection = GuardConnection()
+        repository = PostgresHistoricalRepositoryV1(
+            "unused-local-test-target",
+            connection_factory=lambda database_url: connection,
+        )
+
+        with pytest.raises(RuntimeError, match=error):
+            repository.stage_batch(synthetic_prepared_batch(0))
+
+        assert connection.statements == []
+        assert connection.close_calls == 1
+        assert connection.closed is True
+
+
     def test_postgres_normalizes_timestamptz_rows_from_non_utc_session(
         historical_repository,
         postgres_test_target: _PostgresTestTarget,
@@ -329,14 +393,18 @@ if _REPOSITORY_AVAILABLE:
                 statements.append(" ".join(query.split()))
                 return self.connection.execute(query, params, **kwargs)
 
+        rejected_connections: list[RecordingAutocommitConnection] = []
+
         def autocommit_factory(database_url: str):
-            return RecordingAutocommitConnection(
+            connection = RecordingAutocommitConnection(
                 psycopg.connect(
                     database_url,
                     autocommit=True,
                     row_factory=dict_row,
                 )
             )
+            rejected_connections.append(connection)
+            return connection
 
         repository = PostgresHistoricalRepositoryV1(
             postgres_test_target.database_url,
@@ -358,9 +426,9 @@ if _REPOSITORY_AVAILABLE:
         with pytest.raises(RuntimeError, match="autocommit"):
             actions[operation]()
 
-        assert not any(
-            statement.startswith(_DML_PREFIXES) for statement in statements
-        )
+        assert statements == []
+        assert len(rejected_connections) == 1
+        assert rejected_connections[0].closed is True
         assert repository_control.snapshot() == before
 
 
@@ -379,6 +447,7 @@ if _REPOSITORY_AVAILABLE:
         contender_returned_from_lock = Event()
         release_holder = Event()
         factory_lock = Lock()
+        controlled_connections = []
         next_connection_index = 0
 
         class LockControlledConnection:
@@ -398,6 +467,7 @@ if _REPOSITORY_AVAILABLE:
                 if not is_asset_lock:
                     return self.connection.execute(query, params, **kwargs)
 
+                self.connection.execute("SET LOCAL lock_timeout = '20s'")
                 ready_to_lock.wait(timeout=_RACE_COORDINATION_TIMEOUT_SECONDS)
                 if self.index == 0:
                     cursor = self.connection.execute(query, params, **kwargs)
@@ -427,14 +497,14 @@ if _REPOSITORY_AVAILABLE:
                 index = next_connection_index
                 next_connection_index += 1
             assert index < 2, "race must open exactly two instrumented connections"
-            return LockControlledConnection(
-                psycopg.connect(
-                    database_url,
-                    row_factory=dict_row,
-                    connect_timeout=30,
-                ),
-                index,
+            connection = psycopg.connect(
+                database_url,
+                row_factory=dict_row,
+                connect_timeout=30,
             )
+            with factory_lock:
+                controlled_connections.append(connection)
+            return LockControlledConnection(connection, index)
 
         racing_repository = PostgresHistoricalRepositoryV1(
             postgres_test_target.database_url,
@@ -448,7 +518,8 @@ if _REPOSITORY_AVAILABLE:
                     batch_id=candidate.batch_id,
                     expected_active_batch_id=None,
                 )
-            except HistoricalBatchConflict:
+            except HistoricalBatchConflict as exc:
+                assert str(exc) == "expected active historical batch mismatch"
                 return None
 
         def wait_for_event_or_worker_failure(
@@ -473,31 +544,53 @@ if _REPOSITORY_AVAILABLE:
                         ) from exception
                     raise AssertionError(f"race worker completed before {label}")
 
-        with ThreadPoolExecutor(max_workers=2) as pool:
+        def abort_race(futures) -> None:
+            release_holder.set()
+            with suppress(Exception):
+                ready_to_lock.abort()
+            with factory_lock:
+                connections = tuple(controlled_connections)
+            for connection in connections:
+                with suppress(Exception):
+                    connection.cancel_safe(timeout=5.0)
+                with suppress(Exception):
+                    connection.close()
+            for future in futures:
+                future.cancel()
+
+        pool = ThreadPoolExecutor(max_workers=2)
+        futures = []
+        try:
             futures = [pool.submit(activate, candidate) for candidate in candidates]
-            try:
-                wait_for_event_or_worker_failure(
-                    holder_has_lock,
-                    futures,
-                    "holder asset-lock acquisition",
+            wait_for_event_or_worker_failure(
+                holder_has_lock,
+                futures,
+                "holder asset-lock acquisition",
+            )
+            wait_for_event_or_worker_failure(
+                contender_attempting_lock,
+                futures,
+                "contender asset-lock attempt",
+            )
+            assert (
+                contender_returned_from_lock.wait(
+                    timeout=_RACE_BLOCKED_OBSERVATION_SECONDS
                 )
-                wait_for_event_or_worker_failure(
-                    contender_attempting_lock,
-                    futures,
-                    "contender asset-lock attempt",
-                )
-                assert (
-                    contender_returned_from_lock.wait(
-                        timeout=_RACE_BLOCKED_OBSERVATION_SECONDS
-                    )
-                    is False
-                )
-            finally:
-                release_holder.set()
+                is False
+            )
+            with factory_lock:
+                assert len(controlled_connections) == 2
+            release_holder.set()
             results = [
                 future.result(timeout=_RACE_COORDINATION_TIMEOUT_SECONDS)
                 for future in futures
             ]
+        except BaseException:
+            abort_race(futures)
+            pool.shutdown(wait=False, cancel_futures=True)
+            raise
+        else:
+            pool.shutdown(wait=True)
 
         assert sum(result is not None and result.activated for result in results) == 1
         assert sum(result is None for result in results) == 1
