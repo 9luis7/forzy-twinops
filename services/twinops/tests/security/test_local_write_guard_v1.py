@@ -13,6 +13,7 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
+from types import SimpleNamespace
 
 import pytest
 
@@ -783,3 +784,117 @@ class TestReadOnlyStagedHandoff:
         os.replace(replacement, path)
         with pytest.raises((LocalWriteGuardError, ValueError, RuntimeError)):
             self._call(path, fingerprint, prepared)
+
+
+@requires_guard
+@pytest.mark.skipif(os.name == "nt", reason="POSIX descriptor-bound SQLite proof")
+def test_posix_open_rejects_aba_with_expected_identity_decoy_before_any_sql(
+    attested_dir,
+    monkeypatch,
+):
+    """Catches a decoy FD satisfying an existential opened-file identity check."""
+
+    expected = Path(attested_dir.path) / "expected.sqlite3"
+    substituted = Path(attested_dir.path) / "substituted.sqlite3"
+    with closing(sqlite3.connect(expected)) as connection:
+        connection.execute("CREATE TABLE marker(value TEXT NOT NULL)")
+        connection.execute("INSERT INTO marker(value) VALUES ('expected')")
+        connection.commit()
+    with closing(sqlite3.connect(substituted)) as connection:
+        connection.execute("CREATE TABLE marker(value TEXT NOT NULL)")
+        connection.execute("INSERT INTO marker(value) VALUES ('substituted')")
+        connection.commit()
+    expected_before = expected.read_bytes()
+    substituted_before = substituted.read_bytes()
+    permit = attest_local_database(
+        expected,
+        expected_schema_version=SCHEMA_VERSION,
+        temp_permit=attested_dir,
+        require_existing=True,
+    )
+    real_connect = guard_module.sqlite3.connect
+    executed: list[str] = []
+    decoy_descriptors: list[int] = []
+    opened_connections: list[sqlite3.Connection] = []
+
+    class RecordingConnection(sqlite3.Connection):
+        def execute(self, statement, parameters=(), /, *args, **kwargs):
+            executed.append(str(statement))
+            return super().execute(statement, parameters, *args, **kwargs)
+
+    def racing_connect(database, *args, **kwargs):
+        moved_expected = expected.with_name("expected-original.sqlite3")
+        expected.rename(moved_expected)
+        substituted.rename(expected)
+        try:
+            kwargs["factory"] = RecordingConnection
+            connection = real_connect(database, *args, **kwargs)
+            opened_connections.append(connection)
+        finally:
+            expected.rename(substituted)
+            moved_expected.rename(expected)
+        decoy_descriptors.append(os.open(expected, os.O_RDONLY))
+        return connection
+
+    monkeypatch.setattr(guard_module.sqlite3, "connect", racing_connect)
+    returned = None
+    try:
+        with pytest.raises(LocalWriteGuardError):
+            returned = guard_module._open_attested_sqlite_connection(permit)
+        assert executed == []
+        assert expected.read_bytes() == expected_before
+        assert substituted.read_bytes() == substituted_before
+    finally:
+        if returned is not None:
+            returned.close()
+        for connection in opened_connections:
+            try:
+                connection.close()
+            except sqlite3.Error:
+                pass
+        for descriptor in decoy_descriptors:
+            os.close(descriptor)
+
+
+class _RecordingWin32Call:
+    def __init__(self, result):
+        self.result = result
+        self.calls = []
+        self.argtypes = None
+        self.restype = None
+
+    def __call__(self, *args):
+        self.calls.append(args)
+        return self.result
+
+
+@requires_guard
+@pytest.mark.skipif(os.name != "nt", reason="Win32 CreateFileW contract")
+def test_windows_directory_pin_requests_no_delete_access(attested_dir, monkeypatch):
+    """Catches DELETE desired access on a compatibility-sensitive directory pin."""
+
+    import ctypes
+
+    create_file = _RecordingWin32Call(4321)
+    close_handle = _RecordingWin32Call(1)
+    monkeypatch.setattr(
+        ctypes,
+        "windll",
+        SimpleNamespace(
+            kernel32=SimpleNamespace(
+                CreateFileW=create_file,
+                CloseHandle=close_handle,
+            )
+        ),
+    )
+    handle = guard_module._pin_windows_directory(Path(attested_dir.path))
+    try:
+        assert len(create_file.calls) == 1
+        call = create_file.calls[0]
+        assert call[1] == 0x1 | 0x80
+        assert call[1] & 0x10000 == 0
+        assert call[2] == 0x1 | 0x2
+        assert call[4] == 3
+        assert call[5] == 0x02000000 | 0x00200000
+    finally:
+        guard_module._close_windows_handle(handle)

@@ -204,6 +204,7 @@ class RepositorySpy:
             assessment_manifest_sha256=ASSESSMENT_MANIFEST,
         )
         self.active = None
+        self.existing_prepared = None
         self.target_identity_value = DeploymentIdentityV1(
             environment="preview",
             label="project-test/branch-test",
@@ -241,6 +242,7 @@ class RepositorySpy:
 
     def stage_batch(self, prepared):
         self.write_calls.append("stage_batch")
+        self.existing_prepared = prepared
         self.summary = SimpleNamespace(
             **{
                 **vars(self.summary),
@@ -252,6 +254,15 @@ class RepositorySpy:
             }
         )
         return SimpleNamespace(batch=self.summary, inserted=True, writes_performed=7)
+
+    def _lookup_existing_batch_for_admin(self, *, batch_id):
+        self.read_calls.append("lookup_existing_batch")
+        if self.existing_prepared is None or self.summary.batch_id != batch_id:
+            return None
+        return SimpleNamespace(
+            prepared=self.existing_prepared,
+            summary=self.summary,
+        )
 
     def activate_batch(self, *, asset_id, batch_id, expected_active_batch_id):
         self.write_calls.append("activate_batch")
@@ -303,7 +314,11 @@ def _prepared_batch(source_bytes=b"synthetic registered bytes\r\n"):
     )
 
 
-def _synthetic_admin_batch(variant: int):
+def _synthetic_admin_material(
+    variant: int,
+    *,
+    ingested_at: datetime = NOW,
+):
     rows = {
         0: (
             "2026-05-19T11:46:10.921;AQID;BAUG;0.04;0;27;0.05;0.01;34",
@@ -339,12 +354,17 @@ def _synthetic_admin_batch(variant: int):
         contract_version="1.0",
         gap_seconds=15.0,
     )
-    return _prepare_historical_batch_for_profile(
+    prepared = _prepare_historical_batch_for_profile(
         source_bytes,
         profile=profile,
         asset_id=ASSET_ID,
-        ingested_at=NOW,
+        ingested_at=ingested_at,
     )
+    return source_bytes, profile, prepared
+
+
+def _synthetic_admin_batch(variant: int, *, ingested_at: datetime = NOW):
+    return _synthetic_admin_material(variant, ingested_at=ingested_at)[2]
 
 
 def _set_option(args: list[str], option: str, value: str) -> list[str]:
@@ -1022,7 +1042,7 @@ class TestMigrateLocalAndCommittedResultFailure:
         first, _, _ = _invoke(args, capsys, repository=repository)
         second, captured, _ = _invoke(args, capsys, repository=repository)
         assert first == 1 and second == 0
-        assert repository.write_calls == ["stage_batch", "stage_batch"]
+        assert repository.write_calls == ["stage_batch"]
         payload = json.loads(result.read_bytes())
         assert payload["batchId"] == BATCH
         assert payload["manifestSha256"] == prepared.manifest_sha256
@@ -1402,6 +1422,7 @@ class TestClosedGrammarAndDryRunState:
                 "sample_count": len(prepared.samples),
             }
         )
+        repository.existing_prepared = prepared
         monkeypatch.setattr(
             history_admin_module,
             "prepare_historical_batch",
@@ -2396,3 +2417,715 @@ class TestSeedCollectionPolicyPhaseA:
         assert factory.calls == []
         assert not result.exists()
         _assert_no_sensitive_output(captured)
+
+
+def _local_stage_command(
+    *,
+    database: Path,
+    fingerprint: str,
+    source: Path,
+    source_sha256: str,
+    result: Path,
+    mode: str,
+) -> list[str]:
+    args = _stage_args(source.resolve(), result, mode=mode) + [
+        "--database-path",
+        str(database),
+    ]
+    if mode == "--apply":
+        args.append("--allow-local-write")
+    _set_option(args, "--environment", "local")
+    _set_option(args, "--expected-target-fingerprint", fingerprint)
+    _set_option(args, "--expected-sha256", source_sha256)
+    return args
+
+
+def _sqlite_tracing_repository_factory(dml: list[str], *, mutate=None):
+    def factory(target):
+        repository = history_admin_module.repository_from_target(target)
+        guarded_connect = repository._connection_factory
+
+        def traced_connect(path):
+            connection = guarded_connect(path)
+            connection.set_trace_callback(
+                lambda statement: dml.append(statement)
+                if statement.lstrip().upper().startswith(
+                    ("INSERT", "UPDATE", "DELETE", "REPLACE")
+                )
+                else None
+            )
+            return connection
+
+        repository._connection_factory = traced_connect
+        if mutate is not None:
+            mutate(repository)
+        return repository
+
+    return factory
+
+
+@requires_surface
+class TestStageExistingBatchRecoveryRound3:
+    def test_real_sqlite_retry_reuses_committed_ingested_at_across_two_clocks(
+        self,
+        capsys,
+        monkeypatch,
+    ):
+        """Catches retry rebuilding stored sample provenance with the retry clock."""
+
+        attested = history_admin_module.create_attested_temp_dir()
+        root = Path(attested.path)
+        database = root / "clock-retry.sqlite3"
+        fingerprint = _create_local_admin_database(database)
+        source_bytes, synthetic_profile, expected_first = _synthetic_admin_material(
+            0,
+            ingested_at=NOW + timedelta(minutes=1),
+        )
+        source = root / "clock-retry.csv"
+        source.write_bytes(source_bytes)
+        result = _result_path("clock-varying-stage-retry")
+        real_writer = history_admin_module.AdminResultWriterV1
+        publication_calls = 0
+        dml: list[str] = []
+
+        def prepare(source_payload, *, profile, asset_id, ingested_at):
+            del profile
+            return _prepare_historical_batch_for_profile(
+                source_payload,
+                profile=synthetic_profile,
+                asset_id=asset_id,
+                ingested_at=ingested_at,
+            )
+
+        class FailOnceWriter(real_writer):
+            def write(self, value):
+                nonlocal publication_calls
+                publication_calls += 1
+                if publication_calls == 1:
+                    raise OSError("injected result publication failure")
+                return super().write(value)
+
+        monkeypatch.setattr(history_admin_module, "prepare_historical_batch", prepare)
+        monkeypatch.setattr(history_admin_module, "AdminResultWriterV1", FailOnceWriter)
+        args = _local_stage_command(
+            database=database,
+            fingerprint=fingerprint,
+            source=source,
+            source_sha256=expected_first.source_sha256,
+            result=result,
+            mode="--apply",
+        )
+        clocks = (
+            NOW + timedelta(minutes=1),
+            NOW + timedelta(minutes=2),
+        )
+        factory = _sqlite_tracing_repository_factory(dml)
+        try:
+            first = main(args, env={}, clock=lambda: clocks[0], repository_factory=factory)
+            first_dml_count = len(dml)
+            with closing(sqlite3.connect(database)) as connection:
+                first_evidence = connection.execute(
+                    "SELECT imported_at,manifest_sha256,raw_row_count,sample_count "
+                    "FROM historical_import_batches_v1 WHERE batch_id=?",
+                    (expected_first.batch_id,),
+                ).fetchone()
+                first_sample_bytes = tuple(
+                    row[0]
+                    for row in connection.execute(
+                        "SELECT canonical_json FROM historical_samples_v1 "
+                        "WHERE batch_id=? ORDER BY reading_id",
+                        (expected_first.batch_id,),
+                    ).fetchall()
+                )
+
+            second = main(args, env={}, clock=lambda: clocks[1], repository_factory=factory)
+            captured = capsys.readouterr()
+
+            assert first == 1
+            assert second == 0
+            assert first_dml_count > 0
+            assert len(dml) == first_dml_count
+            assert first_evidence == (
+                "2026-05-19T15:01:00.000Z",
+                expected_first.manifest_sha256,
+                len(expected_first.raw_rows),
+                len(expected_first.samples),
+            )
+            with closing(sqlite3.connect(database)) as connection:
+                second_evidence = connection.execute(
+                    "SELECT imported_at,manifest_sha256,raw_row_count,sample_count "
+                    "FROM historical_import_batches_v1 WHERE batch_id=?",
+                    (expected_first.batch_id,),
+                ).fetchone()
+                second_sample_bytes = tuple(
+                    row[0]
+                    for row in connection.execute(
+                        "SELECT canonical_json FROM historical_samples_v1 "
+                        "WHERE batch_id=? ORDER BY reading_id",
+                        (expected_first.batch_id,),
+                    ).fetchall()
+                )
+            assert second_evidence == first_evidence
+            assert second_sample_bytes == first_sample_bytes
+            payload = json.loads(result.read_bytes())
+            assert payload["batchId"] == expected_first.batch_id
+            assert payload["manifestSha256"] == expected_first.manifest_sha256
+            assert payload["inserted"] is False
+            assert payload["writesPerformed"] == 0
+            _assert_no_sensitive_output(captured, database, source)
+        finally:
+            result.unlink(missing_ok=True)
+            history_admin_module.remove_attested_temp_dir(attested)
+
+    def test_generic_postgres_backed_retry_uses_explicit_stored_prepared_evidence(
+        self,
+        tmp_path,
+        capsys,
+        monkeypatch,
+    ):
+        """Catches generic remote retry invoking stage again with a new clock."""
+
+        source = tmp_path / "generic-postgres-retry.csv"
+        source_bytes = b"synthetic registered bytes\r\n"
+        source.write_bytes(source_bytes)
+        result = _result_path("generic-postgres-clock-retry")
+        repository = RepositorySpy()
+        real_writer = history_admin_module.AdminResultWriterV1
+        publication_calls = 0
+
+        def clock_sensitive_prepare(*args, ingested_at, **kwargs):
+            del args, kwargs
+            base = _prepared_batch(source_bytes)
+            return SimpleNamespace(
+                **{
+                    **vars(base),
+                    "imported_at": ingested_at,
+                    "samples": tuple(
+                        SimpleNamespace(index=index, ingested_at=ingested_at)
+                        for index in range(4)
+                    ),
+                }
+            )
+
+        class FailOnceWriter(real_writer):
+            def write(self, value):
+                nonlocal publication_calls
+                publication_calls += 1
+                if publication_calls == 1:
+                    raise OSError("injected remote result failure")
+                return super().write(value)
+
+        monkeypatch.setattr(
+            history_admin_module,
+            "prepare_historical_batch",
+            clock_sensitive_prepare,
+        )
+        monkeypatch.setattr(history_admin_module, "AdminResultWriterV1", FailOnceWriter)
+        args = _set_option(
+            _stage_args(source.resolve(), result, mode="--apply"),
+            "--expected-sha256",
+            "sha256:" + sha256(source_bytes).hexdigest(),
+        )
+        factory = RepositoryFactorySpy(repository)
+        try:
+            first = main(
+                args,
+                env=_remote_env(),
+                clock=lambda: NOW + timedelta(minutes=1),
+                repository_factory=factory,
+            )
+            second = main(
+                args,
+                env=_remote_env(),
+                clock=lambda: NOW + timedelta(minutes=2),
+                repository_factory=factory,
+            )
+            captured = capsys.readouterr()
+
+            assert first == 1
+            assert second == 0
+            assert repository.write_calls == ["stage_batch"]
+            assert repository.existing_prepared.imported_at == NOW + timedelta(minutes=1)
+            payload = json.loads(result.read_bytes())
+            assert payload["batchId"] == BATCH
+            assert payload["inserted"] is False
+            assert payload["writesPerformed"] == 0
+            _assert_no_sensitive_output(captured, source.resolve())
+        finally:
+            result.unlink(missing_ok=True)
+
+    @pytest.mark.parametrize(
+        "state,statement,expected_code,expected_inserted",
+        [
+            ("missing", None, 0, True),
+            ("valid", None, 0, False),
+            (
+                "corrupt-projection",
+                "UPDATE historical_import_batches_v1 SET raw_row_count=raw_row_count+1",
+                1,
+                None,
+            ),
+            (
+                "corrupt-manifest",
+                "UPDATE historical_import_batches_v1 SET manifest_json=manifest_json || ' '",
+                1,
+                None,
+            ),
+            (
+                "corrupt-raw",
+                "UPDATE historical_raw_rows_v1 SET canonical_values_json='{}' "
+                "WHERE record_ordinal=1",
+                1,
+                None,
+            ),
+        ],
+    )
+    def test_real_sqlite_dry_run_distinguishes_missing_valid_and_corrupt_batches(
+        self,
+        state,
+        statement,
+        expected_code,
+        expected_inserted,
+        capsys,
+        monkeypatch,
+    ):
+        """Catches corrupt stored evidence being classified as a missing batch."""
+
+        attested = history_admin_module.create_attested_temp_dir()
+        root = Path(attested.path)
+        database = root / f"lookup-{state}.sqlite3"
+        fingerprint = _create_local_admin_database(database)
+        source_bytes, synthetic_profile, prepared = _synthetic_admin_material(0)
+        source = root / f"lookup-{state}.csv"
+        source.write_bytes(source_bytes)
+        if state != "missing":
+            SQLiteHistoricalRepositoryV1(database).stage_batch(prepared)
+        if statement is not None:
+            with closing(sqlite3.connect(database)) as connection:
+                connection.execute(statement)
+                connection.commit()
+        result = _result_path(f"lookup-{state}")
+        dml: list[str] = []
+
+        monkeypatch.setattr(
+            history_admin_module,
+            "prepare_historical_batch",
+            lambda payload, *, profile, asset_id, ingested_at: (
+                _prepare_historical_batch_for_profile(
+                    payload,
+                    profile=synthetic_profile,
+                    asset_id=asset_id,
+                    ingested_at=ingested_at,
+                )
+            ),
+        )
+        args = _local_stage_command(
+            database=database,
+            fingerprint=fingerprint,
+            source=source,
+            source_sha256=prepared.source_sha256,
+            result=result,
+            mode="--dry-run",
+        )
+        try:
+            code = main(
+                args,
+                env={},
+                clock=lambda: NOW,
+                repository_factory=_sqlite_tracing_repository_factory(dml),
+            )
+            captured = capsys.readouterr()
+
+            assert code == expected_code
+            assert dml == []
+            if expected_code == 0:
+                payload = json.loads(result.read_bytes())
+                assert payload["inserted"] is expected_inserted
+                assert payload["writesPerformed"] == 0
+            else:
+                assert not result.exists()
+            _assert_no_sensitive_output(captured, database, source)
+        finally:
+            result.unlink(missing_ok=True)
+            history_admin_module.remove_attested_temp_dir(attested)
+
+    def test_real_sqlite_dry_run_propagates_operational_lookup_failure(
+        self,
+        capsys,
+        monkeypatch,
+    ):
+        """Catches a read failure being converted into an absent-batch prediction."""
+
+        attested = history_admin_module.create_attested_temp_dir()
+        root = Path(attested.path)
+        database = root / "lookup-operational.sqlite3"
+        fingerprint = _create_local_admin_database(database)
+        source_bytes, synthetic_profile, prepared = _synthetic_admin_material(0)
+        SQLiteHistoricalRepositoryV1(database).stage_batch(prepared)
+        source = root / "lookup-operational.csv"
+        source.write_bytes(source_bytes)
+        result = _result_path("lookup-operational")
+        dml: list[str] = []
+
+        monkeypatch.setattr(
+            history_admin_module,
+            "prepare_historical_batch",
+            lambda payload, *, profile, asset_id, ingested_at: (
+                _prepare_historical_batch_for_profile(
+                    payload,
+                    profile=synthetic_profile,
+                    asset_id=asset_id,
+                    ingested_at=ingested_at,
+                )
+            ),
+        )
+
+        def inject_failure(repository):
+            repository._stored_batch = lambda *args, **kwargs: (_ for _ in ()).throw(
+                sqlite3.OperationalError("injected lookup failure")
+            )
+
+        args = _local_stage_command(
+            database=database,
+            fingerprint=fingerprint,
+            source=source,
+            source_sha256=prepared.source_sha256,
+            result=result,
+            mode="--dry-run",
+        )
+        try:
+            code = main(
+                args,
+                env={},
+                clock=lambda: NOW,
+                repository_factory=_sqlite_tracing_repository_factory(
+                    dml,
+                    mutate=inject_failure,
+                ),
+            )
+            captured = capsys.readouterr()
+
+            assert code == 1
+            assert dml == []
+            assert not result.exists()
+            _assert_no_sensitive_output(captured, database, source, "injected lookup failure")
+        finally:
+            result.unlink(missing_ok=True)
+            history_admin_module.remove_attested_temp_dir(attested)
+
+
+@requires_surface
+class TestExactMigrationRereadRound3:
+    @pytest.mark.parametrize(
+        "requested_effective_from,mutation",
+        [
+            ("2026-05-19T00:00:00.000Z", None),
+            (
+                "2026-05-19T15:00:00.000Z",
+                "UPDATE collection_policies_v1 "
+                "SET effective_to='2026-05-20T00:00:00.000Z' "
+                "WHERE policy_id='forzy-live-window-v1'",
+            ),
+        ],
+    )
+    def test_existing_migration_dry_run_requires_exact_policy_validity(
+        self,
+        requested_effective_from,
+        mutation,
+        capsys,
+    ):
+        """Catches migration dry-run checking only policy ID/configuration hash."""
+
+        attested = history_admin_module.create_attested_temp_dir()
+        database = Path(attested.path) / "migrate-dry-exact.sqlite3"
+        fingerprint = _create_local_admin_database(database)
+        if mutation is not None:
+            with closing(sqlite3.connect(database)) as connection:
+                connection.execute(mutation)
+                connection.commit()
+        result = _result_path("migrate-dry-exact")
+        args = _base("migrate-local", environment="local") + [
+            "--dry-run",
+            "--database-path",
+            str(database),
+            "--initial-policy-effective-from",
+            requested_effective_from,
+            "--result-json",
+            str(result),
+        ]
+        _set_option(args, "--expected-target-fingerprint", fingerprint)
+        try:
+            code = main(args, env={})
+            captured = capsys.readouterr()
+            assert code == 1
+            assert not result.exists()
+            _assert_no_sensitive_output(captured, database)
+        finally:
+            result.unlink(missing_ok=True)
+            history_admin_module.remove_attested_temp_dir(attested)
+
+    @pytest.mark.parametrize("target_state", ["fresh", "existing"])
+    @pytest.mark.parametrize(
+        "mutation",
+        [
+            "policy-validity-mutation",
+            "deployment-delete-replace",
+            "migration-delete-replace",
+        ],
+    )
+    def test_migration_apply_closes_then_reopens_and_rejects_postcommit_drift(
+        self,
+        target_state,
+        mutation,
+        capsys,
+        monkeypatch,
+    ):
+        """Catches migration results published from counts on the write connection."""
+
+        attested = history_admin_module.create_attested_temp_dir()
+        database = Path(attested.path) / f"migrate-{target_state}-{mutation}.sqlite3"
+        fingerprint = _local_fingerprint(database)
+        if target_state == "existing":
+            assert _create_local_admin_database(database) == fingerprint
+        result = _result_path(f"migrate-{target_state}-{mutation}")
+        args = _base("migrate-local", environment="local") + [
+            "--apply",
+            "--allow-local-write",
+            "--database-path",
+            str(database),
+            "--initial-policy-effective-from",
+            "2026-05-19T15:00:00.000Z",
+            "--result-json",
+            str(result),
+        ]
+        _set_option(args, "--expected-target-fingerprint", fingerprint)
+        real_open = history_admin_module._open_attested_sqlite_connection
+        opened: list[sqlite3.Connection] = []
+        mutation_ran = False
+        write_closed_before_reread = False
+
+        def open_then_mutate(permit, *open_args, **open_kwargs):
+            nonlocal mutation_ran, write_closed_before_reread
+            if opened and not mutation_ran:
+                try:
+                    opened[0].execute("SELECT 1")
+                except sqlite3.ProgrammingError:
+                    write_closed_before_reread = True
+                with closing(sqlite3.connect(database)) as connection:
+                    if mutation == "policy-validity-mutation":
+                        connection.execute(
+                            "UPDATE collection_policies_v1 "
+                            "SET effective_to='2026-05-20T00:00:00.000Z' "
+                            "WHERE policy_id=?",
+                            (INITIAL_COLLECTION_POLICY_ID,),
+                        )
+                    elif mutation == "deployment-delete-replace":
+                        connection.execute(
+                            "DELETE FROM deployment_identity_v1 WHERE identity_key='primary'"
+                        )
+                        connection.execute(
+                            "INSERT INTO deployment_identity_v1 "
+                            "(identity_key,environment,label,target_fingerprint,schema_version) "
+                            "VALUES ('primary','local','wrong-label',?,'003')",
+                            (fingerprint,),
+                        )
+                    else:
+                        connection.execute(
+                            "DELETE FROM schema_migrations_v1 WHERE migration_version='003'"
+                        )
+                        connection.execute(
+                            "INSERT INTO schema_migrations_v1 "
+                            "(migration_version,sql_sha256,applied_at) "
+                            "VALUES ('004',?,'2026-05-19T15:00:00.000Z')",
+                            ("sha256:" + "9" * 64,),
+                        )
+                    connection.commit()
+                mutation_ran = True
+            connection = real_open(permit, *open_args, **open_kwargs)
+            opened.append(connection)
+            return connection
+
+        monkeypatch.setattr(
+            history_admin_module,
+            "_open_attested_sqlite_connection",
+            open_then_mutate,
+        )
+        try:
+            code = main(args, env={})
+            captured = capsys.readouterr()
+
+            assert code == 1
+            assert mutation_ran is True
+            assert write_closed_before_reread is True
+            assert len(opened) >= 2
+            assert not result.exists()
+            _assert_no_sensitive_output(captured, database)
+        finally:
+            for connection in opened:
+                try:
+                    connection.close()
+                except sqlite3.Error:
+                    pass
+            result.unlink(missing_ok=True)
+            history_admin_module.remove_attested_temp_dir(attested)
+
+
+@requires_surface
+class TestDeterministicResultPreflightRound3:
+    @pytest.mark.parametrize("failure", ["oversized", "unreadable"])
+    def test_stage_apply_rejects_existing_unpublishable_result_before_repository_write(
+        self,
+        failure,
+        tmp_path,
+        capsys,
+        monkeypatch,
+    ):
+        """Catches deterministic destination failure being delayed until after commit."""
+
+        source = tmp_path / f"preflight-{failure}.csv"
+        source_bytes = b"synthetic registered bytes\r\n"
+        source.write_bytes(source_bytes)
+        prepared = _prepared_batch(source_bytes)
+        repository = RepositorySpy()
+        result = _result_path(f"preflight-{failure}")
+        result.parent.mkdir(parents=True, exist_ok=True)
+        original_bytes = b"x" * (1024 * 1024 + 1) if failure == "oversized" else b"readable-before-denial\n"
+        result.write_bytes(original_bytes)
+        monkeypatch.setattr(
+            history_admin_module,
+            "prepare_historical_batch",
+            lambda *args, **kwargs: prepared,
+        )
+        if failure == "unreadable":
+            real_open_child = history_admin_module.AdminResultWriterV1._open_child
+
+            def deny_destination_read(writer, name, flags, mode=0o600):
+                if name == result.name and flags & os.O_RDONLY == os.O_RDONLY:
+                    raise PermissionError("injected unreadable result")
+                return real_open_child(writer, name, flags, mode)
+
+            monkeypatch.setattr(
+                history_admin_module.AdminResultWriterV1,
+                "_open_child",
+                deny_destination_read,
+            )
+        args = _set_option(
+            _stage_args(source.resolve(), result, mode="--apply"),
+            "--expected-sha256",
+            prepared.source_sha256,
+        )
+        try:
+            code, captured, _ = _invoke(args, capsys, repository=repository)
+
+            assert code == 1
+            assert repository.write_calls == []
+            assert result.read_bytes() == original_bytes
+            _assert_no_sensitive_output(captured, source.resolve(), "injected unreadable result")
+        finally:
+            result.unlink(missing_ok=True)
+
+
+@requires_surface
+class TestPostgresActivationPredecessorPositiveRound3:
+    @pytest.mark.parametrize(
+        "expected_predecessor,rows,expected_writes",
+        [
+            (
+                None,
+                [
+                    {
+                        "batch_id": BATCH,
+                        "status": "active",
+                        "activated_at": NOW + timedelta(seconds=2),
+                    }
+                ],
+                1,
+            ),
+            (
+                ACTIVE,
+                [
+                    {
+                        "batch_id": ACTIVE,
+                        "status": "superseded",
+                        "activated_at": NOW + timedelta(seconds=1),
+                    },
+                    {
+                        "batch_id": BATCH,
+                        "status": "active",
+                        "activated_at": NOW + timedelta(seconds=2),
+                    },
+                ],
+                2,
+            ),
+        ],
+    )
+    def test_postgres_retry_proves_first_or_immediate_predecessor_without_cas(
+        self,
+        expected_predecessor,
+        rows,
+        expected_writes,
+        capsys,
+    ):
+        """Catches the positive PostgreSQL predecessor proof becoming unreachable."""
+
+        target_summary = SimpleNamespace(
+            **{
+                **vars(RepositorySpy().summary),
+                "status": "active",
+                "activated_at": NOW + timedelta(seconds=2),
+            }
+        )
+
+        class FakeCursor:
+            def fetchall(self):
+                return rows
+
+        class FakeConnection:
+            def execute(self, statement, parameters):
+                assert "historical_import_batches_v1" in statement
+                assert parameters == (ASSET_ID,)
+                return FakeCursor()
+
+        @contextmanager
+        def fake_connection():
+            yield FakeConnection()
+
+        support = RepositorySpy()
+        repository = PostgresHistoricalRepositoryV1("postgresql://unused")
+        repository.summary = target_summary
+        repository.verify_schema = support.verify_schema
+        repository.target_identity = support.target_identity
+        repository.collection_policy = support.collection_policy
+        repository.effective_collection_policy = support.effective_collection_policy
+        repository.active_batch = lambda asset_id: target_summary
+        repository._connection = fake_connection
+        cas_calls = 0
+
+        def forbidden_cas(**kwargs):
+            nonlocal cas_calls
+            cas_calls += 1
+            raise AssertionError("committed retry must not issue a second CAS")
+
+        repository.activate_batch = forbidden_cas
+        result = _result_path(
+            "postgres-first-positive"
+            if expected_predecessor is None
+            else "postgres-immediate-positive"
+        )
+        args = _set_option(
+            _activate_args(result, mode="--apply"),
+            "--expected-active-batch",
+            "none" if expected_predecessor is None else expected_predecessor,
+        )
+        try:
+            code, captured, _ = _invoke(args, capsys, repository=repository)
+
+            assert code == 0
+            assert cas_calls == 0
+            payload = json.loads(result.read_bytes())
+            assert payload["previousActiveBatchId"] == expected_predecessor
+            assert payload["activeBatchId"] == BATCH
+            assert payload["writesPerformed"] == expected_writes
+            _assert_no_sensitive_output(captured)
+        finally:
+            result.unlink(missing_ok=True)

@@ -26,10 +26,15 @@ _CHECKED_IN_LAUNCHER = Path(__file__).resolve().parents[5] / "scripts" / "histor
 _SHA256_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 _VERSION_RE = re.compile(r"^[0-9]{3}$")
 _REPARSE_ATTRIBUTE = 0x400
+_SQLITE_CONNECTION_ATTESTATION = object()
 
 
 class LocalWriteGuardError(RuntimeError):
     """Raised without path-bearing details when local attestation fails."""
+
+
+class _GuardedSQLiteConnection(sqlite3.Connection):
+    """SQLite connection carrying an unexported exact-open attestation."""
 
 
 class AttestedTempDirectoryV1:
@@ -483,6 +488,13 @@ def reattest_local_database(
         ):
             raise LocalWriteGuardError("local database identity changed")
     if opened_connection is not None:
+        if (
+            getattr(opened_connection, "_twinops_attestation", None)
+            is _SQLITE_CONNECTION_ATTESTATION
+            and getattr(opened_connection, "_twinops_target_identity", None)
+            == permit.target_identity
+        ):
+            return
         row = opened_connection.execute("PRAGMA database_list").fetchone()
         if row is None or Path(row[2]).resolve(strict=False) != permit.path:
             raise LocalWriteGuardError("opened SQLite target identity mismatch")
@@ -508,7 +520,7 @@ def _pin_windows_directory(path: Path) -> int | None:
         create_file.restype = wintypes.HANDLE
         handle = create_file(
             str(path),
-            0x10000 | 0x80,
+            0x1 | 0x80,
             0x1 | 0x2,
             None,
             3,
@@ -817,6 +829,16 @@ def _new_fd_identities(before: frozenset[int]) -> frozenset[tuple[int, int]]:
     return frozenset(identities)
 
 
+def _directory_change_token(path: Path) -> tuple[int, int, int, int]:
+    value = _guarded_lstat(path)
+    return (
+        int(value.st_dev),
+        int(value.st_ino),
+        int(value.st_mtime_ns),
+        int(value.st_ctime_ns),
+    )
+
+
 def _open_attested_sqlite_connection(
     permit: LocalDatabasePermitV1,
     *,
@@ -829,9 +851,16 @@ def _open_attested_sqlite_connection(
     windows_handle: int | None = None
     connection: sqlite3.Connection | None = None
     try:
+        parent_token = (
+            _directory_change_token(permit.path.parent)
+            if os.name != "nt"
+            else None
+        )
         descriptor = os.open(
             permit.path,
-            os.O_RDONLY | getattr(os, "O_BINARY", 0),
+            (os.O_RDONLY if read_only else os.O_RDWR)
+            | getattr(os, "O_BINARY", 0)
+            | getattr(os, "O_NOFOLLOW", 0),
         )
         opened = os.fstat(descriptor)
         if (
@@ -847,16 +876,52 @@ def _open_attested_sqlite_connection(
             raise LocalWriteGuardError(
                 "opened SQLite identity verification unavailable"
             )
-        if read_only:
+        if os.name != "nt":
+            proc_path = Path("/proc/self/fd") / str(descriptor)
+            if not proc_path.exists():
+                raise LocalWriteGuardError(
+                    "opened SQLite identity verification unavailable"
+                )
+            mode = "ro" if read_only else "rw"
+            uri = "file:" + quote(proc_path.as_posix(), safe="/:") + f"?mode={mode}"
+            connection = sqlite3.connect(
+                uri,
+                uri=True,
+                timeout=5,
+                factory=_GuardedSQLiteConnection,
+            )
+        elif read_only:
             uri = "file:" + quote(permit.path.as_posix(), safe="/:") + "?mode=ro"
-            connection = sqlite3.connect(uri, uri=True, timeout=5)
+            connection = sqlite3.connect(
+                uri,
+                uri=True,
+                timeout=5,
+                factory=_GuardedSQLiteConnection,
+            )
         else:
-            connection = sqlite3.connect(permit.path, timeout=5)
+            connection = sqlite3.connect(
+                permit.path,
+                timeout=5,
+                factory=_GuardedSQLiteConnection,
+            )
         connection.row_factory = sqlite3.Row
-        reattest_local_database(permit, opened_connection=connection)
+        if (
+            parent_token is not None
+            and _directory_change_token(permit.path.parent) != parent_token
+        ):
+            raise LocalWriteGuardError("opened SQLite target identity mismatch")
+        reattest_local_database(permit)
         if before_fds is not None:
-            if permit.target_identity not in _new_fd_identities(before_fds):
+            opened_identities = _new_fd_identities(before_fds)
+            if opened_identities != frozenset({permit.target_identity}):
                 raise LocalWriteGuardError("opened SQLite target identity mismatch")
+        setattr(
+            connection,
+            "_twinops_attestation",
+            _SQLITE_CONNECTION_ATTESTATION,
+        )
+        setattr(connection, "_twinops_target_identity", permit.target_identity)
+        reattest_local_database(permit, opened_connection=connection)
         if read_only:
             connection.execute("PRAGMA query_only=ON")
             if connection.execute("PRAGMA query_only").fetchone()[0] != 1:

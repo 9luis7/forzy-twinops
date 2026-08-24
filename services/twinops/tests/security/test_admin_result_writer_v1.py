@@ -5,6 +5,8 @@ import json
 import os
 from pathlib import Path
 import shutil
+import subprocess
+from types import SimpleNamespace
 
 import pytest
 
@@ -646,3 +648,238 @@ class TestReplacementRaces:
         with pytest.raises(AdminResultWriterError):
             writer.write(_valid_show_result())
         assert not destination.exists()
+
+
+@requires_writer
+class TestDeterministicPreflightRound3:
+    def test_preflight_rejects_existing_result_larger_than_publication_bound(
+        self,
+        isolated_worktree,
+    ):
+        """Catches a known oversized destination being accepted before a DB commit."""
+
+        destination = _allowed(isolated_worktree, "oversized.json")
+        destination.parent.mkdir(parents=True)
+        original = b"x" * (1024 * 1024 + 1)
+        destination.write_bytes(original)
+        writer = AdminResultWriterV1(destination)
+        try:
+            with pytest.raises(AdminResultWriterError):
+                writer.preflight()
+            assert destination.read_bytes() == original
+            assert _private_temps(isolated_worktree) == []
+        finally:
+            writer._release_result_root()
+
+    def test_preflight_rejects_existing_result_that_cannot_be_read(
+        self,
+        isolated_worktree,
+        monkeypatch,
+    ):
+        """Catches destination readability being deferred until publication."""
+
+        destination = _allowed(isolated_worktree, "unreadable.json")
+        destination.parent.mkdir(parents=True)
+        original = b'{"old":true}\n'
+        destination.write_bytes(original)
+        real_open_child = AdminResultWriterV1._open_child
+
+        def deny_read(writer, name, flags, mode=0o600):
+            if name == destination.name and not flags & (os.O_WRONLY | os.O_RDWR):
+                raise PermissionError("injected unreadable destination")
+            return real_open_child(writer, name, flags, mode)
+
+        monkeypatch.setattr(AdminResultWriterV1, "_open_child", deny_read)
+        writer = AdminResultWriterV1(destination)
+        try:
+            with pytest.raises((AdminResultWriterError, OSError)):
+                writer.preflight()
+            assert destination.read_bytes() == original
+            assert _private_temps(isolated_worktree) == []
+        finally:
+            writer._release_result_root()
+
+
+@requires_writer
+class TestResultRootCreationRacesRound3:
+    @pytest.mark.parametrize("replacement_kind", ["regular", "symlink"])
+    def test_parent_swap_immediately_before_root_mkdir_leaves_no_owned_or_external_residue(
+        self,
+        replacement_kind,
+        isolated_worktree,
+        tmp_path,
+        monkeypatch,
+    ):
+        """Catches path-based mkdir following a replaced result-root parent."""
+
+        destination = _allowed(isolated_worktree, f"mkdir-{replacement_kind}.json")
+        tmp_component = isolated_worktree / "tmp"
+        moved_tmp = isolated_worktree / f"tmp-owned-moved-{replacement_kind}"
+        external = tmp_path / f"external-{replacement_kind}"
+        external.mkdir()
+        real_mkdir = writer_module.os.mkdir
+        real_reparse = writer_module._is_windows_reparse_point
+        race_attempted = False
+        replacement_created = False
+        mocked_reparse = False
+
+        def racing_mkdir(path, *args, **kwargs):
+            nonlocal race_attempted, replacement_created, mocked_reparse
+            if not race_attempted and Path(path).name == "twinops-admin-results":
+                race_attempted = True
+                tmp_component.rename(moved_tmp)
+                if replacement_kind == "regular":
+                    real_mkdir(tmp_component)
+                    replacement_created = True
+                else:
+                    try:
+                        tmp_component.symlink_to(external, target_is_directory=True)
+                        replacement_created = True
+                    except OSError:
+                        real_mkdir(tmp_component)
+                        replacement_created = True
+                        mocked_reparse = True
+            return real_mkdir(path, *args, **kwargs)
+
+        monkeypatch.setattr(writer_module.os, "mkdir", racing_mkdir)
+        monkeypatch.setattr(
+            writer_module,
+            "_is_windows_reparse_point",
+            lambda path, value: (
+                mocked_reparse and Path(path) == tmp_component
+            )
+            or real_reparse(path, value),
+        )
+        writer = AdminResultWriterV1(destination)
+        try:
+            with pytest.raises((AdminResultWriterError, OSError)):
+                writer.preflight()
+
+            assert race_attempted is True
+            assert not (external / "twinops-admin-results").exists()
+            assert not (moved_tmp / "twinops-admin-results").exists()
+            assert not (tmp_component / "twinops-admin-results").exists()
+            assert not moved_tmp.exists()
+        finally:
+            writer._release_result_root()
+            if tmp_component.is_symlink():
+                tmp_component.unlink()
+            elif replacement_created and tmp_component.exists():
+                shutil.rmtree(tmp_component)
+            if moved_tmp.exists():
+                if tmp_component.exists() or tmp_component.is_symlink():
+                    if tmp_component.is_symlink():
+                        tmp_component.unlink()
+                    else:
+                        shutil.rmtree(tmp_component)
+                moved_tmp.rename(tmp_component)
+
+    @pytest.mark.skipif(os.name != "nt", reason="Windows junction race")
+    def test_junction_swap_immediately_before_root_mkdir_leaves_no_external_residue(
+        self,
+        isolated_worktree,
+        tmp_path,
+        monkeypatch,
+    ):
+        """Catches mkdir crossing a real replacement junction on Windows."""
+
+        destination = _allowed(isolated_worktree, "mkdir-junction.json")
+        tmp_component = isolated_worktree / "tmp"
+        moved_tmp = isolated_worktree / "tmp-owned-moved-junction"
+        external = tmp_path / "external-junction"
+        external.mkdir()
+        probe = tmp_path / "junction-probe"
+        probe_result = subprocess.run(
+            ["cmd", "/c", "mklink", "/J", str(probe), str(external)],
+            capture_output=True,
+            text=True,
+        )
+        if probe_result.returncode != 0:
+            pytest.skip("junction creation privilege is unavailable")
+        probe.rmdir()
+        real_mkdir = writer_module.os.mkdir
+        race_attempted = False
+        junction_created = False
+
+        def racing_mkdir(path, *args, **kwargs):
+            nonlocal race_attempted, junction_created
+            if not race_attempted and Path(path).name == "twinops-admin-results":
+                race_attempted = True
+                tmp_component.rename(moved_tmp)
+                completed = subprocess.run(
+                    ["cmd", "/c", "mklink", "/J", str(tmp_component), str(external)],
+                    capture_output=True,
+                    text=True,
+                )
+                if completed.returncode != 0:
+                    moved_tmp.rename(tmp_component)
+                    raise RuntimeError("junction race setup failed")
+                junction_created = True
+            return real_mkdir(path, *args, **kwargs)
+
+        monkeypatch.setattr(writer_module.os, "mkdir", racing_mkdir)
+        writer = AdminResultWriterV1(destination)
+        try:
+            with pytest.raises((AdminResultWriterError, OSError)):
+                writer.preflight()
+            assert race_attempted is True
+            assert not (external / "twinops-admin-results").exists()
+            assert not (moved_tmp / "twinops-admin-results").exists()
+            assert not moved_tmp.exists()
+        finally:
+            writer._release_result_root()
+            if junction_created and tmp_component.exists():
+                tmp_component.rmdir()
+            if moved_tmp.exists():
+                moved_tmp.rename(tmp_component)
+
+
+class _RecordingWin32Call:
+    def __init__(self, result):
+        self.result = result
+        self.calls = []
+        self.argtypes = None
+        self.restype = None
+
+    def __call__(self, *args):
+        self.calls.append(args)
+        return self.result
+
+
+@requires_writer
+@pytest.mark.skipif(os.name != "nt", reason="Win32 CreateFileW contract")
+def test_windows_result_root_pin_requests_no_delete_access(
+    isolated_worktree,
+    monkeypatch,
+):
+    """Catches DELETE desired access making the non-delete-sharing pin incompatible."""
+
+    import ctypes
+
+    destination = _allowed(isolated_worktree, "win32-pin.json")
+    destination.parent.mkdir(parents=True)
+    create_file = _RecordingWin32Call(1234)
+    close_handle = _RecordingWin32Call(1)
+    monkeypatch.setattr(
+        ctypes,
+        "windll",
+        SimpleNamespace(
+            kernel32=SimpleNamespace(
+                CreateFileW=create_file,
+                CloseHandle=close_handle,
+            )
+        ),
+    )
+    writer = AdminResultWriterV1(destination)
+    root_identity = writer_module._identity(os.lstat(destination.parent))
+    try:
+        writer._pin_result_root(root_identity)
+        assert len(create_file.calls) == 1
+        call = create_file.calls[0]
+        assert call[1] == 0x1 | 0x80
+        assert call[1] & 0x10000 == 0
+        assert call[2] == 0x1 | 0x2
+        assert call[4] == 3
+        assert call[5] == 0x02000000 | 0x00200000
+    finally:
+        writer._release_result_root()

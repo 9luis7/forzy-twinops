@@ -458,6 +458,76 @@ def _batch_summary(repository, batch_id: str):
         raise HistoryAdminError("batch_identity") from exc
 
 
+def _lookup_existing_batch(repository, batch_id: str):
+    """Return fully validated stored evidence, distinguishing only true absence."""
+
+    if isinstance(
+        repository,
+        (SQLiteHistoricalRepositoryV1, PostgresHistoricalRepositoryV1),
+    ):
+        placeholder = (
+            "?" if isinstance(repository, SQLiteHistoricalRepositoryV1) else "%s"
+        )
+        try:
+            with repository._connection() as connection:
+                exists = connection.execute(
+                    "SELECT 1 FROM historical_import_batches_v1 "
+                    f"WHERE batch_id={placeholder}",
+                    (batch_id,),
+                ).fetchone()
+                if exists is None:
+                    return None
+                evidence = repository._stored_batch(connection, batch_id)
+        except BaseException as exc:
+            raise HistoryAdminError("batch_lookup") from exc
+    else:
+        lookup = getattr(repository, "_lookup_existing_batch_for_admin", None)
+        if not callable(lookup):
+            raise HistoryAdminError("batch_lookup")
+        try:
+            evidence = lookup(batch_id=batch_id)
+        except BaseException as exc:
+            raise HistoryAdminError("batch_lookup") from exc
+        if evidence is None:
+            return None
+    try:
+        if (
+            evidence.summary.batch_id != batch_id
+            or evidence.prepared.batch_id != batch_id
+        ):
+            raise HistoryAdminError("batch_identity")
+    except HistoryAdminError:
+        raise
+    except BaseException as exc:
+        raise HistoryAdminError("batch_lookup") from exc
+    return evidence
+
+
+def _recover_stored_prepared_batch(
+    *,
+    evidence,
+    source_bytes: bytes,
+    profile,
+    asset_id: str,
+):
+    try:
+        recovered = prepare_historical_batch(
+            source_bytes,
+            profile=profile,
+            asset_id=asset_id,
+            ingested_at=evidence.prepared.imported_at,
+        )
+    except BaseException as exc:
+        raise HistoryAdminError("batch_identity") from exc
+    if recovered != evidence.prepared:
+        raise HistoryAdminError("batch_identity")
+    expected = SimpleBatchSummary.from_prepared(recovered)
+    _require_same_stage_evidence(evidence.summary, expected)
+    if evidence.summary.status != "staged":
+        raise HistoryAdminError("batch_identity")
+    return recovered
+
+
 def _migration_hashes() -> dict[str, str]:
     return {
         spec.version: spec.sqlite_sha256 for spec in registered_migration_specs()
@@ -469,6 +539,35 @@ def _migration_manifest_sha256() -> str:
         _migration_hashes(), sort_keys=True, separators=(",", ":")
     ).encode()
     return "sha256:" + sha256(canonical).hexdigest()
+
+
+def _require_exact_local_migration_state(
+    args,
+    permit: LocalDatabasePermitV1,
+    *,
+    effective_from: datetime,
+) -> None:
+    target = _target(args, {}, permit=permit)
+    repository = repository_from_target(target)
+    verification = repository.verify_schema(args.expected_schema_version)
+    if (
+        not verification.is_current
+        or verification.expected_version != args.expected_schema_version
+        or verification.current_version != args.expected_schema_version
+        or dict(verification.applied_migration_hashes) != _migration_hashes()
+    ):
+        raise HistoryAdminError("migration_reread")
+    if repository.target_identity() != _expected_identity(target):
+        raise HistoryAdminError("migration_reread")
+    stored_policy = repository.collection_policy(INITIAL_COLLECTION_POLICY_ID)
+    expected_policy = initial_collection_policy(effective_from)
+    if (
+        stored_policy is None
+        or stored_policy.model_dump_public()
+        != expected_policy.model_dump_public()
+    ):
+        raise HistoryAdminError("migration_reread")
+    reattest_local_database(permit)
 
 
 def _emit(result: dict[str, object], result_path: Path | None) -> None:
@@ -577,9 +676,11 @@ def _migrate_local(args, clock: Callable[[], datetime]) -> dict[str, object]:
         if permit.target_fingerprint != args.expected_target_fingerprint:
             raise HistoryAdminError("target_identity")
         if args.mode == "dry-run":
-            target = _target(args, {}, permit=permit)
-            repository = repository_from_target(target)
-            _preflight_repository(repository, target)
+            _require_exact_local_migration_state(
+                args,
+                permit,
+                effective_from=effective_from,
+            )
             inserted = False
             applied_count = 0
             writes = 0
@@ -640,6 +741,11 @@ def _migrate_local(args, clock: Callable[[], datetime]) -> dict[str, object]:
                 )
             finally:
                 connection.close()
+            _require_exact_local_migration_state(
+                args,
+                permit,
+                effective_from=effective_from,
+            )
     else:
         absence_permit = attest_local_database(
             path,
@@ -687,11 +793,13 @@ def _migrate_local(args, clock: Callable[[], datetime]) -> dict[str, object]:
                         opened_connection=opened,
                     ),
                 )
-                verification = verify_schema_version(
-                    connection, args.expected_schema_version
+                connection.close()
+                connection = None
+                _require_exact_local_migration_state(
+                    args,
+                    created_permit,
+                    effective_from=effective_from,
                 )
-                if not verification.is_current:
-                    raise HistoryAdminError("migration_reread")
                 applied_count = len(registered_migration_specs())
                 inserted = True
                 writes = applied_count + 2
@@ -733,13 +841,13 @@ def _stage(args, env, clock, repository_factory):
     if actual_source != args.expected_sha256:
         raise HistoryAdminError("source_hash")
     profile = registered_profile(args.profile)
-    prepared = prepare_historical_batch(
+    candidate = prepare_historical_batch(
         source_bytes,
         profile=profile,
         asset_id=args.asset_id,
         ingested_at=clock(),
     )
-    if prepared.source_sha256 != args.expected_sha256:
+    if candidate.source_sha256 != args.expected_sha256:
         raise HistoryAdminError("source_identity")
     permit = None
     if args.environment == "local":
@@ -753,34 +861,41 @@ def _stage(args, env, clock, repository_factory):
     target = _target(args, env, permit=permit)
     repository = repository_factory(target)
     _preflight_repository(repository, target)
+    existing = _lookup_existing_batch(repository, candidate.batch_id)
+    prepared = (
+        candidate
+        if existing is None
+        else _recover_stored_prepared_batch(
+            evidence=existing,
+            source_bytes=source_bytes,
+            profile=profile,
+            asset_id=args.asset_id,
+        )
+    )
     _policy(repository, prepared.imported_at)
     expected_summary = SimpleBatchSummary.from_prepared(prepared)
     if args.mode == "apply":
-        if permit is not None:
-            reattest_local_database(permit)
-        stored = repository.stage_batch(prepared)
+        if existing is None:
+            if permit is not None:
+                reattest_local_database(permit)
+            stored = repository.stage_batch(prepared)
+            inserted = stored.inserted
+            writes = stored.writes_performed
+        else:
+            inserted = False
+            writes = 0
         _preflight_repository(repository, target)
         _policy(repository, prepared.imported_at)
-        summary = _batch_summary(repository, prepared.batch_id)
+        fresh = _lookup_existing_batch(repository, prepared.batch_id)
+        if fresh is None or fresh.prepared != prepared:
+            raise HistoryAdminError("batch_identity")
+        summary = fresh.summary
         _require_same_stage_evidence(summary, expected_summary)
-        inserted = stored.inserted
-        writes = stored.writes_performed
+        if summary.status != "staged":
+            raise HistoryAdminError("batch_identity")
     else:
-        summary = expected_summary
-        inserted = True
-        try:
-            existing = _batch_summary(repository, prepared.batch_id)
-        except HistoryAdminError:
-            existing = None
-        if existing is not None:
-            try:
-                _require_same_stage_evidence(existing, expected_summary)
-            except HistoryAdminError:
-                if hasattr(repository, "_connection"):
-                    raise
-            else:
-                summary = existing
-                inserted = False
+        summary = expected_summary if existing is None else existing.summary
+        inserted = existing is None
         writes = 0
     result = {
         "command": "stage-history",

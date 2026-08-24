@@ -70,6 +70,48 @@ class AdminResultWriterError(RuntimeError):
     """Raised without filesystem details when result publication fails."""
 
 
+def _open_windows_directory_handle(path: Path) -> int:
+    import ctypes
+    from ctypes import wintypes
+
+    create_file = ctypes.windll.kernel32.CreateFileW
+    create_file.argtypes = (
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.HANDLE,
+    )
+    create_file.restype = wintypes.HANDLE
+    handle = create_file(
+        str(path),
+        0x1 | 0x80,
+        0x1 | 0x2,
+        None,
+        3,
+        0x02000000 | 0x00200000,
+        None,
+    )
+    invalid = ctypes.c_void_p(-1).value
+    if handle in (None, invalid):
+        raise OSError("directory handle unavailable")
+    return int(handle)
+
+
+def _close_windows_handle(handle: int | None) -> None:
+    if handle is None:
+        return
+    import ctypes
+    from ctypes import wintypes
+
+    close_handle = ctypes.windll.kernel32.CloseHandle
+    close_handle.argtypes = (wintypes.HANDLE,)
+    close_handle.restype = wintypes.BOOL
+    close_handle(wintypes.HANDLE(handle))
+
+
 def _identity(value: os.stat_result) -> tuple[int, int]:
     return (int(value.st_dev), int(value.st_ino))
 
@@ -338,7 +380,7 @@ class AdminResultWriterV1:
             or not _RESULT_NAME_RE.fullmatch(candidate.name)
         ):
             raise AdminResultWriterError("result path is outside the fixed boundary")
-        self.result_path = expected.resolve(strict=False)
+        self.result_path = expected.absolute()
         self._launcher = launcher.resolve(strict=True)
         self._launcher_identity = _identity(launcher_stat)
         self._worktree = worktree
@@ -356,33 +398,9 @@ class AdminResultWriterV1:
     def _pin_result_root(self, root_identity: tuple[int, int]) -> None:
         if os.name == "nt":
             try:
-                import ctypes
-                from ctypes import wintypes
-
-                create_file = ctypes.windll.kernel32.CreateFileW
-                create_file.argtypes = (
-                    wintypes.LPCWSTR,
-                    wintypes.DWORD,
-                    wintypes.DWORD,
-                    wintypes.LPVOID,
-                    wintypes.DWORD,
-                    wintypes.DWORD,
-                    wintypes.HANDLE,
+                self._windows_root_handle = _open_windows_directory_handle(
+                    self._result_root
                 )
-                create_file.restype = wintypes.HANDLE
-                handle = create_file(
-                    str(self._result_root),
-                    0x10000 | 0x80,
-                    0x1 | 0x2,
-                    None,
-                    3,
-                    0x02000000 | 0x00200000,
-                    None,
-                )
-                invalid = ctypes.c_void_p(-1).value
-                if handle in (None, invalid):
-                    raise OSError("directory handle unavailable")
-                self._windows_root_handle = int(handle)
             except BaseException as exc:
                 raise AdminResultWriterError(
                     "result directory pinning failed"
@@ -409,13 +427,7 @@ class AdminResultWriterV1:
                 self._root_descriptor = None
         if self._windows_root_handle is not None:
             try:
-                import ctypes
-                from ctypes import wintypes
-
-                close_handle = ctypes.windll.kernel32.CloseHandle
-                close_handle.argtypes = (wintypes.HANDLE,)
-                close_handle.restype = wintypes.BOOL
-                close_handle(wintypes.HANDLE(self._windows_root_handle))
+                _close_windows_handle(self._windows_root_handle)
             finally:
                 self._windows_root_handle = None
         self._preflight_state = None
@@ -435,36 +447,231 @@ class AdminResultWriterV1:
         ):
             raise AdminResultWriterError("launcher or worktree identity changed")
 
+    @staticmethod
+    def _directory_flags() -> int:
+        return (
+            os.O_RDONLY
+            | getattr(os, "O_DIRECTORY", 0)
+            | getattr(os, "O_NOFOLLOW", 0)
+            | getattr(os, "O_CLOEXEC", 0)
+        )
+
+    @staticmethod
+    def _remove_created_posix_directory(
+        parent_descriptor: int,
+        *,
+        preferred_name: str,
+        expected_identity: tuple[int, int] | None,
+    ) -> None:
+        if expected_identity is None:
+            return
+        try:
+            names = [preferred_name]
+            names.extend(
+                name for name in os.listdir(parent_descriptor) if name != preferred_name
+            )
+        except OSError:
+            return
+        for name in names:
+            try:
+                value = os.stat(
+                    name,
+                    dir_fd=parent_descriptor,
+                    follow_symlinks=False,
+                )
+                if (
+                    _identity(value) != expected_identity
+                    or not stat_module.S_ISDIR(value.st_mode)
+                    or stat_module.S_ISLNK(value.st_mode)
+                ):
+                    continue
+                os.rmdir(name, dir_fd=parent_descriptor)
+                return
+            except OSError:
+                continue
+
+    @staticmethod
+    def _remove_created_windows_directory(
+        path: Path,
+        expected_identity: tuple[int, int] | None,
+    ) -> None:
+        if expected_identity is None:
+            return
+        try:
+            value = _lstat_regular(path, directory=True)
+            if _identity(value) == expected_identity:
+                os.rmdir(path)
+        except (OSError, AdminResultWriterError):
+            return
+
     def _ensure_result_root(self) -> tuple[int, int]:
         self._reattest_launcher_and_worktree()
         tmp = self._worktree / "tmp"
-        if tmp.exists() or tmp.is_symlink():
-            _lstat_regular(tmp, directory=True)
-        else:
+        root_name = self._result_root.name
+        if os.name == "nt":
+            worktree_handle: int | None = None
+            tmp_handle: int | None = None
+            root_handle: int | None = None
+            tmp_identity: tuple[int, int] | None = None
+            root_identity: tuple[int, int] | None = None
+            tmp_created = False
+            root_created = False
             try:
-                os.mkdir(tmp)
-            except FileExistsError:
-                pass
-            except OSError as exc:
-                raise AdminResultWriterError("result directory creation failed") from exc
-            _lstat_regular(tmp, directory=True)
-        if self._result_root.exists() or self._result_root.is_symlink():
-            root_stat = _lstat_regular(self._result_root, directory=True)
-        else:
-            try:
-                os.mkdir(self._result_root)
-            except FileExistsError:
-                pass
-            except OSError as exc:
-                raise AdminResultWriterError("result directory creation failed") from exc
-            root_stat = _lstat_regular(self._result_root, directory=True)
+                worktree_handle = _open_windows_directory_handle(self._worktree)
+                if _identity(_lstat_regular(self._worktree, directory=True)) != self._worktree_identity:
+                    raise AdminResultWriterError("worktree identity changed")
+                if tmp.exists() or tmp.is_symlink():
+                    tmp_stat = _lstat_regular(tmp, directory=True)
+                else:
+                    os.mkdir(tmp)
+                    tmp_created = True
+                    tmp_stat = _lstat_regular(tmp, directory=True)
+                tmp_identity = _identity(tmp_stat)
+                tmp_handle = _open_windows_directory_handle(tmp)
+                if _identity(_lstat_regular(tmp, directory=True)) != tmp_identity:
+                    raise AdminResultWriterError("result parent identity changed")
+                if self._result_root.exists() or self._result_root.is_symlink():
+                    root_stat = _lstat_regular(self._result_root, directory=True)
+                else:
+                    os.mkdir(self._result_root)
+                    root_created = True
+                    root_stat = _lstat_regular(self._result_root, directory=True)
+                root_identity = _identity(root_stat)
+                root_handle = _open_windows_directory_handle(self._result_root)
+                self._reattest_launcher_and_worktree()
+                if (
+                    _identity(_lstat_regular(tmp, directory=True)) != tmp_identity
+                    or _identity(
+                        _lstat_regular(self._result_root, directory=True)
+                    )
+                    != root_identity
+                ):
+                    raise AdminResultWriterError("result directory identity changed")
+                self._result_root.resolve(strict=True).relative_to(
+                    self._worktree.resolve(strict=True)
+                )
+                self._windows_root_handle = root_handle
+                root_handle = None
+                return root_identity
+            except BaseException as exc:
+                _close_windows_handle(root_handle)
+                root_handle = None
+                if root_created:
+                    self._remove_created_windows_directory(
+                        self._result_root,
+                        root_identity,
+                    )
+                _close_windows_handle(tmp_handle)
+                tmp_handle = None
+                if tmp_created:
+                    self._remove_created_windows_directory(tmp, tmp_identity)
+                if isinstance(exc, AdminResultWriterError):
+                    raise
+                raise AdminResultWriterError(
+                    "result directory creation failed"
+                ) from exc
+            finally:
+                _close_windows_handle(root_handle)
+                _close_windows_handle(tmp_handle)
+                _close_windows_handle(worktree_handle)
+
+        worktree_descriptor: int | None = None
+        tmp_descriptor: int | None = None
+        root_descriptor: int | None = None
+        tmp_identity: tuple[int, int] | None = None
+        root_identity: tuple[int, int] | None = None
+        tmp_created = False
+        root_created = False
+        flags = self._directory_flags()
         try:
+            worktree_descriptor = os.open(self._worktree, flags)
+            if _identity(os.fstat(worktree_descriptor)) != self._worktree_identity:
+                raise AdminResultWriterError("worktree identity changed")
+            try:
+                tmp_descriptor = os.open(
+                    "tmp",
+                    flags,
+                    dir_fd=worktree_descriptor,
+                )
+            except FileNotFoundError:
+                os.mkdir("tmp", dir_fd=worktree_descriptor)
+                tmp_created = True
+                tmp_descriptor = os.open(
+                    "tmp",
+                    flags,
+                    dir_fd=worktree_descriptor,
+                )
+            tmp_stat = _require_regular_stat(
+                os.fstat(tmp_descriptor),
+                path=tmp,
+                directory=True,
+            )
+            tmp_identity = _identity(tmp_stat)
+            try:
+                root_descriptor = os.open(
+                    root_name,
+                    flags,
+                    dir_fd=tmp_descriptor,
+                )
+            except FileNotFoundError:
+                os.mkdir(root_name, dir_fd=tmp_descriptor)
+                root_created = True
+                root_descriptor = os.open(
+                    root_name,
+                    flags,
+                    dir_fd=tmp_descriptor,
+                )
+            root_stat = _require_regular_stat(
+                os.fstat(root_descriptor),
+                path=self._result_root,
+                directory=True,
+            )
+            root_identity = _identity(root_stat)
+            self._reattest_launcher_and_worktree()
+            if (
+                _identity(_lstat_regular(tmp, directory=True)) != tmp_identity
+                or _identity(
+                    _lstat_regular(self._result_root, directory=True)
+                )
+                != root_identity
+                or _identity(os.fstat(tmp_descriptor)) != tmp_identity
+                or _identity(os.fstat(root_descriptor)) != root_identity
+            ):
+                raise AdminResultWriterError("result directory identity changed")
+            if os.path.ismount(tmp) or os.path.ismount(self._result_root):
+                raise AdminResultWriterError("result path contains a mount point")
             self._result_root.resolve(strict=True).relative_to(
                 self._worktree.resolve(strict=True)
             )
-        except (OSError, ValueError) as exc:
-            raise AdminResultWriterError("result directory escaped worktree") from exc
-        return _identity(root_stat)
+            self._root_descriptor = root_descriptor
+            root_descriptor = None
+            return root_identity
+        except BaseException as exc:
+            if root_descriptor is not None:
+                os.close(root_descriptor)
+                root_descriptor = None
+            if root_created and tmp_descriptor is not None:
+                self._remove_created_posix_directory(
+                    tmp_descriptor,
+                    preferred_name=root_name,
+                    expected_identity=root_identity,
+                )
+            if tmp_created and worktree_descriptor is not None:
+                self._remove_created_posix_directory(
+                    worktree_descriptor,
+                    preferred_name="tmp",
+                    expected_identity=tmp_identity,
+                )
+            if isinstance(exc, AdminResultWriterError):
+                raise
+            raise AdminResultWriterError("result directory creation failed") from exc
+        finally:
+            if root_descriptor is not None:
+                os.close(root_descriptor)
+            if tmp_descriptor is not None:
+                os.close(tmp_descriptor)
+            if worktree_descriptor is not None:
+                os.close(worktree_descriptor)
 
     def _destination_identity(self) -> tuple[int, int] | None:
         if self._root_descriptor is not None:
@@ -596,11 +803,16 @@ class AdminResultWriterV1:
         if self._preflight_state is not None:
             self._reattest_publication(*self._preflight_state)
             return
-        root_identity = self._ensure_result_root()
-        destination_identity = self._destination_identity()
-        self._reattest_publication(root_identity, destination_identity)
         try:
-            self._pin_result_root(root_identity)
+            root_identity = self._ensure_result_root()
+            destination_identity = self._destination_identity()
+            self._reattest_publication(root_identity, destination_identity)
+            if destination_identity is not None:
+                self._read_child_bytes(
+                    self.result_path.name,
+                    expected_identity=destination_identity,
+                    maximum_size=1024 * 1024,
+                )
             self._reattest_publication(root_identity, destination_identity)
         except BaseException:
             self._release_result_root()
