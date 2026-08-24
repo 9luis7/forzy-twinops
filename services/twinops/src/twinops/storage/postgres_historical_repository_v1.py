@@ -4,9 +4,10 @@ from __future__ import annotations
 
 from collections.abc import Callable, Sequence
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import datetime, timezone
 
 import psycopg
+from psycopg.pq import TransactionStatus
 from psycopg.rows import dict_row
 
 from twinops.contracts.timeline_v1_models import (
@@ -22,8 +23,6 @@ from twinops.ingestion.history_profiles_v1 import (
 )
 from twinops.storage.collection_policy_v1 import (
     _policy_from_row,
-    read_collection_policy,
-    read_effective_collection_policy,
 )
 from twinops.storage.historical_repository_v1 import (
     ActivateHistoryResultV1,
@@ -84,12 +83,27 @@ def _normalised_row(row: dict[str, object]) -> dict[str, object]:
     for column in _TIMESTAMP_COLUMNS:
         value = normalised.get(column)
         if isinstance(value, datetime):
-            normalised[column] = serialize_public_utc_millis_v1(value)
+            if value.tzinfo is None or value.utcoffset() is None:
+                raise HistoricalBatchConflict(
+                    f"stored {column} timestamp is timezone-naive"
+                )
+            try:
+                normalised[column] = serialize_public_utc_millis_v1(
+                    value.astimezone(timezone.utc)
+                )
+            except (TypeError, ValueError) as exc:
+                raise HistoricalBatchConflict(
+                    f"stored {column} timestamp is invalid"
+                ) from exc
     return normalised
 
 
 def _row_values(row: dict[str, object], columns: tuple[str, ...]) -> tuple[object, ...]:
     return tuple(_normalised_row(row)[column] for column in columns)
+
+
+def _policy_from_postgres_row(row: dict[str, object]) -> CollectionPolicyV1:
+    return _policy_from_row(_normalised_row(row))
 
 
 class PostgresHistoricalRepositoryV1:
@@ -105,9 +119,32 @@ class PostgresHistoricalRepositoryV1:
         self._connection_factory = connection_factory
 
     def _connect(self):
-        if self._connection_factory is not None:
-            return self._connection_factory(self.database_url)
-        return psycopg.connect(self.database_url, row_factory=dict_row)
+        connection = (
+            self._connection_factory(self.database_url)
+            if self._connection_factory is not None
+            else psycopg.connect(self.database_url, row_factory=dict_row)
+        )
+        try:
+            if connection.closed:
+                raise RuntimeError(
+                    "PostgreSQL historical repository requires an open connection"
+                )
+            if connection.autocommit is not False:
+                raise RuntimeError(
+                    "PostgreSQL historical repository requires autocommit=False"
+                )
+            if connection.info.transaction_status != TransactionStatus.IDLE:
+                raise RuntimeError(
+                    "PostgreSQL historical repository requires an idle connection"
+                )
+            if connection.row_factory is not dict_row:
+                raise RuntimeError(
+                    "PostgreSQL historical repository requires psycopg dict_row"
+                )
+        except BaseException:
+            connection.close()
+            raise
+        return connection
 
     @contextmanager
     def _connection(self):
@@ -589,7 +626,12 @@ class PostgresHistoricalRepositoryV1:
 
     def collection_policy(self, policy_id: str) -> CollectionPolicyV1 | None:
         with self._connection() as connection:
-            return read_collection_policy(connection, policy_id)
+            row = connection.execute(
+                f"SELECT {_POLICY_SELECT} FROM collection_policies_v1 "
+                "WHERE policy_id=%s",
+                (policy_id,),
+            ).fetchone()
+        return None if row is None else _policy_from_postgres_row(row)
 
     def collection_policies(self, policy_ids: set[str]) -> dict[str, CollectionPolicyV1]:
         if not policy_ids:
@@ -601,7 +643,7 @@ class PostgresHistoricalRepositoryV1:
                 f"SELECT {_POLICY_SELECT} FROM collection_policies_v1 "
                 "WHERE policy_id = ANY(%s) ORDER BY policy_id", (sorted(policy_ids),)
             ).fetchall()
-        policies = [_policy_from_row(row) for row in rows]
+        policies = [_policy_from_postgres_row(row) for row in rows]
         return {policy.collection_policy_id: policy for policy in policies}
 
     def effective_collection_policy(
@@ -609,5 +651,22 @@ class PostgresHistoricalRepositoryV1:
         asset_id: str,
         at: datetime,
     ) -> CollectionPolicyV1 | None:
+        try:
+            serialize_public_utc_millis_v1(at)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                "policy lookup timestamp must be an exact UTC millisecond"
+            ) from exc
+        instant = at.astimezone(timezone.utc)
         with self._connection() as connection:
-            return read_effective_collection_policy(connection, asset_id, at)
+            rows = connection.execute(
+                f"SELECT {_POLICY_SELECT} FROM collection_policies_v1 "
+                "WHERE asset_id=%s AND effective_from<=%s "
+                "AND (effective_to IS NULL OR %s<effective_to) "
+                "ORDER BY effective_from,policy_id LIMIT 2",
+                (asset_id, instant, instant),
+            ).fetchall()
+        policies = [_policy_from_postgres_row(row) for row in rows]
+        if len(policies) > 1:
+            raise RuntimeError("multiple effective collection policies")
+        return policies[0] if policies else None

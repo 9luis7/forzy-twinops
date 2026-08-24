@@ -805,12 +805,17 @@ class HistoricalRepositoryContract:
         before = repository_control.snapshot()
 
         initial = historical_repository.collection_policy(_INITIAL_POLICY_ID)
+        effective = historical_repository.effective_collection_policy(
+            "forzy-motor-01",
+            _POLICY_FROM,
+        )
         selected = historical_repository.collection_policies(
             {_INITIAL_POLICY_ID, "missing-policy"}
         )
         empty = historical_repository.collection_policies(set())
 
         assert isinstance(initial, CollectionPolicyV1)
+        assert effective == initial
         assert selected == {_INITIAL_POLICY_ID: initial}
         assert empty == {}
         assert historical_repository.collection_policy("missing-policy") is None
@@ -821,6 +826,16 @@ class HistoricalRepositoryContract:
         with pytest.raises(ValueError):
             historical_repository.collection_policies(
                 {_INITIAL_POLICY_ID, hidden.collection_policy_id}
+            )
+
+    def test_effective_policy_rejects_sub_millisecond_lookup(
+        self,
+        historical_repository: HistoricalRepositoryV1,
+    ) -> None:
+        with pytest.raises(ValueError, match="exact UTC millisecond"):
+            historical_repository.effective_collection_policy(
+                "forzy-motor-01",
+                _POLICY_FROM + timedelta(microseconds=1),
             )
 
     @pytest.mark.parametrize(

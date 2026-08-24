@@ -1,19 +1,23 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from importlib.util import find_spec
 import json
 import os
+from threading import Barrier, Event, Lock
+from time import monotonic
 from typing import Iterable
 
 import psycopg
 from psycopg.rows import dict_row
 import pytest
 
-from historical_repository_contract import run_activation_race, synthetic_prepared_batch
+from historical_repository_contract import _assessment, synthetic_prepared_batch
 from twinops.contracts.timeline_v1_models import CollectionPolicyV1
+from twinops.storage.historical_repository_v1 import HistoricalBatchConflict
 from twinops.storage.schema_migrations import (
     apply_postgres_migrations,
     registered_migration_specs,
@@ -48,6 +52,9 @@ _POLICY_COLUMNS = (
     "poll_interval_seconds", "gap_threshold_seconds", "effective_from",
     "effective_to", "configuration_hash",
 )
+_DML_PREFIXES = ("INSERT ", "UPDATE ", "DELETE ", "TRUNCATE ")
+_RACE_COORDINATION_TIMEOUT_SECONDS = 30
+_RACE_BLOCKED_OBSERVATION_SECONDS = 0.5
 
 
 @dataclass(frozen=True)
@@ -270,14 +277,234 @@ if _REPOSITORY_AVAILABLE:
     class TestPostgresHistoricalRepositoryContract(HistoricalRepositoryContract):
         pass
 
+
+    def test_postgres_normalizes_timestamptz_rows_from_non_utc_session(
+        historical_repository,
+        postgres_test_target: _PostgresTestTarget,
+    ) -> None:
+        batch = synthetic_prepared_batch(0)
+        first = historical_repository.stage_batch(batch)
+
+        def non_utc_factory(database_url: str):
+            return psycopg.connect(
+                database_url,
+                row_factory=dict_row,
+                options="-c timezone=America/Sao_Paulo",
+            )
+
+        non_utc_repository = PostgresHistoricalRepositoryV1(
+            postgres_test_target.database_url,
+            connection_factory=non_utc_factory,
+        )
+
+        replay = non_utc_repository.stage_batch(batch)
+
+        assert replay.inserted is False
+        assert replay.writes_performed == 0
+        assert replay.batch == first.batch
+
+
+    @pytest.mark.parametrize("operation", ["stage", "store", "activate"])
+    def test_autocommit_connection_factory_is_rejected_before_dml(
+        operation: str,
+        historical_repository,
+        repository_control: PostgresRepositoryControl,
+        postgres_test_target: _PostgresTestTarget,
+    ) -> None:
+        batch = synthetic_prepared_batch(0)
+        assessment = _assessment(batch)
+        if operation != "stage":
+            historical_repository.stage_batch(batch)
+        before = repository_control.snapshot()
+        statements: list[str] = []
+
+        class RecordingAutocommitConnection:
+            def __init__(self, connection) -> None:
+                self.connection = connection
+
+            def __getattr__(self, name):
+                return getattr(self.connection, name)
+
+            def execute(self, query, params=None, **kwargs):
+                statements.append(" ".join(query.split()))
+                return self.connection.execute(query, params, **kwargs)
+
+        def autocommit_factory(database_url: str):
+            return RecordingAutocommitConnection(
+                psycopg.connect(
+                    database_url,
+                    autocommit=True,
+                    row_factory=dict_row,
+                )
+            )
+
+        repository = PostgresHistoricalRepositoryV1(
+            postgres_test_target.database_url,
+            connection_factory=autocommit_factory,
+        )
+        actions = {
+            "stage": lambda: repository.stage_batch(batch),
+            "store": lambda: repository.store_assessments(
+                batch.batch_id,
+                [assessment],
+            ),
+            "activate": lambda: repository.activate_batch(
+                asset_id=batch.asset_id,
+                batch_id=batch.batch_id,
+                expected_active_batch_id=None,
+            ),
+        }
+
+        with pytest.raises(RuntimeError, match="autocommit"):
+            actions[operation]()
+
+        assert not any(
+            statement.startswith(_DML_PREFIXES) for statement in statements
+        )
+        assert repository_control.snapshot() == before
+
+
     def test_postgres_activation_race_leaves_exactly_one_active_batch(
-        historical_repository, repository_control: PostgresRepositoryControl
+        historical_repository,
+        repository_control: PostgresRepositoryControl,
+        postgres_test_target: _PostgresTestTarget,
     ) -> None:
         candidates = (synthetic_prepared_batch(0), synthetic_prepared_batch(1))
         for candidate in candidates:
             historical_repository.stage_batch(candidate)
 
-        results = run_activation_race(historical_repository, candidates)
+        ready_to_lock = Barrier(2)
+        holder_has_lock = Event()
+        contender_attempting_lock = Event()
+        contender_returned_from_lock = Event()
+        release_holder = Event()
+        factory_lock = Lock()
+        next_connection_index = 0
+
+        class LockControlledConnection:
+            def __init__(self, connection, index: int) -> None:
+                self.connection = connection
+                self.index = index
+
+            def __getattr__(self, name):
+                return getattr(self.connection, name)
+
+            def execute(self, query, params=None, **kwargs):
+                normalized = " ".join(query.split())
+                is_asset_lock = (
+                    "pg_advisory_xact_lock" in normalized
+                    and params == ("forzy-motor-01",)
+                )
+                if not is_asset_lock:
+                    return self.connection.execute(query, params, **kwargs)
+
+                ready_to_lock.wait(timeout=_RACE_COORDINATION_TIMEOUT_SECONDS)
+                if self.index == 0:
+                    cursor = self.connection.execute(query, params, **kwargs)
+                    holder_has_lock.set()
+                    if not contender_attempting_lock.wait(
+                        timeout=_RACE_COORDINATION_TIMEOUT_SECONDS
+                    ):
+                        raise TimeoutError("contender did not attempt the asset lock")
+                    if not release_holder.wait(
+                        timeout=_RACE_COORDINATION_TIMEOUT_SECONDS
+                    ):
+                        raise TimeoutError("controller did not release the asset-lock holder")
+                    return cursor
+
+                if not holder_has_lock.wait(
+                    timeout=_RACE_COORDINATION_TIMEOUT_SECONDS
+                ):
+                    raise TimeoutError("holder did not acquire the asset lock")
+                contender_attempting_lock.set()
+                cursor = self.connection.execute(query, params, **kwargs)
+                contender_returned_from_lock.set()
+                return cursor
+
+        def lock_controlled_factory(database_url: str):
+            nonlocal next_connection_index
+            with factory_lock:
+                index = next_connection_index
+                next_connection_index += 1
+            assert index < 2, "race must open exactly two instrumented connections"
+            return LockControlledConnection(
+                psycopg.connect(
+                    database_url,
+                    row_factory=dict_row,
+                    connect_timeout=30,
+                ),
+                index,
+            )
+
+        racing_repository = PostgresHistoricalRepositoryV1(
+            postgres_test_target.database_url,
+            connection_factory=lock_controlled_factory,
+        )
+
+        def activate(candidate):
+            try:
+                return racing_repository.activate_batch(
+                    asset_id=candidate.asset_id,
+                    batch_id=candidate.batch_id,
+                    expected_active_batch_id=None,
+                )
+            except HistoricalBatchConflict:
+                return None
+
+        def wait_for_event_or_worker_failure(
+            event: Event,
+            futures,
+            label: str,
+        ) -> None:
+            deadline = monotonic() + _RACE_COORDINATION_TIMEOUT_SECONDS
+            while True:
+                remaining = deadline - monotonic()
+                if remaining <= 0:
+                    pytest.fail(f"timed out waiting for {label}")
+                if event.wait(timeout=min(0.1, remaining)):
+                    return
+                for future in futures:
+                    if not future.done():
+                        continue
+                    exception = future.exception()
+                    if exception is not None:
+                        raise AssertionError(
+                            f"race worker failed before {label}"
+                        ) from exception
+                    raise AssertionError(f"race worker completed before {label}")
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            futures = [pool.submit(activate, candidate) for candidate in candidates]
+            try:
+                wait_for_event_or_worker_failure(
+                    holder_has_lock,
+                    futures,
+                    "holder asset-lock acquisition",
+                )
+                wait_for_event_or_worker_failure(
+                    contender_attempting_lock,
+                    futures,
+                    "contender asset-lock attempt",
+                )
+                assert (
+                    contender_returned_from_lock.wait(
+                        timeout=_RACE_BLOCKED_OBSERVATION_SECONDS
+                    )
+                    is False
+                )
+            finally:
+                release_holder.set()
+            results = [
+                future.result(timeout=_RACE_COORDINATION_TIMEOUT_SECONDS)
+                for future in futures
+            ]
 
         assert sum(result is not None and result.activated for result in results) == 1
+        assert sum(result is None for result in results) == 1
+        assert contender_returned_from_lock.is_set()
+        active = historical_repository.active_batch("forzy-motor-01")
+        assert active is not None
+        assert active.batch_id == next(
+            result.batch_id for result in results if result is not None
+        )
         assert repository_control.count_active("forzy-motor-01") == 1
