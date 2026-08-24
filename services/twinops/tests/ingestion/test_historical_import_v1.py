@@ -16,8 +16,11 @@ _IMPORT_MODULE = "twinops.ingestion.historical_import_v1"
 _IMPORTER_AVAILABLE = find_spec(_PROFILE_MODULE) is not None and find_spec(_IMPORT_MODULE) is not None
 
 if _IMPORTER_AVAILABLE:
-    from twinops.ingestion.historical_import_v1 import prepare_historical_batch
-    from twinops.ingestion.history_profiles_v1 import HistoryProfileV1
+    from twinops.ingestion.historical_import_v1 import (
+        _prepare_historical_batch_for_profile,
+        prepare_historical_batch,
+    )
+    from twinops.ingestion.history_profiles_v1 import HistoryProfileV1, registered_profile
 
 
 pytestmark = pytest.mark.skipif(
@@ -79,7 +82,7 @@ def _profile(
 
 
 def _prepare(source_bytes: bytes, profile: HistoryProfileV1 | None = None):
-    return prepare_historical_batch(
+    return _prepare_historical_batch_for_profile(
         source_bytes,
         profile=profile or _profile(source_bytes),
         asset_id="forzy-motor-01",
@@ -90,6 +93,34 @@ def _prepare(source_bytes: bytes, profile: HistoryProfileV1 | None = None):
 def _replace_row(source_bytes: bytes, old: bytes, new: bytes) -> bytes:
     assert old in source_bytes
     return source_bytes.replace(old, new, 1)
+
+
+def test_public_preparation_requires_the_exact_registered_profile_before_parsing() -> None:
+    source_bytes = _source()
+    custom_profile = _profile(source_bytes)
+
+    with pytest.raises(ValueError, match="exact registered profile"):
+        prepare_historical_batch(
+            b"\xef\xbb\xbfnot-a-csv",
+            profile=custom_profile,
+            asset_id="forzy-motor-01",
+            ingested_at=INGESTED_AT,
+        )
+    with pytest.raises(ValueError, match="exact registered profile"):
+        prepare_historical_batch(
+            source_bytes,
+            profile=custom_profile,
+            asset_id="forzy-motor-01",
+            ingested_at=INGESTED_AT,
+        )
+
+    with pytest.raises(ValueError, match="BOM"):
+        prepare_historical_batch(
+            b"\xef\xbb\xbfnot-a-csv",
+            profile=registered_profile("forzy-history-2026-05-19-v1"),
+            asset_id="forzy-motor-01",
+            ingested_at=INGESTED_AT,
+        )
 
 
 def test_preparation_preserves_exact_rows_and_builds_two_ordered_samples_per_row() -> None:
@@ -169,6 +200,47 @@ def test_timestamps_are_strictly_assumed_in_sao_paulo_and_persisted_as_utc() -> 
     assert {sample.reading.provenance.ingested_at for sample in first_pair} == {
         INGESTED_AT
     }
+
+
+@pytest.mark.parametrize(
+    ("timestamp", "message"),
+    [
+        ("2018-02-17T23:30:00.000", "ambiguous"),
+        ("2018-11-04T00:30:00.000", "nonexistent"),
+    ],
+)
+def test_sao_paulo_dst_transition_wall_times_fail_closed(
+    timestamp: str, message: str
+) -> None:
+    row = VALID_ROWS[0].replace("2026-05-19T11:46:10.921", timestamp)
+    source_bytes = _source((row,))
+
+    with pytest.raises(ValueError, match=message):
+        _prepare(
+            source_bytes,
+            _profile(source_bytes, operating_cycle_count=1),
+        )
+
+
+def test_sao_paulo_normal_historical_wall_time_resolves_to_one_utc_instant() -> None:
+    timestamp = "2018-05-19T11:46:10.921"
+    row = VALID_ROWS[0].replace("2026-05-19T11:46:10.921", timestamp)
+    source_bytes = _source((row,))
+
+    prepared = _prepare(
+        source_bytes,
+        _profile(source_bytes, operating_cycle_count=1),
+    )
+
+    assert {sample.reading.event_at for sample in prepared.samples} == {
+        datetime(2018, 5, 19, 14, 46, 10, 921_000, tzinfo=timezone.utc)
+    }
+    assert {sample.reading.source_timestamp_text for sample in prepared.samples} == {
+        timestamp
+    }
+    assert {
+        sample.reading.model_dump_public()["eventAt"] for sample in prepared.samples
+    } == {"2018-05-19T14:46:10.921Z"}
 
 
 def test_pair_level_cycle_segmentation_is_strictly_greater_than_fifteen_seconds() -> None:
@@ -389,21 +461,21 @@ def test_asset_and_ingestion_timestamp_are_strict() -> None:
     profile = _profile(source_bytes)
 
     with pytest.raises(ValueError, match="asset"):
-        prepare_historical_batch(
+        _prepare_historical_batch_for_profile(
             source_bytes,
             profile=profile,
             asset_id="another-asset",
             ingested_at=INGESTED_AT,
         )
     with pytest.raises(ValueError, match="timezone-aware"):
-        prepare_historical_batch(
+        _prepare_historical_batch_for_profile(
             source_bytes,
             profile=profile,
             asset_id="forzy-motor-01",
             ingested_at=INGESTED_AT.replace(tzinfo=None),
         )
     with pytest.raises(ValueError, match="millisecond"):
-        prepare_historical_batch(
+        _prepare_historical_batch_for_profile(
             source_bytes,
             profile=profile,
             asset_id="forzy-motor-01",

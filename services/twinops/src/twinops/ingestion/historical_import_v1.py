@@ -21,6 +21,8 @@ from twinops.ingestion.history_profiles_v1 import (
 )
 
 
+__all__ = ("prepare_historical_batch",)
+
 _SHA256_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 _SOURCE_TIMESTAMP_RE = re.compile(
     r"^\d{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01])"
@@ -144,7 +146,22 @@ def _parse_source_timestamp(value: str, timezone_name: str) -> datetime:
         local = datetime.strptime(value, "%Y-%m-%dT%H:%M:%S.%f")
     except ValueError as exc:
         raise ValueError(f"invalid source timestamp: {value!r}") from exc
-    return local.replace(tzinfo=ZoneInfo(timezone_name)).astimezone(timezone.utc)
+
+    local_zone = ZoneInfo(timezone_name)
+    valid_utc_instants: set[datetime] = set()
+    for fold in (0, 1):
+        candidate = local.replace(tzinfo=local_zone, fold=fold)
+        candidate_utc = candidate.astimezone(timezone.utc)
+        round_trip_local = candidate_utc.astimezone(local_zone).replace(tzinfo=None)
+        if round_trip_local == local:
+            valid_utc_instants.add(candidate_utc)
+    if not valid_utc_instants:
+        raise ValueError(
+            f"nonexistent source timestamp in {timezone_name}: {value!r}"
+        )
+    if len(valid_utc_instants) != 1:
+        raise ValueError(f"ambiguous source timestamp in {timezone_name}: {value!r}")
+    return next(iter(valid_utc_instants))
 
 
 def _finite_measurement(value: str, *, source_line_number: int) -> float:
@@ -190,7 +207,28 @@ def prepare_historical_batch(
     asset_id: str,
     ingested_at: datetime,
 ) -> PreparedHistoricalBatchV1:
-    """Validate and deterministically prepare one immutable historical batch."""
+    """Prepare bytes only under the exact audited public registration."""
+
+    if profile != _EXPECTED_PROFILE:
+        raise ValueError(
+            "public historical preparation requires the exact registered profile"
+        )
+    return _prepare_historical_batch_for_profile(
+        source_bytes,
+        profile=profile,
+        asset_id=asset_id,
+        ingested_at=ingested_at,
+    )
+
+
+def _prepare_historical_batch_for_profile(
+    source_bytes: bytes,
+    *,
+    profile: HistoryProfileV1,
+    asset_id: str,
+    ingested_at: datetime,
+) -> PreparedHistoricalBatchV1:
+    """Private byte-contract seam that also validates synthetic test profiles."""
 
     _validate_profile(profile)
     if asset_id != _EXPECTED_ASSET_ID:
