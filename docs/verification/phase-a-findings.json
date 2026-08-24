@@ -1,0 +1,34 @@
+{
+  "schemaVersion": "finding-review-v1",
+  "plan": "A",
+  "reviewedSha": "fd2440cef6b76a12700deeac2bb17edb23576be1",
+  "verdict": {
+    "critical": 0,
+    "important": 0,
+    "minor": 2
+  },
+  "findings": [
+    {
+      "findingId": "A-M-001",
+      "severity": "minor",
+      "status": "open",
+      "title": "Duplicated cross-runtime invariant engines",
+      "evidenceRefs": [
+        "services/twinops/src/twinops/contracts/timeline_v1_models.py",
+        "src/contracts/timelineV1.js"
+      ],
+      "resolvedSha": null
+    },
+    {
+      "findingId": "A-M-002",
+      "severity": "minor",
+      "status": "open",
+      "title": "Native POSIX security execution remains unverified",
+      "evidenceRefs": [
+        "services/twinops/src/twinops/security/local_write_guard_v1.py",
+        "services/twinops/tests/security/test_local_write_guard_v1.py"
+      ],
+      "resolvedSha": null
+    }
+  ]
+}

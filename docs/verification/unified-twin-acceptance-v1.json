@@ -65,12 +65,14 @@
         "database"
       ],
       "criterionId": "AC-06",
-      "evidenceKind": null,
-      "evidenceRefs": [],
+      "evidenceKind": "database",
+      "evidenceRefs": [
+        "docs/verification/phase-a-findings.json"
+      ],
       "gate": "database",
       "ownerPlan": "A",
-      "status": "pending",
-      "verifiedCodeCommit": null
+      "status": "passed",
+      "verifiedCodeCommit": "fd2440cef6b76a12700deeac2bb17edb23576be1"
     },
     {
       "allowedEvidenceKinds": [
@@ -338,6 +340,32 @@
     }
   ],
   "findings": {
+    "A-M-001": {
+      "evidenceRefs": [
+        "services/twinops/src/twinops/contracts/timeline_v1_models.py",
+        "src/contracts/timelineV1.js"
+      ],
+      "findingId": "A-M-001",
+      "introducedSha": "fd2440cef6b76a12700deeac2bb17edb23576be1",
+      "plan": "A",
+      "resolvedSha": null,
+      "severity": "minor",
+      "status": "open",
+      "title": "Duplicated cross-runtime invariant engines"
+    },
+    "A-M-002": {
+      "evidenceRefs": [
+        "services/twinops/src/twinops/security/local_write_guard_v1.py",
+        "services/twinops/tests/security/test_local_write_guard_v1.py"
+      ],
+      "findingId": "A-M-002",
+      "introducedSha": "fd2440cef6b76a12700deeac2bb17edb23576be1",
+      "plan": "A",
+      "resolvedSha": null,
+      "severity": "minor",
+      "status": "open",
+      "title": "Native POSIX security execution remains unverified"
+    },
     "E1-C-001": {
       "evidenceRefs": [
         "scripts/verify_unified_acceptance.py:291-298",
@@ -460,11 +488,23 @@
   },
   "plans": {
     "A": {
-      "evidenceRefs": [],
-      "findingIds": [],
-      "reviewVerdict": null,
-      "status": "pending",
-      "verifiedCodeCommit": null
+      "evidenceRefs": [
+        "services/twinops/src/twinops/contracts/timeline_v1_models.py",
+        "src/contracts/timelineV1.js",
+        "services/twinops/src/twinops/security/local_write_guard_v1.py",
+        "services/twinops/tests/security/test_local_write_guard_v1.py"
+      ],
+      "findingIds": [
+        "A-M-001",
+        "A-M-002"
+      ],
+      "reviewVerdict": {
+        "critical": 0,
+        "important": 0,
+        "minor": 2
+      },
+      "status": "passed",
+      "verifiedCodeCommit": "fd2440cef6b76a12700deeac2bb17edb23576be1"
     },
     "B": {
       "evidenceRefs": [],

@@ -7,7 +7,7 @@
 
 | Plan | Status | Verified code commit | Review verdict |
 | --- | --- | --- | --- |
-| A | pending | pending | pending |
+| A | passed | fd2440cef6b76a12700deeac2bb17edb23576be1 | 0/0/2 |
 | B | pending | pending | pending |
 | C | pending | pending | pending |
 | D | pending | pending | pending |
@@ -22,7 +22,7 @@
 | AC-03 | C | local | automated | pending | pending |
 | AC-04 | C | local | automated | pending | pending |
 | AC-05 | C | local | automated | pending | pending |
-| AC-06 | A | database | database | pending | pending |
+| AC-06 | A | database | database | passed | docs/verification/phase-a-findings.json |
 | AC-07 | C | local | automated | pending | pending |
 | AC-08 | D | local | automated | pending | pending |
 | AC-09 | D | local | automated | pending | pending |
@@ -50,6 +50,8 @@
 
 | ID | Plan | Severity | Status | Introduced SHA | Resolved SHA |
 | --- | --- | --- | --- | --- | --- |
+| A-M-001 | A | minor | open | fd2440cef6b76a12700deeac2bb17edb23576be1 | pending |
+| A-M-002 | A | minor | open | fd2440cef6b76a12700deeac2bb17edb23576be1 | pending |
 | E1-C-001 | E | critical | fixed | 3720634d74dc3ec0364674a722a6bcdfd6a6657d | a57ff73ef5ad53307d8b852a7072333ded570f56 |
 | E1-I-001 | E | important | fixed | 3720634d74dc3ec0364674a722a6bcdfd6a6657d | a57ff73ef5ad53307d8b852a7072333ded570f56 |
 | E1-I-002 | E | important | fixed | 3720634d74dc3ec0364674a722a6bcdfd6a6657d | a57ff73ef5ad53307d8b852a7072333ded570f56 |
