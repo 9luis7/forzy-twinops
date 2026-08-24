@@ -43,6 +43,7 @@ class _SuccessfulConnection:
             self.migrations["003"] = specs[1].postgres_sha256
         self.policy = None
         self.identity = None
+        self.identity_table_exists = current_version == "003"
         self.migration_003 = MIGRATION_003.read_text(encoding="utf-8")
         if current_version == "003":
             self._store_policy(EFFECTIVE_FROM)
@@ -83,6 +84,11 @@ class _SuccessfulConnection:
         normalized = " ".join(query.split())
         if normalized.startswith("SELECT current_database()"):
             return _Rows([(DATABASE_NAME, SCHEMA_NAME)])
+        if "to_regclass('public.deployment_identity_v1')" in normalized:
+            relation = (
+                "deployment_identity_v1" if self.identity_table_exists else None
+            )
+            return _Rows([{"relation": relation}])
         if "to_regclass('public.schema_migrations_v1')" in normalized:
             return _Rows([{"relation": "schema_migrations_v1"}])
         if normalized.startswith("SELECT migration_version, sql_sha256"):
@@ -96,6 +102,7 @@ class _SuccessfulConnection:
         if "pg_advisory_xact_lock" in normalized:
             return _Rows()
         if query == self.migration_003:
+            self.identity_table_exists = True
             return _Rows()
         if normalized.startswith("CREATE TABLE IF NOT EXISTS schema_migrations_v1"):
             return _Rows()
@@ -133,6 +140,7 @@ class _SuccessfulConnection:
         if normalized.startswith("SELECT environment,label,target_fingerprint"):
             return _Rows([self.identity] if self.identity else [])
         if normalized.startswith("INSERT INTO deployment_identity_v1"):
+            self.identity_table_exists = True
             self.identity = {
                 "environment": params[1],
                 "label": params[2],
@@ -254,6 +262,51 @@ def test_target_fingerprint_and_current_version_fail_before_ddl(capsys):
     assert DATABASE_URL not in second_capture.err
 
 
+def test_expected_002_rejects_partial_identity_before_ddl_or_migration_write(
+    capsys,
+):
+    specs = check_postgres.registered_migration_specs()
+    connection = _SuccessfulConnection(specs)
+    connection.identity_table_exists = True
+    connection.identity = None
+
+    result = check_postgres.main(
+        _args(expected_current_version="002"),
+        env=_env(),
+        connect=lambda dsn: connection,
+    )
+
+    captured = capsys.readouterr()
+    normalized_queries = [
+        " ".join(query.split()) for query, _, _ in connection.calls
+    ]
+    assert result == 1
+    assert not any(query == connection.migration_003 for query, _, _ in connection.calls)
+    assert not any(
+        query.startswith("INSERT INTO schema_migrations_v1")
+        for query in normalized_queries
+    )
+    assert not any(
+        query.startswith("CREATE TABLE IF NOT EXISTS schema_migrations_v1")
+        for query in normalized_queries
+    )
+    assert captured.out == ""
+    assert captured.err.strip() == (
+        "postgres_check_failed error_type=PostgresCheckError "
+        "stage=target_identity"
+    )
+    for sensitive in (
+        DATABASE_URL,
+        PROJECT_ID,
+        BRANCH_ID,
+        DATABASE_NAME,
+        SCHEMA_NAME,
+        str(MIGRATION_002),
+        str(MIGRATION_003),
+    ):
+        assert sensitive not in captured.err
+
+
 def test_check_postgres_applies_exact_migration_after_preflight_and_reports_safe_facts(
     capsys,
 ):
@@ -325,7 +378,11 @@ def test_current_003_retry_is_noop_and_retains_policy_effective_from(capsys):
     assert result == 0
     assert connection.policy == before_policy
     assert not any(query == connection.migration_003 for query, _, _ in connection.calls)
-    assert not any("pg_advisory_xact_lock" in query for query, _, _ in connection.calls)
+    normalized_queries = [
+        " ".join(query.split()) for query, _, _ in connection.calls
+    ]
+    assert "SELECT pg_advisory_xact_lock(%s)" not in normalized_queries
+    assert any("hashtextextended" in query for query in normalized_queries)
     assert capsys.readouterr().err == ""
 
 

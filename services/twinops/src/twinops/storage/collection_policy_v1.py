@@ -33,6 +33,9 @@ _POLICY_COLUMNS = (
     "configuration_hash",
 )
 _POLICY_SELECT = ",".join(_POLICY_COLUMNS)
+_POSTGRES_POLICY_ASSET_LOCK_SQL = (
+    "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))"
+)
 
 
 @dataclass(frozen=True)
@@ -152,8 +155,15 @@ def _intervals_overlap(
     return left_before_right_end and right_before_left_end
 
 
-def insert_collection_policy(connection, policy: CollectionPolicyV1) -> bool:
-    validated = CollectionPolicyV1.model_validate(policy.model_dump_public())
+def _acquire_policy_asset_lock(connection, asset_id: str) -> None:
+    if not _is_sqlite(connection):
+        connection.execute(_POSTGRES_POLICY_ASSET_LOCK_SQL, (asset_id,))
+
+
+def _insert_validated_collection_policy(
+    connection,
+    validated: CollectionPolicyV1,
+) -> bool:
     existing = read_collection_policy(connection, validated.collection_policy_id)
     if existing is not None:
         if existing.model_dump_public() == validated.model_dump_public():
@@ -186,32 +196,29 @@ def insert_collection_policy(connection, policy: CollectionPolicyV1) -> bool:
     return True
 
 
+def insert_collection_policy(connection, policy: CollectionPolicyV1) -> bool:
+    validated = CollectionPolicyV1.model_validate(policy.model_dump_public())
+    _acquire_policy_asset_lock(connection, validated.asset_id)
+    return _insert_validated_collection_policy(connection, validated)
+
+
 def ensure_initial_collection_policy(
     connection,
     *,
     effective_from: datetime,
 ) -> CollectionPolicySeedResultV1:
     expected = initial_collection_policy(effective_from)
-    existing = read_collection_policy(connection, INITIAL_COLLECTION_POLICY_ID)
-    if existing is not None:
-        if existing.model_dump_public() != expected.model_dump_public():
-            raise ValueError("initial collection policy conflict")
-        return CollectionPolicySeedResultV1(
-            policy=existing,
-            inserted=False,
-            writes_performed=0,
-        )
-
-    inserted = insert_collection_policy(connection, expected)
+    _acquire_policy_asset_lock(connection, expected.asset_id)
+    inserted = _insert_validated_collection_policy(connection, expected)
     stored = read_collection_policy(connection, INITIAL_COLLECTION_POLICY_ID)
-    if not inserted or stored is None:
+    if stored is None:
         raise RuntimeError("initial collection policy insert was not observable")
     if stored.model_dump_public() != expected.model_dump_public():
         raise ValueError("initial collection policy reread conflict")
     return CollectionPolicySeedResultV1(
         policy=stored,
-        inserted=True,
-        writes_performed=1,
+        inserted=inserted,
+        writes_performed=1 if inserted else 0,
     )
 
 

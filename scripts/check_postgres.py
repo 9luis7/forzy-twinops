@@ -173,6 +173,39 @@ def _preflight_schema_version(connection, expected_version: str) -> None:
     raise PostgresCheckError("schema_version")
 
 
+def _deployment_identity_table_exists(connection) -> bool:
+    row = connection.execute(
+        "SELECT to_regclass('public.deployment_identity_v1') AS relation"
+    ).fetchone()
+    if row is None:
+        raise PostgresCheckError("target_identity")
+    relation = row["relation"] if isinstance(row, Mapping) else row[0]
+    return relation is not None
+
+
+def _preflight_deployment_identity(connection, args, fingerprint: str):
+    expected = DeploymentIdentityV1(
+        environment=args.environment,
+        label=args.expected_target_label,
+        target_fingerprint=fingerprint,
+        schema_version="003",
+    )
+    table_exists = _deployment_identity_table_exists(connection)
+    if args.expected_current_version == "002":
+        if table_exists:
+            raise PostgresCheckError("target_identity")
+        return expected
+    if not table_exists:
+        raise PostgresCheckError("target_identity")
+    try:
+        existing = read_deployment_identity(connection)
+    except Exception as exc:
+        raise PostgresCheckError("target_identity") from exc
+    if existing != expected:
+        raise PostgresCheckError("target_identity")
+    return expected
+
+
 def _catalog_names(connection, *, kind: str, expected: frozenset[str]) -> set[str]:
     if kind == "tables":
         query = (
@@ -204,27 +237,12 @@ def _verify_database(
         if fingerprint != args.expected_target_fingerprint:
             raise PostgresCheckError("target_identity")
         _preflight_schema_version(connection, args.expected_current_version)
-        if args.expected_current_version == "003":
-            existing_identity = read_deployment_identity(connection)
-            expected_identity = DeploymentIdentityV1(
-                environment=args.environment,
-                label=args.expected_target_label,
-                target_fingerprint=fingerprint,
-                schema_version="003",
-            )
-            if existing_identity != expected_identity:
-                raise PostgresCheckError("target_identity")
+        identity = _preflight_deployment_identity(connection, args, fingerprint)
 
         apply_postgres_migrations(
             connection,
             specs,
             initial_policy_effective_from=args.initial_policy_effective_from,
-        )
-        identity = DeploymentIdentityV1(
-            environment=args.environment,
-            label=args.expected_target_label,
-            target_fingerprint=fingerprint,
-            schema_version="003",
         )
         ensure_deployment_identity(connection, identity)
         if read_deployment_identity(connection) != identity:

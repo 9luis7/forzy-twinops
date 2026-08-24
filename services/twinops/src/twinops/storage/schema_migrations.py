@@ -27,6 +27,15 @@ _MIGRATION_003_SQLITE = (
 _MIGRATION_003_POSTGRES = (
     _MIGRATIONS_DIR / "003_unified_history_timeline_postgres.sql"
 )
+_MIGRATION_002_SHA256 = (
+    "sha256:79506e293ca563e907d453ee0ae3a36779b9a23be0550eb84320900ddbab93d9"
+)
+_MIGRATION_003_SQLITE_SHA256 = (
+    "sha256:55971c74d02b815cb4713a7b8052850a20708fb190d56bd4486a5066dde22c69"
+)
+_MIGRATION_003_POSTGRES_SHA256 = (
+    "sha256:87baa67ae5f2396f49a70e9b3c348cb84a235dcc103991d394894bd86da9e173"
+)
 _SHA256_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 _VERSION_RE = re.compile(r"^[0-9]{3}$")
 _V2_TABLES = frozenset(
@@ -154,27 +163,38 @@ class DeploymentIdentityV1:
     schema_version: str
 
 
-def _sha256(path: Path) -> str:
-    return "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
-
-
 def registered_migration_specs() -> tuple[MigrationSpec, ...]:
     return (
         MigrationSpec(
             version="002",
             sqlite_path=_MIGRATION_002,
             postgres_path=_MIGRATION_002,
-            sqlite_sha256=_sha256(_MIGRATION_002),
-            postgres_sha256=_sha256(_MIGRATION_002),
+            sqlite_sha256=_MIGRATION_002_SHA256,
+            postgres_sha256=_MIGRATION_002_SHA256,
         ),
         MigrationSpec(
             version="003",
             sqlite_path=_MIGRATION_003_SQLITE,
             postgres_path=_MIGRATION_003_POSTGRES,
-            sqlite_sha256=_sha256(_MIGRATION_003_SQLITE),
-            postgres_sha256=_sha256(_MIGRATION_003_POSTGRES),
+            sqlite_sha256=_MIGRATION_003_SQLITE_SHA256,
+            postgres_sha256=_MIGRATION_003_POSTGRES_SHA256,
         ),
     )
+
+
+def _canonical_sql(path: Path) -> tuple[bytes, str]:
+    sql_bytes = path.read_bytes()
+    try:
+        sql = sql_bytes.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise MigrationStateError("migration SQL is not strict UTF-8") from exc
+    if sql.startswith("\ufeff"):
+        raise MigrationStateError("migration SQL must not contain a BOM")
+    without_crlf = sql.replace("\r\n", "")
+    if "\r" in without_crlf:
+        raise MigrationStateError("migration SQL contains a lone carriage return")
+    canonical_sql = sql.replace("\r\n", "\n")
+    return canonical_sql.encode("utf-8"), canonical_sql
 
 
 def _validate_specs(
@@ -192,18 +212,12 @@ def _validate_specs(
         expected_hash = (
             spec.sqlite_sha256 if dialect == "sqlite" else spec.postgres_sha256
         )
-        sql_bytes = path.read_bytes()
-        actual_hash = "sha256:" + hashlib.sha256(sql_bytes).hexdigest()
+        canonical_bytes, sql = _canonical_sql(path)
+        actual_hash = "sha256:" + hashlib.sha256(canonical_bytes).hexdigest()
         if actual_hash != expected_hash:
             raise MigrationStateError(
                 f"migration {spec.version} checked-in SQL hash mismatch"
             )
-        try:
-            sql = sql_bytes.decode("utf-8")
-        except UnicodeDecodeError as exc:
-            raise MigrationStateError("migration SQL is not strict UTF-8") from exc
-        if sql.startswith("\ufeff"):
-            raise MigrationStateError("migration SQL must not contain a BOM")
         loaded.append((spec, expected_hash, sql))
     return loaded
 

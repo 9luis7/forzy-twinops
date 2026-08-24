@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+from dataclasses import replace
 from pathlib import Path
 import sqlite3
 
@@ -81,6 +82,90 @@ def _apply_sqlite(connection: sqlite3.Connection):
         initial_policy_effective_from=INITIAL_EFFECTIVE_FROM,
     )
     return migrations
+
+
+@requires_surface
+def test_registered_migration_hashes_are_literal_git_canonical_pins():
+    specs = _migration_api().registered_migration_specs()
+
+    assert [
+        (
+            spec.version,
+            spec.sqlite_sha256,
+            spec.postgres_sha256,
+        )
+        for spec in specs
+    ] == [
+        (
+            "002",
+            "sha256:79506e293ca563e907d453ee0ae3a367"
+            "79b9a23be0550eb84320900ddbab93d9",
+            "sha256:79506e293ca563e907d453ee0ae3a367"
+            "79b9a23be0550eb84320900ddbab93d9",
+        ),
+        (
+            "003",
+            "sha256:55971c74d02b815cb4713a7b8052850"
+            "a20708fb190d56bd4486a5066dde22c69",
+            "sha256:87baa67ae5f2396f49a70e9b3c348cb"
+            "84a235dcc103991d394894bd86da9e173",
+        ),
+    ]
+
+
+@requires_surface
+def test_sqlite_migration_hashes_accept_git_equivalent_crlf_checkout(
+    connection,
+    tmp_path,
+):
+    migrations = _migration_api()
+    registered = migrations.registered_migration_specs()
+    crlf_paths = []
+    for source in (MIGRATION_002, SQLITE_MIGRATION):
+        canonical = source.read_bytes().replace(b"\r\n", b"\n")
+        assert b"\r" not in canonical
+        destination = tmp_path / source.name
+        destination.write_bytes(canonical.replace(b"\n", b"\r\n"))
+        crlf_paths.append(destination)
+    portable_specs = (
+        replace(registered[0], sqlite_path=crlf_paths[0]),
+        replace(registered[1], sqlite_path=crlf_paths[1]),
+    )
+
+    migrations.apply_sqlite_migrations(
+        connection,
+        portable_specs,
+        initial_policy_effective_from=INITIAL_EFFECTIVE_FROM,
+    )
+
+    assert migrations.verify_schema_version(connection, "003").is_current is True
+
+
+@requires_surface
+def test_content_tampering_cannot_become_the_registered_hash_or_write_database(
+    connection,
+    monkeypatch,
+    tmp_path,
+):
+    migrations = _migration_api()
+    tampered = tmp_path / SQLITE_MIGRATION.name
+    canonical = SQLITE_MIGRATION.read_bytes().replace(b"\r\n", b"\n")
+    tampered.write_bytes(
+        canonical + b"\nCREATE TABLE controller_tampering_was_executed (id INTEGER);\n"
+    )
+    monkeypatch.setattr(migrations, "_MIGRATION_003_SQLITE", tampered)
+    statements = []
+    connection.set_trace_callback(statements.append)
+
+    with pytest.raises(migrations.MigrationStateError, match="hash mismatch"):
+        migrations.apply_sqlite_migrations(
+            connection,
+            migrations.registered_migration_specs(),
+            initial_policy_effective_from=INITIAL_EFFECTIVE_FROM,
+        )
+
+    assert statements == []
+    assert connection.total_changes == 0
 
 
 @requires_surface

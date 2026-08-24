@@ -3,6 +3,7 @@ import hashlib
 import json
 from pathlib import Path
 import sqlite3
+import threading
 
 import pytest
 
@@ -116,6 +117,228 @@ def _insert_raw(connection: sqlite3.Connection, policy) -> None:
             body["configurationHash"],
         ),
     )
+
+
+class _PolicyRows:
+    def __init__(self, rows=()):
+        self._rows = list(rows)
+
+    def fetchone(self):
+        return self._rows[0] if self._rows else None
+
+    def fetchall(self):
+        return list(self._rows)
+
+
+_POLICY_ROW_COLUMNS = (
+    "schema_version",
+    "policy_id",
+    "asset_id",
+    "timezone_name",
+    "active_weekdays_json",
+    "window_start_local",
+    "window_end_local",
+    "poll_interval_seconds",
+    "gap_threshold_seconds",
+    "effective_from",
+    "effective_to",
+    "configuration_hash",
+)
+
+
+class _SharedPostgresPolicies:
+    def __init__(self, *, coordinate_unlocked_reads=False):
+        self.rows = {}
+        self.writes = 0
+        self.events = []
+        self.state_lock = threading.Lock()
+        self.asset_lock = threading.Lock()
+        self.first_query_seen = threading.Event()
+        self.unlocked_read_barrier = (
+            threading.Barrier(2) if coordinate_unlocked_reads else None
+        )
+
+
+class _PostgresPolicyConnection:
+    def __init__(self, shared, name):
+        self.shared = shared
+        self.name = name
+        self.calls = []
+        self.holds_asset_lock = False
+        self.first_policy_id_read = True
+
+    def execute(self, query, params=None, **kwargs):
+        normalized = " ".join(query.split())
+        self.calls.append((normalized, params, kwargs))
+        if "pg_advisory_xact_lock" in normalized:
+            if not self.shared.asset_lock.acquire(timeout=5):
+                raise RuntimeError("test policy lock timeout")
+            self.holds_asset_lock = True
+            self.shared.events.append((self.name, "lock"))
+            if self.name == "first":
+                self.shared.first_query_seen.set()
+            return _PolicyRows()
+        if self.name == "first":
+            self.shared.first_query_seen.set()
+        if normalized.startswith("SELECT schema_version,policy_id"):
+            if "WHERE policy_id=" in normalized:
+                with self.shared.state_lock:
+                    snapshot = self.shared.rows.get(params[0])
+                    snapshot = dict(snapshot) if snapshot is not None else None
+                if (
+                    self.shared.unlocked_read_barrier is not None
+                    and not self.holds_asset_lock
+                    and self.first_policy_id_read
+                ):
+                    self.first_policy_id_read = False
+                    self.shared.unlocked_read_barrier.wait(timeout=5)
+                self.shared.events.append((self.name, "read_id"))
+                return _PolicyRows([snapshot] if snapshot is not None else [])
+            with self.shared.state_lock:
+                rows = [
+                    dict(row)
+                    for row in self.shared.rows.values()
+                    if row["asset_id"] == params[0]
+                ]
+            self.shared.events.append((self.name, "read_asset"))
+            return _PolicyRows(rows)
+        if normalized.startswith("INSERT INTO collection_policies_v1"):
+            row = dict(zip(_POLICY_ROW_COLUMNS, params, strict=True))
+            with self.shared.state_lock:
+                self.shared.rows[row["policy_id"]] = row
+                self.shared.writes += 1
+            self.shared.events.append((self.name, "insert"))
+            return _PolicyRows()
+        raise AssertionError(f"unexpected policy query: {query}")
+
+    def end_transaction(self):
+        if self.holds_asset_lock:
+            self.shared.events.append((self.name, "release"))
+            self.holds_asset_lock = False
+            self.shared.asset_lock.release()
+
+
+def _run_two_policy_transactions(shared, first_operation, second_operation):
+    outcomes = [None, None]
+    failures = [None, None]
+    first_complete = threading.Event()
+    second_complete = threading.Event()
+    allow_first_release = threading.Event()
+
+    def invoke(index, name, operation):
+        connection = _PostgresPolicyConnection(shared, name)
+        try:
+            outcomes[index] = operation(connection)
+        except Exception as exc:  # asserted by each test
+            failures[index] = exc
+        finally:
+            if index == 0:
+                first_complete.set()
+                allow_first_release.wait(timeout=5)
+            else:
+                second_complete.set()
+            connection.end_transaction()
+
+    first = threading.Thread(target=invoke, args=(0, "first", first_operation))
+    second = threading.Thread(target=invoke, args=(1, "second", second_operation))
+    first.start()
+    assert shared.first_query_seen.wait(timeout=5)
+    second.start()
+    assert first_complete.wait(timeout=5)
+    second_was_blocked = not second_complete.is_set()
+    allow_first_release.set()
+    first.join(timeout=5)
+    second.join(timeout=5)
+    assert first.is_alive() is False
+    assert second.is_alive() is False
+    return outcomes, failures, second_was_blocked
+
+
+def test_postgres_policy_insert_locks_asset_before_first_decision_read():
+    from twinops.storage.collection_policy_v1 import insert_collection_policy
+
+    shared = _SharedPostgresPolicies()
+    connection = _PostgresPolicyConnection(shared, "single")
+    policy = _policy(
+        policy_id="serialized-policy-v1",
+        effective_from=INITIAL_EFFECTIVE_FROM,
+        effective_to=None,
+    )
+    try:
+        inserted = insert_collection_policy(connection, policy)
+    finally:
+        connection.end_transaction()
+
+    assert inserted is True
+    assert connection.calls[0] == (
+        "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
+        ("forzy-motor-01",),
+        {},
+    )
+    assert [event for _, event in shared.events[:3]] == [
+        "lock",
+        "read_id",
+        "read_asset",
+    ]
+
+
+def test_postgres_concurrent_initial_policy_retry_waits_and_returns_exact_noop():
+    from twinops.storage.collection_policy_v1 import ensure_initial_collection_policy
+
+    shared = _SharedPostgresPolicies(coordinate_unlocked_reads=True)
+    operation = lambda connection: ensure_initial_collection_policy(
+        connection,
+        effective_from=INITIAL_EFFECTIVE_FROM,
+    )
+
+    outcomes, failures, second_was_blocked = _run_two_policy_transactions(
+        shared,
+        operation,
+        operation,
+    )
+
+    assert failures == [None, None]
+    assert second_was_blocked is True
+    assert [(result.inserted, result.writes_performed) for result in outcomes] == [
+        (True, 1),
+        (False, 0),
+    ]
+    assert shared.writes == 1
+    assert shared.events.index(("first", "release")) < shared.events.index(
+        ("second", "lock")
+    )
+    assert shared.events.index(("second", "lock")) < shared.events.index(
+        ("second", "read_id")
+    )
+
+
+def test_postgres_concurrent_overlapping_policy_is_rejected_after_waiting():
+    from twinops.storage.collection_policy_v1 import insert_collection_policy
+
+    shared = _SharedPostgresPolicies(coordinate_unlocked_reads=True)
+    first_policy = _policy(
+        policy_id="serialized-overlap-a",
+        effective_from=INITIAL_EFFECTIVE_FROM,
+        effective_to=None,
+    )
+    second_policy = _policy(
+        policy_id="serialized-overlap-b",
+        effective_from=INITIAL_EFFECTIVE_FROM + timedelta(seconds=1),
+        effective_to=None,
+    )
+
+    outcomes, failures, second_was_blocked = _run_two_policy_transactions(
+        shared,
+        lambda connection: insert_collection_policy(connection, first_policy),
+        lambda connection: insert_collection_policy(connection, second_policy),
+    )
+
+    assert outcomes == [True, None]
+    assert failures[0] is None
+    assert isinstance(failures[1], ValueError)
+    assert "overlap" in str(failures[1])
+    assert second_was_blocked is True
+    assert shared.writes == 1
 
 
 def test_administrative_migrator_seeds_and_reads_pinned_policy(connection):
