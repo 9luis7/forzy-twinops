@@ -7,6 +7,7 @@ from datetime import datetime, timedelta, timezone
 from hashlib import sha256
 from inspect import Parameter, signature
 import json
+from concurrent.futures import ThreadPoolExecutor
 from typing import Callable, Protocol
 from uuid import NAMESPACE_URL, uuid5
 
@@ -91,6 +92,26 @@ class RepositoryContractControl(Protocol):
 
 
 PreparedBatchFactory = Callable[[int], PreparedHistoricalBatchV1]
+
+
+def run_activation_race(
+    repository: HistoricalRepositoryV1,
+    candidates: tuple[PreparedHistoricalBatchV1, PreparedHistoricalBatchV1],
+) -> tuple[ActivateHistoryResultV1 | None, ActivateHistoryResultV1 | None]:
+    """Race two CAS activations without treating a stale expectation as success."""
+
+    def activate(candidate: PreparedHistoricalBatchV1) -> ActivateHistoryResultV1 | None:
+        try:
+            return repository.activate_batch(
+                asset_id=candidate.asset_id,
+                batch_id=candidate.batch_id,
+                expected_active_batch_id=None,
+            )
+        except HistoricalBatchConflict:
+            return None
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        return tuple(pool.map(activate, candidates))
 
 
 def synthetic_prepared_batch(variant: int = 0) -> PreparedHistoricalBatchV1:
