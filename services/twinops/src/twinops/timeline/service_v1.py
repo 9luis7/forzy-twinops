@@ -426,6 +426,7 @@ class TimelineServiceV1:
                 effective_points,
                 effective_from=ranges.effective_from,
                 effective_to=ranges.effective_to,
+                policies=topology_policies,
             )
         )
         budgets = _budgets(

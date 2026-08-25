@@ -51,6 +51,10 @@ class TimelinePolicyEvidenceInvalidV1(TimelineCoverageErrorV1):
     """Persisted policy evidence is internally inconsistent."""
 
 
+class TimelineProjectedGapUnrepresentableV1(TimelineCoverageErrorV1):
+    """Filtered topology cannot truthfully fit one frozen public gap."""
+
+
 @dataclass(frozen=True)
 class TimelineCoverageV1:
     segments: tuple[TimelineSegmentV1, ...]
@@ -519,6 +523,111 @@ def build_timeline_coverage_v1(
     )
 
 
+def _projected_gap_type(
+    *,
+    topology: TimelineCoverageV1,
+    topology_indexes: Mapping[str, int],
+    source_gaps: Sequence[TimelineGapV1],
+    left: TimelineSegmentV1 | None,
+    right: TimelineSegmentV1 | None,
+    start: datetime,
+    end: datetime,
+    policies: Mapping[str, CollectionPolicyV1],
+) -> str:
+    gap_types = {gap.gap_type for gap in source_gaps}
+    if not gap_types:
+        raise TimelineProjectedGapUnrepresentableV1(
+            "timeline_projected_gap_evidence_missing"
+        )
+    if left is not None and right is not None:
+        if left.source_kind != right.source_kind:
+            if gap_types != {"source_discontinuity"}:
+                raise TimelineProjectedGapUnrepresentableV1(
+                    "timeline_projected_gap_mixed_classification"
+                )
+            return "source_discontinuity"
+        source_kind = left.source_kind
+    else:
+        border = left if left is not None else right
+        if border is None:
+            raise TimelineProjectedGapUnrepresentableV1(
+                "timeline_projected_gap_evidence_missing"
+            )
+        source_kind = border.source_kind
+
+    first_index = min(
+        topology_indexes[str(gap.left_segment_id)] for gap in source_gaps
+    )
+    last_index = max(
+        topology_indexes[str(gap.right_segment_id)] for gap in source_gaps
+    )
+    path_segments = topology.segments[first_index : last_index + 1]
+    path_sources = {segment.source_kind for segment in path_segments}
+    if gap_types == {"source_discontinuity"}:
+        if path_sources == {"historical_archive", "live_collection"}:
+            return "source_discontinuity"
+        raise TimelineProjectedGapUnrepresentableV1(
+            "timeline_projected_gap_mixed_classification"
+        )
+    if source_kind == "historical_archive":
+        if path_sources != {"historical_archive"} or gap_types != {
+            "archive_sampling_gap"
+        }:
+            raise TimelineProjectedGapUnrepresentableV1(
+                "timeline_projected_gap_mixed_classification"
+            )
+        return "archive_sampling_gap"
+
+    if path_sources != {"live_collection"}:
+        raise TimelineProjectedGapUnrepresentableV1(
+            "timeline_projected_gap_mixed_classification"
+        )
+    policy_ids = {segment.collection_policy_id for segment in path_segments}
+    nonnull_policy_ids = {
+        policy_id for policy_id in policy_ids if policy_id is not None
+    }
+    visible_policy_ids = {
+        segment.collection_policy_id
+        for segment in (left, right)
+        if segment is not None
+    }
+    if None in policy_ids:
+        if gap_types != {"unclassified_coverage_gap"} or len(
+            nonnull_policy_ids
+        ) > 1:
+            raise TimelineProjectedGapUnrepresentableV1(
+                "timeline_projected_live_policy_evidence_unrepresentable"
+            )
+        if not nonnull_policy_ids or None in visible_policy_ids:
+            return "unclassified_coverage_gap"
+        raise TimelineProjectedGapUnrepresentableV1(
+            "timeline_projected_live_policy_evidence_unrepresentable"
+        )
+    if gap_types - {"live_expected_collection_gap", "expected_idle"}:
+        raise TimelineProjectedGapUnrepresentableV1(
+            "timeline_projected_gap_mixed_classification"
+        )
+    if len(nonnull_policy_ids) != 1:
+        raise TimelineProjectedGapUnrepresentableV1(
+            "timeline_projected_live_policy_evidence_unrepresentable"
+        )
+    policy_id = next(iter(nonnull_policy_ids))
+    policy = policies.get(policy_id)
+    if policy is None:
+        raise TimelinePolicyEvidenceInvalidV1(
+            "timeline_collection_policy_unavailable"
+        )
+    expected = _expected_window_duration(start, end, policy)
+    duration = end - start
+    if expected == timedelta(0):
+        return "expected_idle"
+    if expected == duration:
+        return "live_expected_collection_gap"
+    raise TimelineProjectedGapUnrepresentableV1(
+        "timeline_projected_live_gap_crosses_policy_windows"
+    )
+
+
 def project_timeline_coverage_v1(
     topology: TimelineCoverageV1,
     topology_points: Sequence[TimelinePointV1],
@@ -526,11 +635,13 @@ def project_timeline_coverage_v1(
     *,
     effective_from: datetime,
     effective_to: datetime,
+    policies: Mapping[str, CollectionPolicyV1],
 ) -> TimelineCoverageV1:
     """Project query counts/range while retaining global segment identities."""
 
     range_start = parse_public_utc_millis_v1(effective_from)
     range_end = parse_public_utc_millis_v1(effective_to)
+    validated_policies = _validated_policies(policies)
     if range_start >= range_end:
         raise ValueError("timeline range must be non-empty and increasing")
     range_originals = _validated_originals(topology_points)
@@ -551,12 +662,7 @@ def project_timeline_coverage_v1(
     ):
         raise ValueError("timeline topology membership is incomplete")
 
-    range_by_segment: dict[str, list[TimelinePointV1]] = defaultdict(list)
     selected_by_segment: dict[str, list[TimelinePointV1]] = defaultdict(list)
-    for point in range_originals:
-        range_by_segment[topology.point_segment_ids[str(point.point_id)]].append(
-            point
-        )
     for point in selected:
         selected_by_segment[topology.point_segment_ids[str(point.point_id)]].append(
             point
@@ -569,15 +675,14 @@ def project_timeline_coverage_v1(
         segment_points = selected_by_segment.get(segment_id, [])
         if not segment_points:
             continue
-        segment_topology_points = range_by_segment[segment_id]
         payload = segment.model_dump_public()
         payload.update(
             {
                 "startAt": serialize_public_utc_millis_v1(
-                    segment_topology_points[0].event_at
+                    segment_points[0].event_at
                 ),
                 "endAt": serialize_public_utc_millis_v1(
-                    segment_topology_points[-1].event_at
+                    segment_points[-1].event_at
                 ),
                 "totalPoints": len(segment_points),
                 "sensorCounts": {
@@ -592,37 +697,78 @@ def project_timeline_coverage_v1(
             membership[str(point.point_id)] = segment_id
 
     segment_by_id = {str(segment.segment_id): segment for segment in segments}
-    gaps: list[TimelineGapV1] = []
+    topology_indexes = {
+        str(segment.segment_id): index
+        for index, segment in enumerate(topology.segments)
+    }
+    visible_indexes = sorted(
+        topology_indexes[segment_id] for segment_id in segment_by_id
+    )
+    grouped_gaps: dict[
+        tuple[str | None, str | None], list[TimelineGapV1]
+    ] = {}
     for gap in topology.gaps:
         start = max(gap.start_at, range_start)
         end = min(gap.end_at, range_end)
         if start >= end:
             continue
-        left = (
-            None
-            if gap.left_segment_id is None
-            else segment_by_id.get(str(gap.left_segment_id))
+        if gap.left_segment_id is None or gap.right_segment_id is None:
+            raise ValueError("global topology gaps must have both segment sides")
+        global_left = topology_indexes.get(str(gap.left_segment_id))
+        global_right = topology_indexes.get(str(gap.right_segment_id))
+        if global_left is None or global_right is None or global_left >= global_right:
+            raise ValueError("global topology gap membership is invalid")
+        projected_left = max(
+            (index for index in visible_indexes if index <= global_left),
+            default=None,
         )
-        right = (
-            None
-            if gap.right_segment_id is None
-            else segment_by_id.get(str(gap.right_segment_id))
+        projected_right = min(
+            (index for index in visible_indexes if index >= global_right),
+            default=None,
         )
-        if left is not None and left.end_at != start:
-            left = None
-        if right is not None and right.start_at != end:
-            right = None
-        if left is None and right is None:
+        if projected_left is None and projected_right is None:
             continue
+        left_id = (
+            None
+            if projected_left is None
+            else str(topology.segments[projected_left].segment_id)
+        )
+        right_id = (
+            None
+            if projected_right is None
+            else str(topology.segments[projected_right].segment_id)
+        )
+        grouped_gaps.setdefault((left_id, right_id), []).append(gap)
+
+    gaps: list[TimelineGapV1] = []
+    for (left_id, right_id), source_gaps in grouped_gaps.items():
+        left = None if left_id is None else segment_by_id[left_id]
+        right = None if right_id is None else segment_by_id[right_id]
+        start = range_start if left is None else left.end_at
+        end = range_end if right is None else right.start_at
+        if start >= end:
+            raise TimelineProjectedGapUnrepresentableV1(
+                "timeline_projected_gap_non_positive"
+            )
         gaps.append(
             _bounded_gap(
                 left=left,
                 right=right,
                 start=start,
                 end=end,
-                gap_type=gap.gap_type,
+                gap_type=_projected_gap_type(
+                    topology=topology,
+                    topology_indexes=topology_indexes,
+                    source_gaps=source_gaps,
+                    left=left,
+                    right=right,
+                    start=start,
+                    end=end,
+                    policies=validated_policies,
+                ),
             )
         )
+    gaps.sort(key=lambda gap: (gap.start_at, gap.end_at, str(gap.gap_id)))
     return TimelineCoverageV1(
         segments=tuple(segments),
         gaps=tuple(gaps),
@@ -710,6 +856,7 @@ __all__ = [
     "TimelineCoverageErrorV1",
     "TimelineCoverageV1",
     "TimelinePolicyEvidenceInvalidV1",
+    "TimelineProjectedGapUnrepresentableV1",
     "TimelineSourceOverlapV1",
     "TimelineUnrepresentableLiveGapV1",
     "build_operating_cycles_v1",

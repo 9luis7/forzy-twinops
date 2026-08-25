@@ -262,6 +262,398 @@ def test_sensor_filter_does_not_change_global_segment_identity() -> None:
     assert unified.segments[0].segment_id == s2_only.segments[0].segment_id
 
 
+def test_sensor_projection_uses_only_visible_originals_for_segment_facts() -> None:
+    start = datetime(2026, 8, 22, 12, tzinfo=timezone.utc)
+    archive = tuple(
+        sorted(
+            (
+                make_point(12, event_at=start, sensor_id="s2", pair_key="a"),
+                make_point(
+                    13,
+                    event_at=start + timedelta(seconds=5),
+                    sensor_id="s1",
+                    pair_key="b",
+                ),
+                make_point(
+                    14,
+                    event_at=start + timedelta(seconds=10),
+                    sensor_id="s2",
+                    pair_key="c",
+                ),
+            ),
+            key=timeline_order_key_v1,
+        )
+    )
+    service = _service(FakeTimelineRepositoryV1(archive=archive))
+    range_query = {
+        "from_at": start,
+        "to_at": start + timedelta(seconds=10, milliseconds=1),
+    }
+
+    unified = service.overview(
+        _query(sensor_ids=("s1", "s2"), **range_query)
+    )
+    s1_only = service.overview(_query(sensor_ids=("s1",), **range_query))
+    s2_only = service.overview(_query(sensor_ids=("s2",), **range_query))
+    narrow = service.overview(
+        _query(
+            sensor_ids=("s1",),
+            from_at=start + timedelta(seconds=5),
+            to_at=start + timedelta(seconds=5, milliseconds=1),
+        )
+    )
+    unified_again = service.overview(
+        _query(sensor_ids=("s1", "s2"), **range_query)
+    )
+    s1_again = service.overview(_query(sensor_ids=("s1",), **range_query))
+    s2_again = service.overview(_query(sensor_ids=("s2",), **range_query))
+
+    assert s1_only.segments[0].segment_id == unified.segments[0].segment_id
+    assert s2_only.segments[0].segment_id == unified.segments[0].segment_id
+    assert narrow.segments[0].segment_id == unified.segments[0].segment_id
+    assert s1_only.segments[0].start_at == start + timedelta(seconds=5)
+    assert s1_only.segments[0].end_at == start + timedelta(seconds=5)
+    assert s1_only.segments[0].total_points == 1
+    assert s1_only.segments[0].sensor_counts.model_dump() == {"s1": 1, "s2": 0}
+    assert len(s1_only.series) == 1
+    assert s1_only.series[0].sensor_id == "s1"
+    assert [point.point_id for point in s1_only.series[0].points] == [
+        archive[1].point_id
+    ]
+    assert unified.model_dump_public_json() == unified_again.model_dump_public_json()
+    assert s1_only.model_dump_public_json() == s1_again.model_dump_public_json()
+    assert s2_only.model_dump_public_json() == s2_again.model_dump_public_json()
+
+
+def test_sensor_projection_rebuilds_one_archive_gap_across_hidden_segments() -> None:
+    start = datetime(2026, 8, 22, 12, tzinfo=timezone.utc)
+    archive = (
+        make_point(15, event_at=start, sensor_id="s1", pair_key="a"),
+        make_point(
+            16,
+            event_at=start + timedelta(seconds=30),
+            sensor_id="s2",
+            pair_key="b",
+        ),
+        make_point(
+            17,
+            event_at=start + timedelta(seconds=60),
+            sensor_id="s1",
+            pair_key="c",
+        ),
+    )
+    service = _service(FakeTimelineRepositoryV1(archive=archive))
+
+    unified = service.overview(_query(sensor_ids=("s1", "s2")))
+    s1_only = service.overview(_query(sensor_ids=("s1",)))
+
+    assert [segment.segment_id for segment in s1_only.segments] == [
+        unified.segments[0].segment_id,
+        unified.segments[2].segment_id,
+    ]
+    assert len(s1_only.gaps) == 1
+    gap = s1_only.gaps[0]
+    assert gap.gap_type == "archive_sampling_gap"
+    assert gap.left_segment_id == s1_only.segments[0].segment_id
+    assert gap.right_segment_id == s1_only.segments[1].segment_id
+    assert gap.start_at == start
+    assert gap.end_at == start + timedelta(seconds=60)
+    assert [row.segment_id for row in s1_only.series] == [
+        s1_only.segments[0].segment_id,
+        s1_only.segments[1].segment_id,
+    ]
+
+
+def test_sensor_projection_keeps_source_boundary_with_hidden_points() -> None:
+    start = datetime(2026, 8, 12, 15, tzinfo=timezone.utc)
+    policy = make_policy()
+    repository = FakeTimelineRepositoryV1(
+        archive=(
+            make_point(18, event_at=start, sensor_id="s1", pair_key="a"),
+            make_point(
+                19,
+                event_at=start + timedelta(seconds=10),
+                sensor_id="s2",
+                pair_key="b",
+            ),
+        ),
+        live=(
+            make_point(
+                20,
+                event_at=start + timedelta(seconds=30),
+                sensor_id="s2",
+                source_kind="live_collection",
+                pair_key="c",
+            ),
+            make_point(
+                21,
+                event_at=start + timedelta(seconds=40),
+                sensor_id="s1",
+                source_kind="live_collection",
+                pair_key="d",
+            ),
+        ),
+        policies=(policy,),
+    )
+    service = _service(repository)
+
+    unified = service.overview(_query(sensor_ids=("s1", "s2")))
+    s1_only = service.overview(_query(sensor_ids=("s1",)))
+
+    assert [segment.segment_id for segment in s1_only.segments] == [
+        segment.segment_id for segment in unified.segments
+    ]
+    assert len(s1_only.gaps) == 1
+    gap = s1_only.gaps[0]
+    assert gap.gap_type == "source_discontinuity"
+    assert gap.left_segment_id == s1_only.segments[0].segment_id
+    assert gap.right_segment_id == s1_only.segments[1].segment_id
+    assert gap.start_at == start
+    assert gap.end_at == start + timedelta(seconds=40)
+    assert [row.source_kind for row in s1_only.series] == [
+        "historical_archive",
+        "live_collection",
+    ]
+    assert [row.segment_id for row in s1_only.series] == [
+        s1_only.segments[0].segment_id,
+        s1_only.segments[1].segment_id,
+    ]
+
+
+@pytest.mark.parametrize(
+    ("start", "policy_id", "gap_type"),
+    (
+        (
+            datetime(2026, 8, 12, 15, tzinfo=timezone.utc),
+            "forzy-live-window-v1",
+            "live_expected_collection_gap",
+        ),
+        (
+            datetime(2026, 8, 12, 17, tzinfo=timezone.utc),
+            "forzy-live-window-v1",
+            "expected_idle",
+        ),
+        (
+            datetime(2026, 8, 12, 15, tzinfo=timezone.utc),
+            None,
+            "unclassified_coverage_gap",
+        ),
+    ),
+)
+def test_sensor_projection_classifies_live_gap_with_hidden_boundary_points(
+    start, policy_id, gap_type
+) -> None:
+    policy = make_policy()
+    live = tuple(
+        sorted(
+            (
+                make_point(
+                    22,
+                    event_at=start,
+                    sensor_id="s1",
+                    source_kind="live_collection",
+                    policy_id=policy_id,
+                    pair_key="a",
+                ),
+                make_point(
+                    23,
+                    event_at=start + timedelta(seconds=5),
+                    sensor_id="s2",
+                    source_kind="live_collection",
+                    policy_id=policy_id,
+                    pair_key="b",
+                ),
+                make_point(
+                    24,
+                    event_at=start + timedelta(seconds=25),
+                    sensor_id="s2",
+                    source_kind="live_collection",
+                    policy_id=policy_id,
+                    pair_key="c",
+                ),
+                make_point(
+                    25,
+                    event_at=start + timedelta(seconds=30),
+                    sensor_id="s1",
+                    source_kind="live_collection",
+                    policy_id=policy_id,
+                    pair_key="d",
+                ),
+            ),
+            key=timeline_order_key_v1,
+        )
+    )
+    repository = FakeTimelineRepositoryV1(
+        live=live,
+        policies=() if policy_id is None else (policy,),
+        batch_id=None,
+    )
+    service = _service(repository)
+
+    unified = service.overview(_query(sensor_ids=("s1", "s2")))
+    s1_only = service.overview(_query(sensor_ids=("s1",)))
+
+    expected_ids = [
+        segment.segment_id
+        for segment in unified.segments
+        if segment.sensor_counts.s1 > 0
+    ]
+    assert [segment.segment_id for segment in s1_only.segments] == expected_ids
+    assert len(s1_only.gaps) == 1
+    gap = s1_only.gaps[0]
+    assert gap.gap_type == gap_type
+    assert gap.left_segment_id == s1_only.segments[0].segment_id
+    assert gap.right_segment_id == s1_only.segments[1].segment_id
+    assert gap.start_at == start
+    assert gap.end_at == start + timedelta(seconds=30)
+    gap_payload = gap.model_dump_public()
+    identity = "|".join(
+        (
+            "timeline-gap-v1",
+            gap_payload["gapType"],
+            gap_payload["leftSegmentId"],
+            gap_payload["rightSegmentId"],
+            gap_payload["startAt"],
+            gap_payload["endAt"],
+            gap_payload["ruleVersion"],
+        )
+    )
+    assert str(gap.gap_id) == uuid5_text(identity)
+
+
+def test_sensor_projection_fails_before_validation_for_mixed_live_schedule() -> None:
+    from twinops.timeline.segments_v1 import (
+        TimelineProjectedGapUnrepresentableV1,
+    )
+
+    start = datetime(2026, 8, 12, 16, 59, 50, tzinfo=timezone.utc)
+    policy = make_policy()
+    live = tuple(
+        sorted(
+            (
+                make_point(
+                    26,
+                    event_at=start,
+                    sensor_id="s1",
+                    source_kind="live_collection",
+                    pair_key="a",
+                ),
+                make_point(
+                    27,
+                    event_at=start + timedelta(seconds=10),
+                    sensor_id="s2",
+                    source_kind="live_collection",
+                    pair_key="b",
+                ),
+                make_point(
+                    28,
+                    event_at=start + timedelta(seconds=30),
+                    sensor_id="s2",
+                    source_kind="live_collection",
+                    pair_key="c",
+                ),
+                make_point(
+                    29,
+                    event_at=start + timedelta(seconds=40),
+                    sensor_id="s1",
+                    source_kind="live_collection",
+                    pair_key="d",
+                ),
+            ),
+            key=timeline_order_key_v1,
+        )
+    )
+    service = _service(
+        FakeTimelineRepositoryV1(
+            live=live,
+            policies=(policy,),
+            batch_id=None,
+        )
+    )
+
+    with pytest.raises(
+        TimelineProjectedGapUnrepresentableV1,
+        match="timeline_projected_live_gap_crosses_policy_windows",
+    ):
+        service.overview(_query(sensor_ids=("s1",)))
+
+
+def test_sensor_projection_fails_closed_for_mixed_hidden_gap_evidence() -> None:
+    from twinops.timeline.segments_v1 import (
+        TimelineProjectedGapUnrepresentableV1,
+    )
+
+    start = datetime(2026, 8, 12, 15, tzinfo=timezone.utc)
+    policy = make_policy()
+    live = (
+        make_point(
+            30,
+            event_at=start,
+            sensor_id="s1",
+            source_kind="live_collection",
+            pair_key="a",
+        ),
+        make_point(
+            31,
+            event_at=start + timedelta(seconds=20),
+            sensor_id="s2",
+            source_kind="live_collection",
+            policy_id=None,
+            pair_key="b",
+        ),
+        make_point(
+            32,
+            event_at=start + timedelta(seconds=40),
+            sensor_id="s1",
+            source_kind="live_collection",
+            pair_key="c",
+        ),
+    )
+    policy_service = _service(
+        FakeTimelineRepositoryV1(
+            live=live,
+            policies=(policy,),
+            batch_id=None,
+        )
+    )
+    policy_service.overview(_query(sensor_ids=("s1", "s2")))
+    with pytest.raises(
+        TimelineProjectedGapUnrepresentableV1,
+        match="timeline_projected_live_policy_evidence_unrepresentable",
+    ):
+        policy_service.overview(_query(sensor_ids=("s1",)))
+
+    source_service = _service(
+        FakeTimelineRepositoryV1(
+            archive=(
+                make_point(33, event_at=start, sensor_id="s1", pair_key="d"),
+                make_point(
+                    34,
+                    event_at=start + timedelta(seconds=30),
+                    sensor_id="s2",
+                    pair_key="e",
+                ),
+            ),
+            live=(
+                make_point(
+                    35,
+                    event_at=start + timedelta(seconds=60),
+                    sensor_id="s1",
+                    source_kind="live_collection",
+                    pair_key="f",
+                ),
+            ),
+            policies=(policy,),
+        )
+    )
+    source_service.overview(_query(sensor_ids=("s1", "s2")))
+    with pytest.raises(
+        TimelineProjectedGapUnrepresentableV1,
+        match="timeline_projected_gap_mixed_classification",
+    ):
+        source_service.overview(_query(sensor_ids=("s1",)))
+
+
 def test_archive_gap_remains_explicit_at_leading_and_trailing_range_edges() -> None:
     start = datetime(2026, 8, 22, 12, tzinfo=timezone.utc)
     midpoint = start + timedelta(seconds=30)
