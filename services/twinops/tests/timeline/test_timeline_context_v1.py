@@ -72,6 +72,18 @@ def _archive_points(*, include_second_segment: bool = True):
     return tuple(sorted(points, key=timeline_order_key_v1))
 
 
+class _BatchChangingPairRepositoryV1(FakeTimelineRepositoryV1):
+    def __init__(self, *, archive: tuple[TimelinePointV1, ...]) -> None:
+        super().__init__(archive=archive)
+        self.active_batch_id_calls_before_pair: int | None = None
+
+    def points_for_pair(self, asset_id: str, sample_pair_id: str):
+        self.active_batch_id_calls_before_pair = self.active_batch_id_calls
+        pair = super().points_for_pair(asset_id, sample_pair_id)
+        self.batch_id = "sha256:" + "c" * 64
+        return pair
+
+
 def test_point_context_uses_only_metadata_active_batch_guards() -> None:
     points = _archive_points(include_second_segment=False)
     repository = FakeTimelineRepositoryV1(archive=points)
@@ -81,6 +93,21 @@ def test_point_context_uses_only_metadata_active_batch_guards() -> None:
 
     assert context.provenance.active_historical_batch_id == repository.batch_id
     assert repository.active_batch_id_calls == 3
+
+
+def test_point_context_detects_active_batch_change_during_pair_read() -> None:
+    points = _archive_points(include_second_segment=False)
+    repository = _BatchChangingPairRepositoryV1(archive=points)
+    service = service_v1.TimelineServiceV1(repository)
+
+    with pytest.raises(service_v1.TimelineOverviewSnapshotConflictV1):
+        service.context(_query_for_point(str(points[0].point_id)))
+
+    assert repository.active_batch_id_calls_before_pair == 2
+    assert repository.active_batch_id_calls == 3
+    assert repository.pair_reads == [
+        ("forzy-motor-01", str(points[0].sample_pair_id))
+    ]
 
 
 def _point_with_adversarial_identity(
