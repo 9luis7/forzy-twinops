@@ -1152,12 +1152,18 @@ const assertAssessmentOverview = (value) => {
     || summary.returnedAssessmentCount !== returnedCount
     || summary.omittedAssessmentCount !== omittedCount
     || summary.reducedSeriesCount !== reducedSeriesCount
-    || summary.originalAssessmentCount !== value.materialization.assessmentCount
     || summary.returnedAssessmentCount > summary.requestedMaxPoints) {
     fail("assessment overview aggregation counts do not reconcile");
   }
-  if (value.materialization.state !== "materialized"
-    && (originalCount !== 0 || returnedCount !== 0 || value.effectiveRange !== null)) {
+  if (value.materialization.state === "materialized") {
+    if (originalCount > value.materialization.assessmentCount) {
+      fail("filtered assessment count exceeds the immutable materialization");
+    }
+    if ((originalCount === 0) !== (value.effectiveRange === null)) {
+      fail("filtered assessment evidence and effectiveRange must be empty together");
+    }
+  }
+  else if (originalCount !== 0 || returnedCount !== 0 || value.effectiveRange !== null) {
     fail("unmaterialized assessment overview cannot contain score evidence");
   }
 };

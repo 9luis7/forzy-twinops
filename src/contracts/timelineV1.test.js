@@ -938,10 +938,25 @@ describe("timeline assessment overview contract", () => {
 
   it.each([
     "assessment-overview-empty.valid.json",
+    "assessment-overview-filter-empty.valid.json",
     "assessment-overview-materialized.valid.json",
   ])("accepts the closed shared fixture %s", (name) => {
     const payload = fixture(name);
     expect(assertTimelineAssessmentOverviewV1(payload)).toBe(payload);
+  });
+
+  it("keeps global materialization facts while aggregating a filtered subset", () => {
+    const payload = fixture("assessment-overview-materialized.valid.json");
+    payload.materialization.assessmentCount = 8;
+
+    expect(assertTimelineAssessmentOverviewV1(payload)).toBe(payload);
+  });
+
+  it("rejects a filtered count larger than the immutable materialization", () => {
+    const payload = fixture("assessment-overview-materialized.valid.json");
+    payload.materialization.assessmentCount = 3;
+
+    reject(assertTimelineAssessmentOverviewV1, payload);
   });
 
   it.each([
@@ -1036,7 +1051,6 @@ describe("timeline assessment overview contract", () => {
   });
 
   it.each([
-    ["materialization count", (payload) => { payload.materialization.assessmentCount += 1; }],
     ["returned count", (payload) => { payload.aggregationSummary.returnedAssessmentCount -= 1; }],
     ["omitted count", (payload) => { payload.series[0].aggregation.omittedAssessmentCount = 1; }],
     ["reduced series count", (payload) => { payload.aggregationSummary.reducedSeriesCount = 1; }],

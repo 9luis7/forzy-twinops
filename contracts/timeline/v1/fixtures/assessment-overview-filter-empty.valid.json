@@ -1,0 +1,23 @@
+{
+  "schemaVersion": "1.0",
+  "assetId": "forzy-motor-01",
+  "activeHistoricalBatchId": "sha256:215623e388951c5587bf655b5ce4d39ece4f6755623c534161d5859844682697",
+  "requestedRange": {
+    "from": "2026-08-23T12:00:00.000Z",
+    "to": "2026-08-23T13:00:00.000Z"
+  },
+  "effectiveRange": null,
+  "materialization": {
+    "state": "materialized",
+    "assessmentCount": 4,
+    "assessmentManifestSha256": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+  },
+  "aggregationSummary": {
+    "requestedMaxPoints": 1200,
+    "originalAssessmentCount": 0,
+    "returnedAssessmentCount": 0,
+    "omittedAssessmentCount": 0,
+    "reducedSeriesCount": 0
+  },
+  "series": []
+}

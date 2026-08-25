@@ -67,7 +67,6 @@
       "type": "object",
       "properties": {
         "activeHistoricalBatchId": { "$ref": "#/definitions/hash" },
-        "effectiveRange": { "$ref": "#/definitions/halfOpenRange" },
         "materialization": {
           "type": "object",
           "properties": {
@@ -75,9 +74,24 @@
             "assessmentCount": { "type": "integer", "minimum": 1 },
             "assessmentManifestSha256": { "$ref": "#/definitions/hash" }
           }
+        }
+      },
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "effectiveRange": { "type": "null" },
+            "series": { "type": "array", "maxItems": 0 }
+          }
         },
-        "series": { "type": "array", "minItems": 1 }
-      }
+        {
+          "type": "object",
+          "properties": {
+            "effectiveRange": { "$ref": "#/definitions/halfOpenRange" },
+            "series": { "type": "array", "minItems": 1 }
+          }
+        }
+      ]
     }
   ],
   "definitions": {

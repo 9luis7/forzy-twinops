@@ -3,6 +3,7 @@ import React from "react";
 import { cleanup, render, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
 import emptyFixture from "../../../contracts/timeline/v1/fixtures/assessment-overview-empty.valid.json";
+import filteredEmptyFixture from "../../../contracts/timeline/v1/fixtures/assessment-overview-filter-empty.valid.json";
 import materializedFixture from "../../../contracts/timeline/v1/fixtures/assessment-overview-materialized.valid.json";
 
 afterEach(cleanup);
@@ -16,6 +17,18 @@ describe("AssessmentTrend", () => {
     expect(screen.getByText(
       "Avalia\u00e7\u00f5es causais ainda n\u00e3o foram materializadas para este lote. Nenhum score foi inferido nem preenchido com zero.",
     )).toBeInTheDocument();
+    expect(screen.queryByRole("img", { name: /scores relativos/i })).not.toBeInTheDocument();
+  });
+
+  it("distinguishes an empty filter from an unmaterialized batch", async () => {
+    const modulePath = "./AssessmentTrend.jsx";
+    const { default: AssessmentTrend } = await import(/* @vite-ignore */ modulePath);
+    render(<AssessmentTrend overview={structuredClone(filteredEmptyFixture)} />);
+
+    expect(screen.getByText(
+      "Nenhuma avalia\u00e7\u00e3o materializada corresponde ao intervalo ou filtro selecionado. Nenhum score foi preenchido com zero.",
+    )).toBeInTheDocument();
+    expect(screen.queryByText(/ainda n\u00e3o foram materializadas/i)).not.toBeInTheDocument();
     expect(screen.queryByRole("img", { name: /scores relativos/i })).not.toBeInTheDocument();
   });
 

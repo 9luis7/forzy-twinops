@@ -6,6 +6,7 @@ const PADDING = Object.freeze({ top: 20, right: 20, bottom: 32, left: 44 });
 const SCALE_COPY = "Score relativo ao baseline hist\u00f3rico (escala 0\u2013100). N\u00e3o \u00e9 probabilidade de falha, confian\u00e7a calibrada, RUL nem diagn\u00f3stico.";
 const CANDIDATE_COPY = "Candidato n\u00e3o confirmado para revis\u00e3o humana. Este desvio n\u00e3o confirma falha, causa ou componente.";
 const EMPTY_COPY = "Avalia\u00e7\u00f5es causais ainda n\u00e3o foram materializadas para este lote. Nenhum score foi inferido nem preenchido com zero.";
+const FILTER_EMPTY_COPY = "Nenhuma avalia\u00e7\u00e3o materializada corresponde ao intervalo ou filtro selecionado. Nenhum score foi preenchido com zero.";
 const LABELS_COPY = "O conjunto de dados n\u00e3o cont\u00e9m r\u00f3tulos de falha confirmada.";
 const VALIDATION_COPY = "Valida\u00e7\u00e3o humana obrigat\u00f3ria antes de qualquer a\u00e7\u00e3o operacional.";
 
@@ -53,6 +54,7 @@ export default function AssessmentTrend({ overview }) {
 
   if (overview?.materialization?.state !== "materialized" || points.length === 0) {
     const noActiveBatch = overview?.materialization?.state === "no_active_historical_batch";
+    const materializedFilterEmpty = overview?.materialization?.state === "materialized";
     return (
       <section className="assessment-trend" data-testid="assessment-trend" aria-labelledby="assessment-trend-title">
         <div className="timeline-section-heading">
@@ -64,7 +66,7 @@ export default function AssessmentTrend({ overview }) {
         <p className="timeline-empty">
           {noActiveBatch
             ? "Nenhum lote hist\u00f3rico ativo est\u00e1 dispon\u00edvel. Nenhum score foi inferido nem preenchido com zero."
-            : EMPTY_COPY}
+            : materializedFilterEmpty ? FILTER_EMPTY_COPY : EMPTY_COPY}
         </p>
       </section>
     );
