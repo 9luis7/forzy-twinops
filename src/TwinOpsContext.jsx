@@ -218,7 +218,7 @@ export function TwinOpsProvider({
       }
       operation = dataSource.getTimelineAssessments(ASSET_ID, {
         sensorId: "all",
-        maxPoints: 1200,
+        maxPoints: 4000,
       }, {
         signal: owner.controller.signal,
       });

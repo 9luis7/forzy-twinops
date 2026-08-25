@@ -1019,7 +1019,7 @@ describe("historical assessment overview ownership", () => {
     });
     const assessmentCall = source.getTimelineAssessments.mock.calls[0];
     expect(assessmentCall[0]).toBe("forzy-motor-01");
-    expect(assessmentCall[1]).toEqual({ sensorId: "all", maxPoints: 1200 });
+    expect(assessmentCall[1]).toEqual({ sensorId: "all", maxPoints: 4000 });
     expect(assessmentCall[2].signal).toBeInstanceOf(AbortSignal);
 
     await act(async () => {
