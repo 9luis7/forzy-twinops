@@ -114,15 +114,30 @@ describe("AssessmentTrend", () => {
     expect(screen.getByText(
       "Candidato n\u00e3o confirmado para revis\u00e3o humana. Este desvio n\u00e3o confirma falha, causa ou componente.",
     )).toBeInTheDocument();
-    expect(screen.getByText(
-      "Modelo robust-baseline 1.0.1 \u00b7 treinamento causal encerrado em 2026-08-22T11:30:00.000Z.",
-    )).toBeInTheDocument();
+    expect(screen.getByText(/Modelo robust-baseline 1\.0\.1/)).toBeInTheDocument();
     expect(screen.getByText(
       "O conjunto de dados n\u00e3o cont\u00e9m r\u00f3tulos de falha confirmada.",
     )).toBeInTheDocument();
     expect(screen.getByText(
       "Valida\u00e7\u00e3o humana obrigat\u00f3ria antes de qualquer a\u00e7\u00e3o operacional.",
     )).toBeInTheDocument();
+  });
+
+  it("compacts repeated model provenance without collapsing score series", async () => {
+    const modulePath = "./AssessmentTrend.jsx";
+    const { default: AssessmentTrend } = await import(/* @vite-ignore */ modulePath);
+    const { container } = render(
+      <AssessmentTrend overview={structuredClone(materializedFixture)} />,
+    );
+
+    const models = screen.getByRole("list", { name: /modelos causais/i });
+    expect(within(models).getAllByRole("listitem")).toHaveLength(1);
+    expect(models).toHaveTextContent("2 janelas causais");
+    expect(models).toHaveTextContent(
+      "cortes de treinamento de 2026-08-22T11:30:00.000Z a 2026-08-22T12:30:00.000Z",
+    );
+    expect(models).toHaveTextContent(`sha256:${"d".repeat(64)}`);
+    expect(container.querySelectorAll("[data-series-id]")).toHaveLength(4);
   });
 
   it("does not show a candidate warning when all points are normal or insufficient", async () => {

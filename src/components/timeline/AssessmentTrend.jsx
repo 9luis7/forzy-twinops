@@ -51,6 +51,41 @@ export default function AssessmentTrend({ overview }) {
     () => overview?.series?.flatMap((series) => series.points) ?? [],
     [overview],
   );
+  const modelSummaries = useMemo(() => {
+    const groups = new Map();
+    for (const series of overview?.series ?? []) {
+      const key = JSON.stringify([
+        series.modelFamily,
+        series.modelVersion,
+        series.modelHash,
+      ]);
+      const group = groups.get(key) ?? {
+        key,
+        modelFamily: series.modelFamily,
+        modelVersion: series.modelVersion,
+        modelHash: series.modelHash,
+        windows: new Map(),
+      };
+      const windowKey = JSON.stringify([
+        series.foldId,
+        series.trainingWindow.start,
+        series.trainingWindow.end,
+      ]);
+      group.windows.set(windowKey, series.trainingWindow.end);
+      groups.set(key, group);
+    }
+    return [...groups.values()]
+      .sort((left, right) => left.key.localeCompare(right.key))
+      .map((group) => {
+        const trainingEnds = [...group.windows.values()].sort();
+        return {
+          ...group,
+          windowCount: group.windows.size,
+          firstTrainingEnd: trainingEnds[0],
+          lastTrainingEnd: trainingEnds.at(-1),
+        };
+      });
+  }, [overview]);
 
   if (overview?.materialization?.state !== "materialized" || points.length === 0) {
     const noActiveBatch = overview?.materialization?.state === "no_active_historical_batch";
@@ -129,9 +164,23 @@ export default function AssessmentTrend({ overview }) {
       </div>
       {hasCandidate ? <p className="timeline-inline-warning">{CANDIDATE_COPY}</p> : null}
       <ul className="assessment-trend__models" aria-label={"Modelos causais das s\u00e9ries exibidas"}>
-        {overview.series.map((series) => (
-          <li key={series.seriesId}>
-            Modelo {series.modelFamily} {series.modelVersion}{" \u00b7 treinamento causal encerrado em "}{series.trainingWindow.end}.
+        {modelSummaries.map((model) => (
+          <li key={model.key}>
+            Modelo {model.modelFamily} {model.modelVersion}{" \u00b7 "}
+            {model.windowCount === 1 ? (
+              <>
+                1 janela causal{" \u00b7 treinamento causal encerrado em "}
+                <time dateTime={model.firstTrainingEnd}>{model.firstTrainingEnd}</time>
+              </>
+            ) : (
+              <>
+                {model.windowCount} janelas causais{" \u00b7 cortes de treinamento de "}
+                <time dateTime={model.firstTrainingEnd}>{model.firstTrainingEnd}</time>
+                {" a "}
+                <time dateTime={model.lastTrainingEnd}>{model.lastTrainingEnd}</time>
+              </>
+            )}
+            {" \u00b7 hash "}<code>{model.modelHash}</code>.
           </li>
         ))}
       </ul>
