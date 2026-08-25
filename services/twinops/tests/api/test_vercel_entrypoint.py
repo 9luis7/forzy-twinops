@@ -260,6 +260,11 @@ def test_vercel_entrypoint_exposes_fastapi_without_external_io(monkeypatch):
     monkeypatch.setenv("TWINOPS_ML_MANIFEST_HASH", f"sha256:{'1' * 64}")
     monkeypatch.setenv("TWINOPS_ML_MODEL_HASH", f"sha256:{'2' * 64}")
     monkeypatch.setattr(main_v2.PostgresTelemetryRepository, "initialize", forbidden_io)
+    monkeypatch.setattr(
+        main_v2.PostgresHistoricalRepositoryV1,
+        "verify_schema",
+        forbidden_io,
+    )
     monkeypatch.setattr(main_v2.httpx, "AsyncClient", forbidden_io)
     monkeypatch.setattr(main_v2, "load_assessment_scorer", forbidden_io)
     sys.modules.pop("api.index", None)

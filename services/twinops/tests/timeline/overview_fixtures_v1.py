@@ -128,6 +128,8 @@ class FakeTimelineRepositoryV1:
         self.archive_reads: list[TimelineReadQueryV1] = []
         self.live_reads: list[TimelineReadQueryV1] = []
         self.policy_reads: list[set[str]] = []
+        self.point_reads: list[tuple[str, str]] = []
+        self.pair_reads: list[tuple[str, str]] = []
         self.active_batch_calls = 0
 
     def active_batch(self, asset_id: str):
@@ -173,6 +175,30 @@ class FakeTimelineRepositoryV1:
             for policy_id in sorted(policy_ids)
             if policy_id in self.policies
         }
+
+    def point_by_id(self, asset_id: str, point_id: str):
+        self.point_reads.append((asset_id, point_id))
+        return next(
+            (
+                point
+                for point in (*self.archive, *self.live)
+                if str(point.point_id) == point_id
+            ),
+            None,
+        )
+
+    def points_for_pair(self, asset_id: str, sample_pair_id: str):
+        self.pair_reads.append((asset_id, sample_pair_id))
+        return tuple(
+            sorted(
+                (
+                    point
+                    for point in (*self.archive, *self.live)
+                    if str(point.sample_pair_id) == sample_pair_id
+                ),
+                key=timeline_order_key_v1,
+            )
+        )
 
     def stage_batch(self, *args, **kwargs):
         raise AssertionError("overview must be read-only")

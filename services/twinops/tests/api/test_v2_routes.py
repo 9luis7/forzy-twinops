@@ -2,6 +2,7 @@ from datetime import datetime, timedelta, timezone
 import os
 import subprocess
 import sys
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
 import pytest
@@ -159,9 +160,40 @@ class _Repository:
         return self.cycles.get((asset_id, scheduled_at))
 
 
+class _TimelineRepository:
+    def __init__(self):
+        self.verify_schema = Mock(
+            return_value=SimpleNamespace(is_current=True)
+        )
+
+
 @pytest.fixture
 def repository():
     return _Repository()
+
+
+@pytest.fixture(autouse=True)
+def timeline_repository_factories(monkeypatch):
+    repository = _TimelineRepository()
+    sqlite_factory = Mock(return_value=repository)
+    postgres_factory = Mock(return_value=repository)
+    monkeypatch.setattr(
+        main_v2,
+        "SQLiteHistoricalRepositoryV1",
+        sqlite_factory,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        main_v2,
+        "PostgresHistoricalRepositoryV1",
+        postgres_factory,
+        raising=False,
+    )
+    return SimpleNamespace(
+        repository=repository,
+        sqlite_factory=sqlite_factory,
+        postgres_factory=postgres_factory,
+    )
 
 
 @pytest.fixture
@@ -476,8 +508,8 @@ def test_importing_main_v2_has_no_environment_or_database_side_effects(tmp_path)
     assert database_path.exists() is False
 
 
-def test_environment_factory_selects_sqlite_and_initializes_in_lifespan(
-    monkeypatch, tmp_path
+def test_environment_factory_selects_sqlite_and_verifies_without_ddl(
+    monkeypatch, tmp_path, timeline_repository_factories
 ):
     repository = _Repository()
     sqlite_factory = Mock(return_value=repository)
@@ -508,14 +540,21 @@ def test_environment_factory_selects_sqlite_and_initializes_in_lifespan(
     assert repository.initialized is False
     async_client_factory.assert_not_called()
     sqlite_factory.assert_called_once_with(database_path)
+    timeline_repository_factories.sqlite_factory.assert_called_once_with(
+        database_path
+    )
     postgres_factory.assert_not_called()
+    timeline_repository_factories.postgres_factory.assert_not_called()
     with TestClient(app):
-        assert repository.initialized is True
+        assert repository.initialized is False
+        timeline_repository_factories.repository.verify_schema.assert_called_once_with(
+            "003"
+        )
         async_client_factory.assert_called_once_with()
 
 
 def test_environment_factory_selects_postgres_when_database_url_exists(
-    monkeypatch,
+    monkeypatch, timeline_repository_factories
 ):
     database_url = (
         "postgresql://runtime@runtime-pooler.invalid/twinops?sslmode=require"
@@ -541,7 +580,80 @@ def test_environment_factory_selects_postgres_when_database_url_exists(
     assert app.state.repository is repository
     assert repository.initialized is False
     postgres_factory.assert_called_once_with(database_url)
+    timeline_repository_factories.postgres_factory.assert_called_once_with(
+        database_url
+    )
     sqlite_factory.assert_not_called()
+    timeline_repository_factories.sqlite_factory.assert_not_called()
+
+
+def test_runtime_builds_timeline_service_only_after_schema_003_verification(
+    monkeypatch, timeline_repository_factories
+):
+    order = []
+    timeline_repository_factories.repository.verify_schema.side_effect = (
+        lambda version: (
+            order.append(("verify", version))
+            or SimpleNamespace(is_current=True)
+        )
+    )
+    service = object()
+    service_factory = Mock(
+        side_effect=lambda repository: (
+            order.append(("service", repository)) or service
+        )
+    )
+    monkeypatch.setattr(main_v2, "TimelineServiceV1", service_factory)
+    monkeypatch.setattr(
+        main_v2,
+        "SQLiteTelemetryRepositoryV2",
+        Mock(return_value=_Repository()),
+    )
+    monkeypatch.setattr(
+        main_v2,
+        "httpx",
+        Mock(AsyncClient=Mock(return_value=_FakeAsyncClient())),
+    )
+    app = main_v2.create_app_v2_from_env(
+        {"TWINOPS_UPSTREAM_BASE_URL": "https://upstream.invalid"}
+    )
+
+    service_factory.assert_not_called()
+    with TestClient(app):
+        assert app.state.timeline_service is service
+        assert order == [
+            ("verify", "003"),
+            ("service", timeline_repository_factories.repository),
+        ]
+    assert app.state.timeline_service is None
+
+
+def test_runtime_schema_drift_fails_closed_without_ddl_or_service(
+    monkeypatch, timeline_repository_factories, caplog
+):
+    caplog.set_level("ERROR", logger="twinops.api")
+    telemetry_repository = _Repository()
+    timeline_repository_factories.repository.verify_schema.return_value = (
+        SimpleNamespace(is_current=False)
+    )
+    service_factory = Mock()
+    monkeypatch.setattr(main_v2, "TimelineServiceV1", service_factory)
+    monkeypatch.setattr(
+        main_v2,
+        "SQLiteTelemetryRepositoryV2",
+        Mock(return_value=telemetry_repository),
+    )
+    app = main_v2.create_app_v2_from_env(
+        {"TWINOPS_UPSTREAM_BASE_URL": "https://upstream.invalid"}
+    )
+
+    with pytest.raises(RuntimeError, match="timeline_schema_unavailable"):
+        with TestClient(app):
+            pass
+
+    assert telemetry_repository.initialized is False
+    service_factory.assert_not_called()
+    assert "timeline_schema_startup_failed" in caplog.text
 
 
 def test_vercel_environment_requires_database_url():
