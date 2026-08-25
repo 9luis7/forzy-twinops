@@ -1037,6 +1037,16 @@ const assessmentSeriesKey = (series) => stableJson([
   series.trainingWindow,
 ]);
 
+const ASSESSMENT_BASE_LIMITATIONS = Object.freeze([
+  "historical_source_participated_in_baseline_construction_and_evaluation",
+  "no_confirmed_failure_labels_available",
+  "relative_score_not_failure_probability_confidence_rul_or_diagnosis",
+]);
+const ASSESSMENT_CANDIDATE_LIMITATIONS = Object.freeze([
+  "candidate_not_ground_truth",
+  ...ASSESSMENT_BASE_LIMITATIONS,
+]);
+
 const assertAssessmentOverview = (value) => {
   const requested = value.requestedRange;
   if (requested.from !== null) timestamp(requested.from, "requestedRange.from");
@@ -1128,9 +1138,11 @@ const assertAssessmentOverview = (value) => {
         fail("assessment point reaches or exceeds requestedRange");
       }
     }
-    const disclosesCandidate = series.limitations.includes("candidate_not_ground_truth");
-    if (hasCandidate !== disclosesCandidate
-      || (hasCandidate && series.limitations[0] !== "candidate_not_ground_truth")) {
+    const expectedLimitations = hasCandidate
+      ? ASSESSMENT_CANDIDATE_LIMITATIONS
+      : ASSESSMENT_BASE_LIMITATIONS;
+    if (series.limitations.length !== expectedLimitations.length
+      || series.limitations.some((limitation, index) => limitation !== expectedLimitations[index])) {
       fail("assessment series candidate facts and limitations do not match");
     }
   }

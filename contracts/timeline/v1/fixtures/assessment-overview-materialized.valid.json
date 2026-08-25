@@ -39,8 +39,9 @@
       "groundTruthLabelsAvailable": false,
       "limitations": [
         "candidate_not_ground_truth",
-        "no_confirmed_failure_labels",
-        "relative_score_not_failure_probability"
+        "historical_source_participated_in_baseline_construction_and_evaluation",
+        "no_confirmed_failure_labels_available",
+        "relative_score_not_failure_probability_confidence_rul_or_diagnosis"
       ],
       "aggregation": {
         "method": "none",
@@ -101,8 +102,9 @@
       "groundTruthLabelsAvailable": false,
       "limitations": [
         "candidate_not_ground_truth",
-        "no_confirmed_failure_labels",
-        "relative_score_not_failure_probability"
+        "historical_source_participated_in_baseline_construction_and_evaluation",
+        "no_confirmed_failure_labels_available",
+        "relative_score_not_failure_probability_confidence_rul_or_diagnosis"
       ],
       "aggregation": {
         "method": "none",

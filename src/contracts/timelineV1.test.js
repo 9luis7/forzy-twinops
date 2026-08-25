@@ -8,6 +8,7 @@ import {
   assertHistoricalAssessmentV1,
   assertHistoricalSensorReadingV1,
   assertTimelineContextV1,
+  createTimelineAjvV1,
   assertTimelineDecisionFactsV1,
   assertTimelineEventCandidateV1,
   assertTimelineInvariantsV1,
@@ -129,6 +130,57 @@ const reject = (validator, payload) => expect(() => validator(payload)).toThrow(
 const assertTimelineAssessmentOverviewV1 = (value) => (
   assertTimelinePayloadV1("timeline-assessment-overview", value)
 );
+
+const assessmentBaseLimitations = [
+  "historical_source_participated_in_baseline_construction_and_evaluation",
+  "no_confirmed_failure_labels_available",
+  "relative_score_not_failure_probability_confidence_rul_or_diagnosis",
+];
+const assessmentCandidateLimitations = [
+  "candidate_not_ground_truth",
+  ...assessmentBaseLimitations,
+];
+const assessmentOverviewWithExactLimitations = () => {
+  const payload = fixture("assessment-overview-materialized.valid.json");
+  for (const series of payload.series) {
+    series.limitations = [...assessmentCandidateLimitations];
+  }
+  return payload;
+};
+
+const assessmentLimitationViolations = [
+  ["abbreviated producer codes", (payload) => {
+    payload.series[0].limitations = [
+      "candidate_not_ground_truth",
+      "no_confirmed_failure_labels",
+      "relative_score_not_failure_probability",
+    ];
+  }],
+  ["an incomplete candidate-series union", (payload) => {
+    payload.series[0].limitations = [
+      "candidate_not_ground_truth",
+      "historical_source_participated_in_baseline_construction_and_evaluation",
+      "no_confirmed_failure_labels_available",
+    ];
+  }],
+  ["candidate_not_ground_truth outside index zero", (payload) => {
+    payload.series[0].limitations = [
+      ...assessmentBaseLimitations,
+      "candidate_not_ground_truth",
+    ];
+  }],
+  ["an unknown limitation code", (payload) => {
+    payload.series[0].limitations = [
+      ...assessmentCandidateLimitations,
+      "unsupported_limitation",
+    ];
+  }],
+  ["an incomplete normal-series union", (payload) => {
+    payload.series[0].points[1].status = "normal";
+    payload.series[0].points[1].candidateState = null;
+    payload.series[0].limitations = assessmentBaseLimitations.slice(0, 2);
+  }],
+];
 
 const policyHash = (payload) => {
   const selected = Object.fromEntries([
@@ -836,6 +888,54 @@ describe("Timeline v1 composed runtime contract", () => {
 });
 
 describe("timeline assessment overview contract", () => {
+  it("accepts only the exact base union or candidate-first union in Draft-07 and JS", () => {
+    const validate = createTimelineAjvV1().getSchema(
+      "forzy://contracts/timeline/v1/timeline-assessment-overview",
+    );
+    const candidatePayload = assessmentOverviewWithExactLimitations();
+    expect(validate(candidatePayload)).toBe(true);
+    expect(() => assertTimelineInvariantsV1(
+      candidatePayload,
+      "timeline-assessment-overview",
+    )).not.toThrow();
+
+    const normalPayload = assessmentOverviewWithExactLimitations();
+    normalPayload.series[0].points[1].status = "normal";
+    normalPayload.series[0].points[1].candidateState = null;
+    normalPayload.series[0].limitations = [...assessmentBaseLimitations];
+    expect(validate(normalPayload)).toBe(true);
+    expect(() => assertTimelineInvariantsV1(
+      normalPayload,
+      "timeline-assessment-overview",
+    )).not.toThrow();
+  });
+
+  it.each(assessmentLimitationViolations)(
+    "rejects %s in the Draft-07 assessment schema",
+    (_, mutate) => {
+      const validate = createTimelineAjvV1().getSchema(
+        "forzy://contracts/timeline/v1/timeline-assessment-overview",
+      );
+      const payload = assessmentOverviewWithExactLimitations();
+      mutate(payload);
+
+      expect(validate(payload)).toBe(false);
+    },
+  );
+
+  it.each(assessmentLimitationViolations)(
+    "rejects %s in the JS assessment invariants",
+    (_, mutate) => {
+      const payload = assessmentOverviewWithExactLimitations();
+      mutate(payload);
+
+      expect(() => assertTimelineInvariantsV1(
+        payload,
+        "timeline-assessment-overview",
+      )).toThrow();
+    },
+  );
+
   it.each([
     "assessment-overview-empty.valid.json",
     "assessment-overview-materialized.valid.json",

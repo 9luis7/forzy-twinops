@@ -222,6 +222,23 @@
         }
       ]
     },
+    "baseLimitations": {
+      "type": "array",
+      "const": [
+        "historical_source_participated_in_baseline_construction_and_evaluation",
+        "no_confirmed_failure_labels_available",
+        "relative_score_not_failure_probability_confidence_rul_or_diagnosis"
+      ]
+    },
+    "candidateLimitations": {
+      "type": "array",
+      "const": [
+        "candidate_not_ground_truth",
+        "historical_source_participated_in_baseline_construction_and_evaluation",
+        "no_confirmed_failure_labels_available",
+        "relative_score_not_failure_probability_confidence_rul_or_diagnosis"
+      ]
+    },
     "series": {
       "type": "object",
       "additionalProperties": false,
@@ -260,9 +277,10 @@
         "humanValidationRequired": { "const": true },
         "groundTruthLabelsAvailable": { "const": false },
         "limitations": {
-          "type": "array",
-          "items": { "type": "string", "minLength": 1 },
-          "uniqueItems": true
+          "oneOf": [
+            { "$ref": "#/definitions/baseLimitations" },
+            { "$ref": "#/definitions/candidateLimitations" }
+          ]
         },
         "aggregation": { "$ref": "#/definitions/seriesAggregation" },
         "points": {
@@ -292,22 +310,13 @@
           "then": {
             "type": "object",
             "properties": {
-              "limitations": {
-                "type": "array",
-                "minItems": 1,
-                "contains": { "const": "candidate_not_ground_truth" }
-              }
+              "limitations": { "$ref": "#/definitions/candidateLimitations" }
             }
           },
           "else": {
             "type": "object",
             "properties": {
-              "limitations": {
-                "type": "array",
-                "not": {
-                  "contains": { "const": "candidate_not_ground_truth" }
-                }
-              }
+              "limitations": { "$ref": "#/definitions/baseLimitations" }
             }
           }
         }
