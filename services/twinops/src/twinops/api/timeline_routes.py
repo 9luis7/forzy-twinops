@@ -10,6 +10,7 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from twinops.api.v2_routes import PUBLIC_ASSET_ID
 from twinops.contracts.timeline_v1_models import (
     ContractModelTimelineV1,
+    TimelineAssessmentOverviewV1,
     TimelineContextV1,
     TimelineOverviewV1,
     TimelinePageV1,
@@ -17,12 +18,17 @@ from twinops.contracts.timeline_v1_models import (
     validate_timeline_public_v1,
 )
 from twinops.timeline.cursor_v1 import TimelineCursorConflict
+from twinops.timeline.assessment_series_v1 import (
+    TimelineAssessmentBudgetConflictV1,
+    TimelineAssessmentQueryV1,
+)
 from twinops.timeline.repository_v1 import TimelineReadQueryV1
 from twinops.timeline.service_v1 import (
     TimelineAssetNotFoundV1,
     TimelineContextQueryInvalidV1,
     TimelineContextQueryV1,
     TimelineOverviewQueryV1,
+    TimelineOverviewSnapshotConflictV1,
     TimelinePointNotFoundV1,
     TimelineSegmentNotFoundV1,
     TimelineSelectionOutsideSegment,
@@ -39,6 +45,9 @@ _METRICS = frozenset(
 )
 _OVERVIEW_QUERY_ALIASES = frozenset(
     {"from", "to", "sensorId", "metric", "maxPoints"}
+)
+_ASSESSMENTS_QUERY_ALIASES = frozenset(
+    {"from", "to", "sensorId", "maxPoints"}
 )
 _SAMPLES_QUERY_ALIASES = frozenset(
     {"from", "to", "sensorId", "metric", "limit", "cursor"}
@@ -146,6 +155,49 @@ def create_timeline_router() -> APIRouter:
             result,
             model_type=TimelineOverviewV1,
             schema_name="timeline-overview",
+        )
+
+    @router.get("/assets/{asset_id}/timeline/assessments")
+    def assessments(
+        request: Request,
+        asset_id: str,
+        from_value: str | None = Query(None, alias="from"),
+        to_value: str | None = Query(None, alias="to"),
+        sensor_value: str | None = Query(None, alias="sensorId"),
+        max_points_value: str = Query("4000", alias="maxPoints"),
+    ):
+        _require_asset(asset_id)
+        _reject_duplicate_query_aliases(request, _ASSESSMENTS_QUERY_ALIASES)
+        try:
+            query = TimelineAssessmentQueryV1(
+                asset_id=asset_id,
+                from_at=_parse_timestamp(from_value),
+                to_at=_parse_timestamp(to_value),
+                sensor_id=_parse_sensor(sensor_value),
+                max_points=_parse_integer(
+                    max_points_value,
+                    minimum=40,
+                    maximum=4000,
+                ),
+            )
+        except (TypeError, ValueError) as exc:
+            raise _invalid_query() from exc
+        try:
+            result = request.app.state.timeline_service.assessments(query)
+        except TimelineAssessmentBudgetConflictV1 as exc:
+            raise HTTPException(
+                status_code=422,
+                detail="timeline_assessment_budget_conflict",
+            ) from exc
+        except TimelineOverviewSnapshotConflictV1 as exc:
+            raise HTTPException(
+                status_code=409,
+                detail="timeline_assessment_snapshot_conflict",
+            ) from exc
+        return _public_payload(
+            result,
+            model_type=TimelineAssessmentOverviewV1,
+            schema_name="timeline-assessment-overview",
         )
 
     @router.get("/assets/{asset_id}/timeline/samples")

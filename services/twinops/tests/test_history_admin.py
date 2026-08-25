@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from contextlib import closing, contextmanager
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from hashlib import sha256
 import json
@@ -11,7 +12,7 @@ import sqlite3
 import subprocess
 import sys
 from types import SimpleNamespace
-from uuid import uuid4
+from uuid import NAMESPACE_URL, uuid4, uuid5
 
 import pytest
 
@@ -67,6 +68,7 @@ if SURFACE_READY:
         HistoryProfileV1,
         registered_profile,
     )
+    from twinops.ml.historical_assessments_v1 import HistoricalAssessmentBuildV1
     from twinops.security import admin_result_writer_v1 as writer_module
     from twinops.storage import sqlite_historical_repository_v1 as sqlite_repository_module
     from twinops.storage.collection_policy_v1 import (
@@ -88,6 +90,12 @@ if SURFACE_READY:
     )
     from twinops.storage.sqlite_historical_repository_v1 import (
         SQLiteHistoricalRepositoryV1,
+        _assessment_manifest_hash,
+        _assessment_values,
+    )
+    from services.twinops.tests.storage.historical_repository_contract import (
+        _assessment as stored_assessment,
+        synthetic_prepared_batch,
     )
 
 
@@ -101,6 +109,10 @@ ASSESSMENT_MANIFEST = "sha256:" + "4" * 64
 BATCH = "sha256:" + "5" * 64
 ACTIVE = "sha256:" + "6" * 64
 MIGRATION_MANIFEST = "sha256:" + "7" * 64
+ARTIFACT = "sha256:" + "d" * 64
+FEATURE_MANIFEST = "sha256:" + "b" * 64
+REPORT = "sha256:" + "f" * 64
+CONFIG = "sha256:" + "c" * 64
 NOW = datetime(2026, 5, 19, 15, 0, 0, tzinfo=timezone.utc)
 
 
@@ -156,6 +168,29 @@ def _activate_args(result_path: Path, *, mode: str = "--dry-run"):
         ASSESSMENT_MANIFEST,
         "--expected-active-batch",
         "none",
+        "--result-json",
+        str(result_path),
+    ]
+
+
+def _build_assessments_args(
+    result_path: Path,
+    *,
+    mode: str = "--dry-run",
+    batch_id: str = BATCH,
+):
+    return _base("build-assessments") + [
+        mode,
+        "--batch-id",
+        batch_id,
+        "--artifact-sha256",
+        ARTIFACT,
+        "--feature-manifest-sha256",
+        FEATURE_MANIFEST,
+        "--report-sha256",
+        REPORT,
+        "--config-sha256",
+        CONFIG,
         "--result-json",
         str(result_path),
     ]
@@ -293,6 +328,27 @@ class RepositorySpy:
             assessment_count=1,
             assessment_manifest_sha256=ASSESSMENT_MANIFEST,
             writes_performed=1,
+        )
+
+    def store_assessments(self, batch_id, assessments):
+        self.write_calls.append("store_assessments")
+        values = tuple(_assessment_values(item) for item in assessments)
+        manifest = _assessment_manifest_hash(batch_id, values)
+        existing = self.summary.assessment_count
+        self.summary = SimpleNamespace(
+            **{
+                **vars(self.summary),
+                "assessment_count": len(assessments),
+                "assessment_manifest_sha256": manifest,
+            }
+        )
+        return SimpleNamespace(
+            batch_id=batch_id,
+            inserted_count=len(assessments) - existing,
+            existing_count=existing,
+            total_count=len(assessments),
+            assessment_manifest_sha256=manifest,
+            writes_performed=(len(assessments) - existing) + 1,
         )
 
 
@@ -2415,25 +2471,494 @@ class TestSeedCollectionPolicyPhaseA:
         finally:
             history_admin_module.remove_attested_temp_dir(attested)
 
-    def test_build_assessments_stays_phase_b_grammar_without_repository_access(
+    def test_build_assessments_dry_run_scores_active_batch_once_without_write(
         self,
         capsys,
+        monkeypatch,
     ):
-        """Catches Phase A accidentally executing the Phase B assessment command."""
+        """Catches active dry-runs writing or invoking the causal builder twice."""
 
-        result = _result_path("phase-b-only")
-        args = _base("build-assessments") + [
-            "--dry-run",
-            "--batch-id",
-            BATCH,
-            "--result-json",
-            str(result),
+        batch = synthetic_prepared_batch(0)
+        assessment = stored_assessment(
+            batch,
+            model_version="1.0.1",
+            limitations=[
+                "historical_source_participated_in_baseline_construction_and_evaluation",
+                "no_confirmed_failure_labels_available",
+                "relative_score_not_failure_probability_confidence_rul_or_diagnosis",
+            ],
+            exact_anchor=True,
+        )
+        build = HistoricalAssessmentBuildV1(
+            assessments=(assessment,),
+            artifact_sha256=ARTIFACT,
+            feature_manifest_sha256=FEATURE_MANIFEST,
+            report_sha256=REPORT,
+            config_sha256=CONFIG,
+            candidate_count=0,
+            validated_anchor_count=1,
+            validated_episode_count=0,
+        )
+        expected_manifest = _assessment_manifest_hash(
+            batch.batch_id,
+            (_assessment_values(assessment),),
+        )
+        repository = RepositorySpy()
+        repository.existing_prepared = batch
+        repository.summary = SimpleNamespace(
+            batch_id=batch.batch_id,
+            asset_id=batch.asset_id,
+            status="active",
+            source_sha256=batch.source_sha256,
+            manifest_sha256=batch.manifest_sha256,
+            raw_row_count=len(batch.raw_rows),
+            sample_count=len(batch.samples),
+            operating_cycle_count=1,
+            assessment_count=0,
+            assessment_manifest_sha256=None,
+        )
+        calls = []
+
+        def build_once(prepared, artifact_dir, **identities):
+            calls.append((prepared, artifact_dir, identities))
+            return build
+
+        monkeypatch.setattr(
+            history_admin_module,
+            "build_historical_assessments_v1",
+            build_once,
+            raising=False,
+        )
+        result = _result_path("assessment-dry-run")
+        result.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            code, captured, _ = _invoke(
+                _build_assessments_args(result, batch_id=batch.batch_id),
+                capsys,
+                repository=repository,
+            )
+
+            assert code == 0, captured.err
+            assert len(calls) == 1
+            assert calls[0][0] is batch
+            assert calls[0][2] == {
+                "expected_artifact_sha256": ARTIFACT,
+                "expected_feature_manifest_sha256": FEATURE_MANIFEST,
+                "expected_report_sha256": REPORT,
+                "expected_config_sha256": CONFIG,
+            }
+            assert repository.write_calls == []
+            assert json.loads(result.read_text(encoding="utf-8")) == {
+                "command": "build-assessments",
+                "mode": "dry-run",
+                "environment": "preview",
+                "targetFingerprint": TARGET,
+                "schemaVersion": SCHEMA_VERSION,
+                "assetId": batch.asset_id,
+                "batchId": batch.batch_id,
+                "sourceSha256": batch.source_sha256,
+                "historyManifestSha256": batch.manifest_sha256,
+                "artifactSha256": ARTIFACT,
+                "featureManifestSha256": FEATURE_MANIFEST,
+                "reportSha256": REPORT,
+                "configSha256": CONFIG,
+                "modelFamily": "robust-baseline",
+                "modelVersion": "1.0.1",
+                "assessmentManifestSha256": expected_manifest,
+                "assessmentCount": 1,
+                "candidateCount": 0,
+                "validatedAnchorCount": 1,
+                "validatedEpisodeCount": 0,
+                "anchorInvariantViolationCount": 0,
+                "episodeInvariantViolationCount": 0,
+                "insertedCount": 1,
+                "existingCount": 0,
+                "writesPerformed": 0,
+            }
+            _assert_no_sensitive_output(captured)
+        finally:
+            result.unlink(missing_ok=True)
+
+    def test_build_assessments_apply_materializes_only_a_staged_batch(
+        self,
+        capsys,
+        monkeypatch,
+    ):
+        """Catches apply bypassing staged-only materialization or its reread."""
+
+        batch = synthetic_prepared_batch(0)
+        assessment = stored_assessment(
+            batch,
+            model_version="1.0.1",
+            limitations=[
+                "historical_source_participated_in_baseline_construction_and_evaluation",
+                "no_confirmed_failure_labels_available",
+                "relative_score_not_failure_probability_confidence_rul_or_diagnosis",
+            ],
+        )
+        build = HistoricalAssessmentBuildV1(
+            assessments=(assessment,),
+            artifact_sha256=ARTIFACT,
+            feature_manifest_sha256=FEATURE_MANIFEST,
+            report_sha256=REPORT,
+            config_sha256=CONFIG,
+            candidate_count=0,
+            validated_anchor_count=1,
+            validated_episode_count=0,
+        )
+        repository = RepositorySpy()
+        repository.existing_prepared = batch
+        repository.summary = SimpleNamespace(
+            batch_id=batch.batch_id,
+            asset_id=batch.asset_id,
+            status="staged",
+            source_sha256=batch.source_sha256,
+            manifest_sha256=batch.manifest_sha256,
+            raw_row_count=len(batch.raw_rows),
+            sample_count=len(batch.samples),
+            operating_cycle_count=1,
+            assessment_count=0,
+            assessment_manifest_sha256=None,
+        )
+        calls = []
+        monkeypatch.setattr(
+            history_admin_module,
+            "build_historical_assessments_v1",
+            lambda *args, **kwargs: calls.append((args, kwargs)) or build,
+        )
+        result = _result_path("assessment-apply")
+        result.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            code, captured, factory = _invoke(
+                _build_assessments_args(
+                    result,
+                    mode="--apply",
+                    batch_id=batch.batch_id,
+                ),
+                capsys,
+                repository=repository,
+            )
+
+            assert code == 0, captured.err
+            assert len(calls) == 1
+            assert repository.write_calls == ["store_assessments"]
+            assert len(factory.calls) == 1
+            written = json.loads(result.read_text(encoding="utf-8"))
+            assert written["mode"] == "apply"
+            assert written["insertedCount"] == 1
+            assert written["existingCount"] == 0
+            assert written["writesPerformed"] == 2
+            assert written["anchorInvariantViolationCount"] == 0
+            assert written["episodeInvariantViolationCount"] == 0
+            _assert_no_sensitive_output(captured)
+        finally:
+            result.unlink(missing_ok=True)
+
+    def test_build_assessments_apply_rejects_active_before_scoring_or_write(
+        self,
+        capsys,
+        monkeypatch,
+    ):
+        """Catches a second materialization mutating the immutable active batch."""
+
+        batch = synthetic_prepared_batch(0)
+        repository = RepositorySpy()
+        repository.existing_prepared = batch
+        repository.summary = SimpleNamespace(
+            batch_id=batch.batch_id,
+            asset_id=batch.asset_id,
+            status="active",
+            source_sha256=batch.source_sha256,
+            manifest_sha256=batch.manifest_sha256,
+            raw_row_count=len(batch.raw_rows),
+            sample_count=len(batch.samples),
+            operating_cycle_count=1,
+            assessment_count=0,
+            assessment_manifest_sha256=None,
+        )
+        monkeypatch.setattr(
+            history_admin_module,
+            "build_historical_assessments_v1",
+            lambda *args, **kwargs: pytest.fail("active apply must fail before scoring"),
+        )
+        result = _result_path("assessment-active-apply")
+        result.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            code, captured, _ = _invoke(
+                _build_assessments_args(
+                    result,
+                    mode="--apply",
+                    batch_id=batch.batch_id,
+                ),
+                capsys,
+                repository=repository,
+            )
+
+            assert code == 1
+            assert repository.write_calls == []
+            assert not result.exists()
+            _assert_no_sensitive_output(captured)
+        finally:
+            result.unlink(missing_ok=True)
+
+    def test_build_assessments_rejects_forged_uuid5_before_store(
+        self,
+        capsys,
+        monkeypatch,
+    ):
+        """Catches attesting a valid UUIDv5 that is not the Task-1 identity."""
+
+        batch = synthetic_prepared_batch(0)
+        valid = stored_assessment(
+            batch,
+            model_version="1.0.1",
+            limitations=[
+                "historical_source_participated_in_baseline_construction_and_evaluation",
+                "no_confirmed_failure_labels_available",
+                "relative_score_not_failure_probability_confidence_rul_or_diagnosis",
+            ],
+        )
+        forged = replace(
+            valid,
+            assessment=valid.assessment.model_copy(
+                update={"assessment_id": uuid5(NAMESPACE_URL, "forged-admin-id")}
+            ),
+        )
+        build = HistoricalAssessmentBuildV1(
+            assessments=(forged,),
+            artifact_sha256=ARTIFACT,
+            feature_manifest_sha256=FEATURE_MANIFEST,
+            report_sha256=REPORT,
+            config_sha256=CONFIG,
+            candidate_count=0,
+            validated_anchor_count=1,
+            validated_episode_count=0,
+        )
+        repository = RepositorySpy()
+        repository.existing_prepared = batch
+        repository.summary = SimpleNamespace(
+            batch_id=batch.batch_id,
+            asset_id=batch.asset_id,
+            status="staged",
+            source_sha256=batch.source_sha256,
+            manifest_sha256=batch.manifest_sha256,
+            raw_row_count=len(batch.raw_rows),
+            sample_count=len(batch.samples),
+            operating_cycle_count=1,
+            assessment_count=0,
+            assessment_manifest_sha256=None,
+        )
+        monkeypatch.setattr(
+            history_admin_module,
+            "build_historical_assessments_v1",
+            lambda *args, **kwargs: build,
+        )
+        result = _result_path("assessment-forged")
+        result.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            code, captured, _ = _invoke(
+                _build_assessments_args(result, batch_id=batch.batch_id),
+                capsys,
+                repository=repository,
+            )
+
+            assert code == 1
+            assert repository.write_calls == []
+            assert not result.exists()
+            _assert_no_sensitive_output(captured)
+        finally:
+            result.unlink(missing_ok=True)
+
+    def test_build_assessments_real_sqlite_dry_run_is_byte_and_inventory_stable(
+        self,
+        capsys,
+        monkeypatch,
+    ):
+        """Catches a dry-run touching database bytes or sidecar inventory."""
+
+        attested = history_admin_module.create_attested_temp_dir()
+        root = Path(attested.path)
+        database = root / "assessment-dry-run.sqlite3"
+        fingerprint = _create_local_admin_database(database)
+        batch = synthetic_prepared_batch(0)
+        SQLiteHistoricalRepositoryV1(database).stage_batch(batch)
+        assessment = stored_assessment(
+            batch,
+            model_version="1.0.1",
+            limitations=[
+                "historical_source_participated_in_baseline_construction_and_evaluation",
+                "no_confirmed_failure_labels_available",
+                "relative_score_not_failure_probability_confidence_rul_or_diagnosis",
+            ],
+        )
+        build = HistoricalAssessmentBuildV1(
+            assessments=(assessment,),
+            artifact_sha256=ARTIFACT,
+            feature_manifest_sha256=FEATURE_MANIFEST,
+            report_sha256=REPORT,
+            config_sha256=CONFIG,
+            candidate_count=0,
+            validated_anchor_count=1,
+            validated_episode_count=0,
+        )
+        builder_calls = []
+        monkeypatch.setattr(
+            history_admin_module,
+            "build_historical_assessments_v1",
+            lambda *args, **kwargs: builder_calls.append((args, kwargs)) or build,
+        )
+        result = _result_path("assessment-real-sqlite-dry-run")
+        result.parent.mkdir(parents=True, exist_ok=True)
+        dml: list[str] = []
+        args = _build_assessments_args(result, batch_id=batch.batch_id) + [
+            "--database-path",
+            str(database),
         ]
-        code, captured, factory = _invoke(args, capsys)
-        assert code == 1
-        assert factory.calls == []
-        assert not result.exists()
-        _assert_no_sensitive_output(captured)
+        _set_option(args, "--environment", "local")
+        _set_option(args, "--expected-target-fingerprint", fingerprint)
+
+        def inventory() -> dict[str, tuple[int, str]]:
+            return {
+                str(path.relative_to(root)): (
+                    path.stat().st_size,
+                    sha256(path.read_bytes()).hexdigest(),
+                )
+                for path in sorted(root.rglob("*"))
+                if path.is_file()
+            }
+
+        before_bytes = database.read_bytes()
+        before_inventory = inventory()
+        try:
+            code = main(
+                args,
+                env={},
+                clock=lambda: NOW,
+                repository_factory=_sqlite_tracing_repository_factory(dml),
+            )
+            captured = capsys.readouterr()
+
+            assert code == 0, captured.err
+            assert len(builder_calls) == 1
+            assert dml == []
+            assert database.read_bytes() == before_bytes
+            assert inventory() == before_inventory
+            payload = json.loads(result.read_bytes())
+            assert payload["mode"] == "dry-run"
+            assert payload["writesPerformed"] == 0
+            _assert_no_sensitive_output(captured, database)
+        finally:
+            result.unlink(missing_ok=True)
+            history_admin_module.remove_attested_temp_dir(attested)
+
+    def test_build_assessments_apply_retry_after_result_failure_is_noop(
+        self,
+        capsys,
+        monkeypatch,
+    ):
+        """Catches result publication retry duplicating immutable assessments."""
+
+        attested = history_admin_module.create_attested_temp_dir()
+        root = Path(attested.path)
+        database = root / "assessment-retry.sqlite3"
+        fingerprint = _create_local_admin_database(database)
+        batch = synthetic_prepared_batch(0)
+        SQLiteHistoricalRepositoryV1(database).stage_batch(batch)
+        assessment = stored_assessment(
+            batch,
+            model_version="1.0.1",
+            limitations=[
+                "historical_source_participated_in_baseline_construction_and_evaluation",
+                "no_confirmed_failure_labels_available",
+                "relative_score_not_failure_probability_confidence_rul_or_diagnosis",
+            ],
+        )
+        build = HistoricalAssessmentBuildV1(
+            assessments=(assessment,),
+            artifact_sha256=ARTIFACT,
+            feature_manifest_sha256=FEATURE_MANIFEST,
+            report_sha256=REPORT,
+            config_sha256=CONFIG,
+            candidate_count=0,
+            validated_anchor_count=1,
+            validated_episode_count=0,
+        )
+        build_calls = []
+        monkeypatch.setattr(
+            history_admin_module,
+            "build_historical_assessments_v1",
+            lambda *args, **kwargs: build_calls.append((args, kwargs)) or build,
+        )
+        real_writer = history_admin_module.AdminResultWriterV1
+        publication_calls = 0
+
+        class FailOnceWriter(real_writer):
+            def write(self, value):
+                nonlocal publication_calls
+                publication_calls += 1
+                if publication_calls == 1:
+                    raise OSError("injected assessment result publication failure")
+                return super().write(value)
+
+        monkeypatch.setattr(
+            history_admin_module,
+            "AdminResultWriterV1",
+            FailOnceWriter,
+        )
+        result = _result_path("assessment-apply-retry")
+        result.parent.mkdir(parents=True, exist_ok=True)
+        args = _build_assessments_args(
+            result,
+            mode="--apply",
+            batch_id=batch.batch_id,
+        ) + [
+            "--database-path",
+            str(database),
+            "--allow-local-write",
+        ]
+        _set_option(args, "--environment", "local")
+        _set_option(args, "--expected-target-fingerprint", fingerprint)
+        dml: list[str] = []
+        factory = _sqlite_tracing_repository_factory(dml)
+        try:
+            first = main(
+                args,
+                env={},
+                clock=lambda: NOW,
+                repository_factory=factory,
+            )
+            first_dml_count = len(dml)
+            assert first == 1
+            assert first_dml_count > 0
+            assert not result.exists()
+            with closing(sqlite3.connect(database)) as connection:
+                assert connection.execute(
+                    "SELECT status,assessment_count FROM historical_import_batches_v1 "
+                    "WHERE batch_id=?",
+                    (batch.batch_id,),
+                ).fetchone() == ("staged", 1)
+
+            second = main(
+                args,
+                env={},
+                clock=lambda: NOW,
+                repository_factory=factory,
+            )
+            captured = capsys.readouterr()
+
+            assert second == 0, captured.err
+            assert len(build_calls) == 2
+            assert len(dml) == first_dml_count
+            payload = json.loads(result.read_bytes())
+            assert payload["insertedCount"] == 0
+            assert payload["existingCount"] == 1
+            assert payload["writesPerformed"] == 0
+            assert payload["anchorInvariantViolationCount"] == 0
+            assert payload["episodeInvariantViolationCount"] == 0
+            _assert_no_sensitive_output(captured, database)
+        finally:
+            result.unlink(missing_ok=True)
+            history_admin_module.remove_attested_temp_dir(attested)
 
 
 def _local_stage_command(

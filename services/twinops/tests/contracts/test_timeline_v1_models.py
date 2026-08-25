@@ -325,7 +325,7 @@ def test_python_registry_checks_ids_schemas_duplicates_and_cross_references() ->
         )
     )
     registry, validators = builder(documents)
-    assert len(list(registry)) == 10
+    assert len(list(registry)) == 11
     assert set(validators) == {
         "collection-policy",
         "historical-assessment",
@@ -333,6 +333,7 @@ def test_python_registry_checks_ids_schemas_duplicates_and_cross_references() ->
         "timeline-context",
         "timeline-decision-facts",
         "timeline-event-candidate",
+        "timeline-assessment-overview",
         "timeline-overview",
         "timeline-page",
         "timeline-point",

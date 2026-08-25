@@ -29,6 +29,8 @@ from twinops.storage.collection_policy_v1 import (
 from twinops.storage.historical_repository_v1 import (
     ActivateHistoryResultV1,
     AssessmentStoreResultV1,
+    HistoricalAssessmentRangeQueryV1,
+    HistoricalAssessmentSliceV1,
     HistoricalBatchConflict,
     HistoricalBatchSummaryV1,
     StageHistoryResultV1,
@@ -41,20 +43,24 @@ from twinops.storage.schema_migrations import (
 from twinops.storage.sqlite_historical_repository_v1 import (
     _ASSET_ID,
     _ASSESSMENT_COLUMNS,
+    _ASSESSMENT_READ_SELECT,
     _BATCH_COLUMNS,
     _BATCH_SELECT,
+    _BATCH_SUMMARY_SELECT,
     _POLICY_COLUMNS,
     _RAW_COLUMNS,
     _RAW_SELECT,
     _SAMPLE_COLUMNS,
     _SAMPLE_SELECT,
     _StoredBatch,
+    _batch_summary_from_row,
     _assessment_manifest_hash,
     _assessment_values,
     _decode_canonical_json,
     _now_utc_millis,
     _parse_stored_timestamp,
     _require_sha256,
+    _require_uuid5,
     _utc_millis,
     _validate_prepared_batch,
 )
@@ -177,6 +183,7 @@ class PostgresHistoricalRepositoryV1:
         ).fetchall()
         sample_by_id = {sample.point_id: sample.reading for sample in prepared.samples}
         values: list[tuple[object, ...]] = []
+        seen_anchor_ids: set[str] = set()
         for stored_row in rows:
             row = _normalised_row(stored_row)
             canonical = _decode_canonical_json(
@@ -202,12 +209,18 @@ class PostgresHistoricalRepositoryV1:
                     "stored historical assessment projection mismatch"
                 )
             anchor = sample_by_id.get(str(assessment.anchor_point_id))
+            anchor_id = str(assessment.anchor_point_id)
             if anchor is None or (
                 anchor.sensor_id != assessment.sensor_id
                 or anchor.operating_cycle_id != assessment.operating_cycle_id
-                or assessment.assessment_at > anchor.event_at
+                or assessment.assessment_at != anchor.event_at
             ):
                 raise HistoricalBatchConflict("stored historical assessment anchor mismatch")
+            if anchor_id in seen_anchor_ids:
+                raise HistoricalBatchConflict(
+                    "multiple historical assessments target one anchor"
+                )
+            seen_anchor_ids.add(anchor_id)
             values.append(expected)
         return tuple(values)
 
@@ -458,24 +471,52 @@ class PostgresHistoricalRepositoryV1:
         assessment_ids = [str(value[0]) for value in expected_values]
         if len(assessment_ids) != len(set(assessment_ids)):
             raise HistoricalBatchConflict("duplicate historical assessment identity")
+        anchor_ids = [str(value[10]) for value in expected_values]
+        if len(anchor_ids) != len(set(anchor_ids)):
+            raise HistoricalBatchConflict(
+                "multiple historical assessments target one anchor"
+            )
 
         connection = self._connect()
         try:
             connection.execute(
                 "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))", (batch_id,)
             )
+            connection.execute(
+                "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
+                ("historical-assessment-global-identity-v1",),
+            )
             stored_before = self._stored_batch(connection, batch_id, lock=True)
             if stored_before.summary.status != "staged":
                 raise HistoricalBatchConflict("historical assessments require a staged batch")
             existing_rows = connection.execute(
                 "SELECT assessment_id,batch_id,canonical_json FROM historical_assessments_v1 "
-                "WHERE assessment_id = ANY(%s) FOR UPDATE",
-                (assessment_ids,),
+                "WHERE batch_id=%s ORDER BY assessment_id FOR UPDATE",
+                (batch_id,),
             ).fetchall()
             existing = {
                 row["assessment_id"]: (row["batch_id"], row["canonical_json"])
                 for row in existing_rows
             }
+            owner_rows = connection.execute(
+                "SELECT assessment_id,batch_id,canonical_json "
+                "FROM historical_assessments_v1 "
+                "WHERE assessment_id = ANY(%s) ORDER BY assessment_id FOR UPDATE",
+                (assessment_ids,),
+            ).fetchall()
+            for row in owner_rows:
+                if row["batch_id"] != batch_id:
+                    raise HistoricalBatchConflict(
+                        "historical assessment identity belongs to another batch"
+                    )
+            if existing and set(existing) != set(assessment_ids):
+                raise HistoricalBatchConflict(
+                    "stored rows differ from the exact assessment set"
+                )
+            expected_manifest_hash = _assessment_manifest_hash(
+                batch_id,
+                expected_values,
+            )
             to_insert: list[tuple[object, ...]] = []
             existing_count = 0
             for value in expected_values:
@@ -494,12 +535,30 @@ class PostgresHistoricalRepositoryV1:
             if to_insert:
                 markers = ",".join(["%s"] * len(_ASSESSMENT_COLUMNS))
                 for values in to_insert:
-                    connection.execute(
-                        "INSERT INTO historical_assessments_v1 (" + _ASSESSMENT_SELECT
-                        + ") VALUES (" + markers + ")", values
-                    )
+                    try:
+                        connection.execute(
+                            "INSERT INTO historical_assessments_v1 ("
+                            + _ASSESSMENT_SELECT
+                            + ") VALUES ("
+                            + markers
+                            + ")",
+                            values,
+                        )
+                    except psycopg.errors.UniqueViolation as exc:
+                        raise HistoricalBatchConflict(
+                            "historical assessment identity conflicts with stored data"
+                        ) from exc
                 all_values = self._stored_assessment_values(connection, stored_before.prepared)
                 manifest_hash = _assessment_manifest_hash(batch_id, all_values)
+                if (
+                    {str(value[0]) for value in all_values}
+                    != set(assessment_ids)
+                    or len(all_values) != len(expected_values)
+                    or manifest_hash != expected_manifest_hash
+                ):
+                    raise HistoricalBatchConflict(
+                        "stored rows differ from the exact assessment set"
+                    )
                 cursor = connection.execute(
                     "UPDATE historical_import_batches_v1 "
                     "SET assessment_count=%s,assessment_manifest_sha256=%s "
@@ -511,6 +570,15 @@ class PostgresHistoricalRepositoryV1:
             else:
                 all_values = self._stored_assessment_values(connection, stored_before.prepared)
                 manifest_hash = _assessment_manifest_hash(batch_id, all_values)
+                if (
+                    {str(value[0]) for value in all_values}
+                    != set(assessment_ids)
+                    or len(all_values) != len(expected_values)
+                    or manifest_hash != expected_manifest_hash
+                ):
+                    raise HistoricalBatchConflict(
+                        "stored rows differ from the exact assessment set"
+                    )
             stored_after = self._stored_batch(connection, batch_id, lock=True)
             if stored_after.summary.assessment_manifest_sha256 != manifest_hash:
                 raise HistoricalBatchConflict("historical assessment manifest reread failed")
@@ -528,6 +596,148 @@ class PostgresHistoricalRepositoryV1:
             raise
         finally:
             connection.close()
+
+    @staticmethod
+    def _assessment_slice_from_rows(
+        rows: Sequence[dict[str, object]],
+        *,
+        batch_id: str,
+    ) -> HistoricalAssessmentSliceV1:
+        assessments: list[HistoricalAssessmentV1] = []
+        anchors: dict[str, TimelinePointV1] = {}
+        for stored_row in rows:
+            row = _normalised_row(stored_row)
+            canonical = _decode_canonical_json(
+                row["canonical_json"],
+                "stored historical assessment",
+            )
+            anchor_canonical = _decode_canonical_json(
+                row["anchor_canonical_json"],
+                "stored historical assessment anchor",
+            )
+            if not isinstance(canonical, dict) or not isinstance(
+                anchor_canonical, dict
+            ):
+                raise HistoricalBatchConflict(
+                    "stored historical assessment read is not an object"
+                )
+            try:
+                assessment = HistoricalAssessmentV1.model_validate(canonical)
+                anchor = historical_timeline_point_from_canonical_v1(
+                    anchor_canonical
+                )
+            except Exception as exc:
+                raise HistoricalBatchConflict(
+                    "stored historical assessment read failed closed validation"
+                ) from exc
+            expected = _assessment_values(
+                StoredHistoricalAssessmentV1(
+                    batch_id=batch_id,
+                    assessment=assessment,
+                )
+            )
+            if _row_values(row, _ASSESSMENT_COLUMNS) != expected:
+                raise HistoricalBatchConflict(
+                    "stored historical assessment read projection mismatch"
+                )
+            anchor_id = str(assessment.anchor_point_id)
+            if not (
+                str(anchor.point_id) == anchor_id
+                and anchor.provenance.batch_id == batch_id
+                and anchor.sensor_id == assessment.sensor_id
+                and anchor.operating_cycle_id == assessment.operating_cycle_id
+                and anchor.event_at == assessment.assessment_at
+            ):
+                raise HistoricalBatchConflict(
+                    "stored historical assessment read anchor mismatch"
+                )
+            existing = anchors.get(anchor_id)
+            if (
+                existing is not None
+                and existing.model_dump_public() != anchor.model_dump_public()
+            ):
+                raise HistoricalBatchConflict(
+                    "stored historical assessment anchor diverges"
+                )
+            anchors[anchor_id] = anchor
+            assessments.append(assessment)
+        try:
+            return HistoricalAssessmentSliceV1(
+                assessments=tuple(assessments),
+                anchors_by_id=anchors,
+            )
+        except ValueError as exc:
+            raise HistoricalBatchConflict(
+                "stored historical assessment slice is inconsistent"
+            ) from exc
+
+    def historical_assessment_for_anchor(
+        self,
+        batch_id: str,
+        anchor_point_id: str,
+    ) -> HistoricalAssessmentV1 | None:
+        _require_sha256(batch_id, "batch ID")
+        _require_uuid5(anchor_point_id, "anchor point ID")
+        with self._connection() as connection:
+            rows = connection.execute(
+                f"SELECT {_ASSESSMENT_READ_SELECT},"
+                "s.canonical_json AS anchor_canonical_json "
+                "FROM historical_assessments_v1 AS a "
+                "JOIN historical_samples_v1 AS s "
+                "ON s.reading_id=a.anchor_point_id AND s.batch_id=a.batch_id "
+                "JOIN historical_import_batches_v1 AS b ON b.batch_id=a.batch_id "
+                "WHERE a.batch_id=%s AND a.anchor_point_id=%s "
+                "AND b.asset_id=s.asset_id "
+                "ORDER BY a.assessment_at,a.anchor_point_id,a.sensor_id,a.assessment_id "
+                "LIMIT 2",
+                (batch_id, anchor_point_id),
+            ).fetchall()
+        result = self._assessment_slice_from_rows(rows, batch_id=batch_id)
+        if len(result.assessments) > 1:
+            raise HistoricalBatchConflict(
+                "multiple historical assessments target one anchor"
+            )
+        return None if not result.assessments else result.assessments[0]
+
+    def historical_assessments(
+        self,
+        query: HistoricalAssessmentRangeQueryV1,
+    ) -> HistoricalAssessmentSliceV1:
+        if not isinstance(query, HistoricalAssessmentRangeQueryV1):
+            raise ValueError(
+                "historical assessments require HistoricalAssessmentRangeQueryV1"
+            )
+        clauses = [
+            "a.batch_id=%s",
+            "b.asset_id=%s",
+            "s.asset_id=%s",
+            "b.asset_id=s.asset_id",
+            "a.assessment_at>=%s",
+            "a.assessment_at<%s",
+        ]
+        parameters: list[object] = [
+            query.batch_id,
+            query.asset_id,
+            query.asset_id,
+            query.from_at,
+            query.to_at,
+        ]
+        if query.sensor_id is not None:
+            clauses.append("a.sensor_id=%s")
+            parameters.append(query.sensor_id)
+        with self._connection() as connection:
+            rows = connection.execute(
+                f"SELECT {_ASSESSMENT_READ_SELECT},"
+                "s.canonical_json AS anchor_canonical_json "
+                "FROM historical_assessments_v1 AS a "
+                "JOIN historical_samples_v1 AS s "
+                "ON s.reading_id=a.anchor_point_id AND s.batch_id=a.batch_id "
+                "JOIN historical_import_batches_v1 AS b ON b.batch_id=a.batch_id "
+                f"WHERE {' AND '.join(clauses)} "
+                "ORDER BY a.assessment_at,a.anchor_point_id,a.sensor_id,a.assessment_id",
+                tuple(parameters),
+            ).fetchall()
+        return self._assessment_slice_from_rows(rows, batch_id=query.batch_id)
 
     def activate_batch(
         self,
@@ -641,6 +851,23 @@ class PostgresHistoricalRepositoryV1:
             if not rows:
                 return None
             return self._stored_batch(connection, rows[0]["batch_id"]).summary
+
+    def active_batch_summary(
+        self,
+        asset_id: str,
+    ) -> HistoricalBatchSummaryV1 | None:
+        with self._connection() as connection:
+            rows = connection.execute(
+                f"SELECT {_BATCH_SUMMARY_SELECT} "
+                "FROM historical_import_batches_v1 "
+                "WHERE asset_id=%s AND status='active' ORDER BY batch_id",
+                (asset_id,),
+            ).fetchall()
+        if len(rows) > 1:
+            raise HistoricalBatchConflict("multiple active historical batches")
+        if not rows:
+            return None
+        return _batch_summary_from_row(_normalised_row(rows[0]))
 
     def read_archive_points(self, query: TimelineReadQueryV1) -> TimelineSliceV1:
         clauses = [

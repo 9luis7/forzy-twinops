@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 
 from twinops.config_v2 import SettingsV2
 from twinops.contracts.timeline_v1_models import (
+    TimelineAssessmentOverviewV1,
     TimelineContextV1,
     TimelineOverviewV1,
     TimelinePageV1,
@@ -16,6 +17,10 @@ from twinops.main_v2 import create_app_v2
 from twinops.timeline import service_v1
 from twinops.timeline.cursor_v1 import TimelineCursorConflict
 from twinops.timeline.repository_v1 import timeline_order_key_v1
+from twinops.timeline.assessment_series_v1 import (
+    TimelineAssessmentBudgetConflictV1,
+    TimelineAssessmentQueryV1,
+)
 
 from services.twinops.tests.timeline.overview_fixtures_v1 import (
     FakeTimelineRepositoryV1,
@@ -58,6 +63,31 @@ def _client(timeline_service, *, refresh_service=None):
         timeline_service=timeline_service,
     )
     return TestClient(app, raise_server_exceptions=False), refresh
+
+
+def _empty_assessment_overview() -> TimelineAssessmentOverviewV1:
+    return TimelineAssessmentOverviewV1.model_validate(
+        {
+            "schemaVersion": "1.0",
+            "assetId": "forzy-motor-01",
+            "activeHistoricalBatchId": None,
+            "requestedRange": {"from": None, "to": None},
+            "effectiveRange": None,
+            "materialization": {
+                "state": "no_active_historical_batch",
+                "assessmentCount": 0,
+                "assessmentManifestSha256": None,
+            },
+            "aggregationSummary": {
+                "requestedMaxPoints": 4000,
+                "originalAssessmentCount": 0,
+                "returnedAssessmentCount": 0,
+                "omittedAssessmentCount": 0,
+                "reducedSeriesCount": 0,
+            },
+            "series": [],
+        }
+    )
 
 
 def test_three_timeline_gets_honor_aliases_and_return_validated_public_models() -> None:
@@ -123,6 +153,33 @@ def test_samples_defaults_to_200_caps_at_500_and_returns_originals() -> None:
     assert [item["pointId"] for item in default.json()["items"]] == [
         str(point.point_id) for point in points
     ]
+
+
+def test_assessment_get_honors_aliases_and_defaults_to_demo_safe_budget() -> None:
+    timeline_service = Mock()
+    timeline_service.assessments.return_value = _empty_assessment_overview()
+    client, refresh = _client(timeline_service)
+
+    response = client.get(
+        "/api/v2/assets/forzy-motor-01/timeline/assessments",
+        params={
+            "from": TIME_A,
+            "to": TIME_B,
+            "sensorId": "s1",
+        },
+    )
+
+    assert response.status_code == 200
+    TimelineAssessmentOverviewV1.model_validate(response.json())
+    query = timeline_service.assessments.call_args.args[0]
+    assert query == TimelineAssessmentQueryV1(
+        asset_id="forzy-motor-01",
+        from_at=BASE,
+        to_at=BASE + timedelta(milliseconds=1),
+        sensor_id="s1",
+        max_points=4000,
+    )
+    refresh.refresh.assert_not_called()
 
 
 def test_missing_active_archive_returns_live_only_without_side_effects() -> None:
@@ -214,6 +271,42 @@ def test_missing_active_archive_returns_live_only_without_side_effects() -> None
             "40",
             "41",
             id="overview-max-points",
+        ),
+        pytest.param(
+            "timeline/assessments",
+            "assessments",
+            "from",
+            (),
+            TIME_A,
+            TIME_B,
+            id="assessments-from",
+        ),
+        pytest.param(
+            "timeline/assessments",
+            "assessments",
+            "to",
+            (),
+            TIME_A,
+            TIME_B,
+            id="assessments-to",
+        ),
+        pytest.param(
+            "timeline/assessments",
+            "assessments",
+            "sensorId",
+            (),
+            "s1",
+            "s2",
+            id="assessments-sensor",
+        ),
+        pytest.param(
+            "timeline/assessments",
+            "assessments",
+            "maxPoints",
+            (),
+            "40",
+            "41",
+            id="assessments-max-points",
         ),
         pytest.param(
             "timeline/samples",
@@ -351,6 +444,9 @@ def test_duplicate_unknown_query_parameters_remain_ignored() -> None:
         ("timeline", "metric=velocity"),
         ("timeline", "maxPoints=39"),
         ("timeline", "maxPoints=40.0"),
+        ("timeline/assessments", "from=2026-08-25T15:00:00Z"),
+        ("timeline/assessments", "sensorId=s3"),
+        ("timeline/assessments", "maxPoints=39"),
         ("timeline/samples", "limit=0"),
         ("timeline/samples", "limit=501"),
         ("timeline/context", ""),
@@ -374,12 +470,18 @@ def test_unknown_asset_is_404_before_timeline_service_calls() -> None:
     timeline_service = Mock()
     client, refresh = _client(timeline_service)
 
-    for suffix in ("timeline", "timeline/samples", "timeline/context?pointId=bad"):
+    for suffix in (
+        "timeline",
+        "timeline/assessments",
+        "timeline/samples",
+        "timeline/context?pointId=bad",
+    ):
         response = client.get(f"/api/v2/assets/not-real/{suffix}")
         assert response.status_code == 404
         assert response.json() == {"detail": "asset_not_found"}
     timeline_service.assert_not_called()
     timeline_service.overview.assert_not_called()
+    timeline_service.assessments.assert_not_called()
     timeline_service.samples.assert_not_called()
     timeline_service.context.assert_not_called()
     refresh.refresh.assert_not_called()
@@ -417,6 +519,38 @@ def test_named_context_and_cursor_errors_map_to_404_409_and_422() -> None:
         response = client.get(f"/api/v2/assets/forzy-motor-01/{path}")
 
         assert response.status_code == expected
+
+
+def test_assessment_budget_conflict_maps_to_stable_422() -> None:
+    timeline_service = Mock()
+    timeline_service.assessments.side_effect = TimelineAssessmentBudgetConflictV1(
+        "requested maxPoints is below the complete assessment envelope"
+    )
+    client, _ = _client(timeline_service)
+
+    response = client.get(
+        "/api/v2/assets/forzy-motor-01/timeline/assessments?maxPoints=40"
+    )
+
+    assert response.status_code == 422
+    assert response.json() == {"detail": "timeline_assessment_budget_conflict"}
+
+
+def test_assessment_snapshot_conflict_maps_to_stable_409() -> None:
+    timeline_service = Mock()
+    timeline_service.assessments.side_effect = (
+        service_v1.TimelineOverviewSnapshotConflictV1(
+            "active historical batch changed"
+        )
+    )
+    client, _ = _client(timeline_service)
+
+    response = client.get(
+        "/api/v2/assets/forzy-motor-01/timeline/assessments"
+    )
+
+    assert response.status_code == 409
+    assert response.json() == {"detail": "timeline_assessment_snapshot_conflict"}
 
 
 def test_unexpected_timeline_failure_uses_sanitized_500_boundary() -> None:

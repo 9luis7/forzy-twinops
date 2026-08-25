@@ -14,14 +14,21 @@ from uuid import UUID
 
 from twinops.contracts.timeline_v1_models import (
     CollectionPolicyV1,
+    HistoricalAssessmentV1,
     TimelineAggregationSummaryV1,
+    TimelineAssessmentOverviewV1,
     TimelineContextV1,
     TimelineOverviewV1,
     TimelinePageV1,
     TimelinePointV1,
     TimelineSeriesV1,
     parse_public_utc_millis_v1,
+    public_millisecond_successor_v1,
     serialize_public_utc_millis_v1,
+)
+from twinops.timeline.assessment_series_v1 import (
+    TimelineAssessmentQueryV1,
+    compose_assessment_overview_v1,
 )
 from twinops.timeline.cursor_v1 import TimelineCursorCodecV1, TimelinePaginatorV1
 from twinops.timeline.downsample_v1 import (
@@ -510,6 +517,35 @@ def _point_context(
         anchor=anchor,
         segment_id=segment_id,
     )
+    assessment = None
+    if anchor.source_kind == "historical_archive":
+        if snapshot.active_batch_id is None:
+            raise TimelineContextRepositoryErrorV1(
+                "historical context has no active batch identity"
+            )
+        try:
+            assessment = repository.historical_assessment_for_anchor(
+                snapshot.active_batch_id,
+                str(anchor.point_id),
+            )
+        except BaseException as exc:
+            raise TimelineContextRepositoryErrorV1(
+                "historical assessment exact lookup failed"
+            ) from exc
+        if assessment is not None and (
+            not isinstance(assessment, HistoricalAssessmentV1)
+            or str(assessment.anchor_point_id) != str(anchor.point_id)
+            or assessment.sensor_id != anchor.sensor_id
+            or assessment.operating_cycle_id != anchor.operating_cycle_id
+            or assessment.assessment_at != anchor.event_at
+        ):
+            raise TimelineContextRepositoryErrorV1(
+                "historical assessment does not match the exact original anchor"
+            )
+        if repository.active_batch_id(anchor.asset_id) != snapshot.active_batch_id:
+            raise TimelineOverviewSnapshotConflictV1(
+                "active historical batch changed"
+            )
     returned_count = sum(point is not None for point in channels.values())
     point_system = (
         "forzy-csv"
@@ -520,6 +556,22 @@ def _point_context(
         None
         if anchor.source_kind == "historical_archive"
         else anchor.provenance.collection_policy_id
+    )
+    data_trust = _context_data_trust(channels)
+    if assessment is not None:
+        if assessment.quality.status == "insufficient_data":
+            data_trust = "insufficient"
+        elif assessment.quality.status == "degraded" and data_trust == "sufficient":
+            data_trust = "degraded"
+    suppress_normal = (
+        assessment is not None
+        and assessment.status == "normal"
+        and (data_trust != "sufficient" or returned_count != 2)
+    )
+    assessment_source = (
+        "historical_walk_forward"
+        if assessment is not None and not suppress_normal
+        else "none"
     )
     return TimelineContextV1.model_validate(
         {
@@ -534,37 +586,61 @@ def _point_context(
                 )
                 for sensor_id, point in channels.items()
             },
-            "assessment": None,
+            "assessment": (
+                None if assessment is None else assessment.model_dump_public()
+            ),
             "decisionFacts": {
                 "schemaVersion": "1.0",
-                "conditionState": "unknown",
-                "conditionTemporalScope": "none",
-                "conditionAsOf": None,
-                "conditionEpisodeStartedAt": None,
-                "conditionSource": "none",
+                "conditionState": (
+                    "unknown" if assessment is None else assessment.status
+                ),
+                "conditionTemporalScope": (
+                    "none"
+                    if assessment is None or suppress_normal
+                    else "historical"
+                ),
+                "conditionAsOf": (
+                    None
+                    if assessment is None or suppress_normal
+                    else serialize_public_utc_millis_v1(assessment.assessment_at)
+                ),
+                "conditionEpisodeStartedAt": (
+                    None
+                    if assessment is None
+                    or suppress_normal
+                    or assessment.persistence.episode_started_at is None
+                    else serialize_public_utc_millis_v1(
+                        assessment.persistence.episode_started_at
+                    )
+                ),
+                "conditionSource": assessment_source,
                 "collectionState": "historical_context",
                 "collectionExpectation": "not_applicable",
                 "dataAvailability": (
                     "complete" if returned_count == 2 else "partial"
                 ),
                 "dataFreshness": "historical",
-                "dataTrust": _context_data_trust(channels),
+                "dataTrust": data_trust,
             },
             "provenance": {
                 "pointSourceKind": anchor.source_kind,
                 "pointSourceSystem": point_system,
                 "activeHistoricalBatchId": snapshot.active_batch_id,
                 "collectionPolicyId": collection_policy_id,
-                "assessmentSource": "none",
+                "assessmentSource": assessment_source,
             },
             "capabilities": {
                 "historicalNavigation": True,
                 "pairedChannels": returned_count == 2,
-                "causalAssessment": False,
-                "baselineComparison": False,
+                "causalAssessment": assessment is not None,
+                "baselineComparison": assessment is not None,
                 "previousCycleComparison": False,
             },
-            "limitations": sorted({"causal_assessment_not_available"}),
+            "limitations": (
+                ["causal_assessment_not_available"]
+                if assessment is None
+                else assessment.limitations
+            ),
         }
     )
 
@@ -764,6 +840,89 @@ class TimelineServiceV1:
                 points=points,
             )
             return points
+
+    def assessments(
+        self,
+        query: TimelineAssessmentQueryV1,
+    ) -> TimelineAssessmentOverviewV1:
+        if not isinstance(query, TimelineAssessmentQueryV1):
+            raise ValueError("assessments requires TimelineAssessmentQueryV1")
+        from twinops.storage.historical_repository_v1 import (
+            HistoricalAssessmentRangeQueryV1,
+            HistoricalAssessmentSliceV1,
+        )
+
+        snapshot = _read_timeline_snapshot(
+            self._repository,
+            asset_id=query.asset_id,
+            metric="vibrationVelocityRms",
+            archive_reader=self._archive_points_for_batch,
+        )
+        try:
+            active_batch = self._repository.active_batch_summary(query.asset_id)
+        except BaseException as exc:
+            raise TimelineOverviewRepositoryErrorV1(
+                "active assessment materialization read failed"
+            ) from exc
+        if (
+            (snapshot.active_batch_id is None) != (active_batch is None)
+            or active_batch is not None
+            and active_batch.batch_id != snapshot.active_batch_id
+        ):
+            raise TimelineOverviewSnapshotConflictV1(
+                "active historical batch changed"
+            )
+
+        empty_slice = HistoricalAssessmentSliceV1(
+            assessments=(),
+            anchors_by_id={},
+        )
+        assessment_slice = empty_slice
+        if active_batch is not None and active_batch.assessment_count > 0:
+            eligible = tuple(
+                point
+                for point in snapshot.archive_points
+                if query.sensor_id is None or point.sensor_id == query.sensor_id
+            )
+            if eligible:
+                available_from = min(point.event_at for point in eligible)
+                available_to = public_millisecond_successor_v1(
+                    max(point.event_at for point in eligible)
+                )
+                read_from = max(query.from_at or available_from, available_from)
+                read_to = min(query.to_at or available_to, available_to)
+                if read_from < read_to:
+                    try:
+                        assessment_slice = self._repository.historical_assessments(
+                            HistoricalAssessmentRangeQueryV1(
+                                asset_id=query.asset_id,
+                                batch_id=active_batch.batch_id,
+                                from_at=read_from,
+                                to_at=read_to,
+                                sensor_id=query.sensor_id,
+                            )
+                        )
+                    except BaseException as exc:
+                        raise TimelineOverviewRepositoryErrorV1(
+                            "historical assessment range read failed"
+                        ) from exc
+                    if not isinstance(
+                        assessment_slice,
+                        HistoricalAssessmentSliceV1,
+                    ):
+                        raise TimelineOverviewRepositoryErrorV1(
+                            "historical assessment range returned an invalid slice"
+                        )
+        if self._repository.active_batch_id(query.asset_id) != snapshot.active_batch_id:
+            raise TimelineOverviewSnapshotConflictV1(
+                "active historical batch changed"
+            )
+        return compose_assessment_overview_v1(
+            query=query,
+            active_batch=active_batch,
+            assessment_slice=assessment_slice,
+            point_segment_ids=dict(snapshot.coverage.point_segment_ids),
+        )
 
     def samples(
         self,

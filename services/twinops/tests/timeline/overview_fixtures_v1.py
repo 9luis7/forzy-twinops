@@ -129,6 +129,7 @@ class FakeTimelineRepositoryV1:
         self.policy_reads: list[set[str]] = []
         self.point_reads: list[tuple[str, str]] = []
         self.pair_reads: list[tuple[str, str]] = []
+        self.assessment_anchor_reads: list[tuple[str, str]] = []
         self.active_batch_id_calls = 0
 
     def active_batch_id(self, asset_id: str) -> str | None:
@@ -138,6 +139,9 @@ class FakeTimelineRepositoryV1:
 
     def active_batch(self, asset_id: str):
         raise AssertionError("timeline reads must not call deep active_batch")
+
+    def active_batch_summary(self, asset_id: str):
+        raise AssertionError("unexpected active assessment summary read")
 
     @staticmethod
     def _read(
@@ -201,6 +205,14 @@ class FakeTimelineRepositoryV1:
                 key=timeline_order_key_v1,
             )
         )
+
+    def historical_assessment_for_anchor(
+        self,
+        batch_id: str,
+        anchor_point_id: str,
+    ):
+        self.assessment_anchor_reads.append((batch_id, anchor_point_id))
+        return None
 
     def stage_batch(self, *args, **kwargs):
         raise AssertionError("overview must be read-only")

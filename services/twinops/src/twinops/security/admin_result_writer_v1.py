@@ -36,6 +36,19 @@ _RESULT_KEYS = {
             "operatingCycleCount", "inserted", "writesPerformed",
         }
     ),
+    "build-assessments": frozenset(
+        {
+            "command", "mode", "environment", "targetFingerprint",
+            "schemaVersion", "assetId", "batchId", "sourceSha256",
+            "historyManifestSha256", "artifactSha256",
+            "featureManifestSha256", "reportSha256", "configSha256",
+            "modelFamily", "modelVersion", "assessmentManifestSha256",
+            "assessmentCount", "candidateCount", "validatedAnchorCount",
+            "validatedEpisodeCount", "anchorInvariantViolationCount",
+            "episodeInvariantViolationCount", "insertedCount",
+            "existingCount", "writesPerformed",
+        }
+    ),
     "activate-history": frozenset(
         {
             "command", "mode", "environment", "targetFingerprint",
@@ -283,6 +296,56 @@ def validate_admin_result_v1(result: Mapping[str, object]) -> None:
             result["mode"] == "dry-run" or not result["inserted"]
         ) and result["writesPerformed"] != 0:
             raise ValueError("stage result write invariants failed")
+        return
+
+    if command == "build-assessments":
+        if result["mode"] not in {"dry-run", "apply"}:
+            raise ValueError("mode literal is invalid")
+        for field in (
+            "batchId",
+            "sourceSha256",
+            "historyManifestSha256",
+            "artifactSha256",
+            "featureManifestSha256",
+            "reportSha256",
+            "configSha256",
+            "assessmentManifestSha256",
+        ):
+            _require_sha256(result[field], field)
+        if result["modelFamily"] != "robust-baseline":
+            raise ValueError("model family literal is invalid")
+        if result["modelVersion"] != "1.0.1":
+            raise ValueError("model version literal is invalid")
+        for field in (
+            "assessmentCount",
+            "candidateCount",
+            "validatedAnchorCount",
+            "validatedEpisodeCount",
+            "anchorInvariantViolationCount",
+            "episodeInvariantViolationCount",
+            "insertedCount",
+            "existingCount",
+            "writesPerformed",
+        ):
+            _require_count(result[field], field)
+        if result["assessmentCount"] <= 0:
+            raise ValueError("assessment build cannot be empty")
+        if not (
+            result["validatedAnchorCount"] == result["assessmentCount"]
+            and result["validatedEpisodeCount"] == result["candidateCount"]
+            and result["insertedCount"] + result["existingCount"]
+            == result["assessmentCount"]
+            and result["candidateCount"] <= result["assessmentCount"]
+            and result["anchorInvariantViolationCount"] == 0
+            and result["episodeInvariantViolationCount"] == 0
+        ):
+            raise ValueError("assessment build counts are inconsistent")
+        if result["mode"] == "dry-run" and result["writesPerformed"] != 0:
+            raise ValueError("dry-run cannot report writes")
+        if result["mode"] == "apply" and (
+            (result["insertedCount"] == 0) != (result["writesPerformed"] == 0)
+        ):
+            raise ValueError("assessment apply write counts are inconsistent")
         return
 
     if command == "activate-history":

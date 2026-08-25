@@ -28,11 +28,14 @@ from twinops.ingestion.history_profiles_v1 import (
 from twinops.storage.historical_repository_v1 import (
     ActivateHistoryResultV1,
     AssessmentStoreResultV1,
+    HistoricalAssessmentRangeQueryV1,
+    HistoricalAssessmentSliceV1,
     HistoricalBatchConflict,
     HistoricalBatchSummaryV1,
     HistoricalRepositoryV1,
     StageHistoryResultV1,
     StoredHistoricalAssessmentV1,
+    historical_assessment_id_v1,
 )
 from twinops.storage.schema_migrations import SchemaVerification
 
@@ -202,21 +205,28 @@ def _assessment(
     batch: PreparedHistoricalBatchV1,
     *,
     model_version: str = "1.0",
+    sensor_id: str = "s1",
+    fold_id: str = "synthetic-fold-1",
+    limitations: list[str] | None = None,
+    exact_anchor: bool = True,
 ) -> StoredHistoricalAssessmentV1:
     anchor = next(
-        sample.reading for sample in batch.samples if sample.reading.sensor_id == "s1"
+        sample.reading
+        for sample in batch.samples
+        if sample.reading.sensor_id == sensor_id
     )
     event_at = anchor.event_at
-    assessment_id = uuid5(
-        NAMESPACE_URL,
-        f"forzy://twinops/task-a4-assessment/{batch.batch_id}/s1",
+    assessment_id = historical_assessment_id_v1(
+        batch.batch_id,
+        fold_id,
+        str(anchor.reading_id),
     )
     assessment = HistoricalAssessmentV1.model_validate(
         {
             "schemaVersion": "1.0",
             "assessmentId": str(assessment_id),
-            "foldId": "synthetic-fold-1",
-            "sensorId": "s1",
+            "foldId": fold_id,
+            "sensorId": sensor_id,
             "operatingCycleId": str(anchor.operating_cycle_id),
             "trainingWindow": {
                 "start": event_at - timedelta(hours=3),
@@ -224,7 +234,7 @@ def _assessment(
             },
             "assessmentWindow": {
                 "start": event_at - timedelta(hours=2) + timedelta(milliseconds=1),
-                "end": event_at - timedelta(minutes=1),
+                "end": event_at if exact_anchor else event_at - timedelta(minutes=1),
             },
             "assessmentAt": event_at,
             "anchorPointId": str(anchor.reading_id),
@@ -249,7 +259,7 @@ def _assessment(
             "reportHash": "sha256:" + "f" * 64,
             "componentTag": None,
             "humanValidationRequired": True,
-            "limitations": [],
+            "limitations": [] if limitations is None else limitations,
         }
     )
     return StoredHistoricalAssessmentV1(
@@ -304,6 +314,17 @@ class HistoricalRepositoryContract:
                 "assessment_manifest_sha256",
                 "writes_performed",
             ),
+            HistoricalAssessmentRangeQueryV1: (
+                "asset_id",
+                "batch_id",
+                "from_at",
+                "to_at",
+                "sensor_id",
+            ),
+            HistoricalAssessmentSliceV1: (
+                "assessments",
+                "anchors_by_id",
+            ),
         }
         for result_type, expected_fields in expected_result_fields.items():
             assert result_type.__dataclass_params__.frozen is True
@@ -320,6 +341,15 @@ class HistoricalRepositoryContract:
                 ("batch_id", positional),
                 ("assessments", positional),
             ),
+            "historical_assessment_for_anchor": (
+                ("self", positional),
+                ("batch_id", positional),
+                ("anchor_point_id", positional),
+            ),
+            "historical_assessments": (
+                ("self", positional),
+                ("query", positional),
+            ),
             "activate_batch": (
                 ("self", positional),
                 ("asset_id", keyword_only),
@@ -327,6 +357,10 @@ class HistoricalRepositoryContract:
                 ("expected_active_batch_id", keyword_only),
             ),
             "active_batch": (("self", positional), ("asset_id", positional)),
+            "active_batch_summary": (
+                ("self", positional),
+                ("asset_id", positional),
+            ),
             "reconstruct_source": (("self", positional), ("batch_id", positional)),
             "collection_policy": (("self", positional), ("policy_id", positional)),
             "collection_policies": (("self", positional), ("policy_ids", positional)),
@@ -366,6 +400,82 @@ class HistoricalRepositoryContract:
         assert isinstance(result.batch, HistoricalBatchSummaryV1)
         with pytest.raises(FrozenInstanceError):
             result.inserted = False  # type: ignore[misc]
+
+    def test_assessment_reads_are_bulk_ordered_exact_and_side_effect_free(
+        self,
+        historical_repository: HistoricalRepositoryV1,
+        prepared_batch_factory: PreparedBatchFactory,
+        repository_control: RepositoryContractControl,
+    ) -> None:
+        batch = prepared_batch_factory(0)
+        historical_repository.stage_batch(batch)
+        s1 = _assessment(batch, sensor_id="s1")
+        s2 = _assessment(batch, sensor_id="s2")
+        historical_repository.store_assessments(batch.batch_id, [s2, s1])
+        before = repository_control.snapshot()
+        start = min(s1.assessment.assessment_at, s2.assessment.assessment_at)
+        end = max(s1.assessment.assessment_at, s2.assessment.assessment_at)
+        query = HistoricalAssessmentRangeQueryV1(
+            asset_id=batch.asset_id,
+            batch_id=batch.batch_id,
+            from_at=start,
+            to_at=end + timedelta(milliseconds=1),
+            sensor_id=None,
+        )
+
+        result = historical_repository.historical_assessments(query)
+
+        assert isinstance(result, HistoricalAssessmentSliceV1)
+        assert result.assessments == tuple(
+            sorted(
+                (s1.assessment, s2.assessment),
+                key=lambda item: (
+                    item.assessment_at,
+                    str(item.anchor_point_id),
+                    item.sensor_id,
+                    str(item.assessment_id),
+                ),
+            )
+        )
+        assert set(result.anchors_by_id) == {
+            str(s1.assessment.anchor_point_id),
+            str(s2.assessment.anchor_point_id),
+        }
+        for assessment in result.assessments:
+            anchor = result.anchors_by_id[str(assessment.anchor_point_id)]
+            assert anchor.source_kind == "historical_archive"
+            assert anchor.provenance.batch_id == batch.batch_id
+            assert anchor.sensor_id == assessment.sensor_id
+            assert anchor.operating_cycle_id == assessment.operating_cycle_id
+            assert anchor.event_at == assessment.assessment_at
+            assert historical_repository.historical_assessment_for_anchor(
+                batch.batch_id,
+                str(anchor.point_id),
+            ) == assessment
+
+        s1_only = historical_repository.historical_assessments(
+            replace(query, sensor_id="s1")
+        )
+        assert s1_only.assessments == (s1.assessment,)
+        assert set(s1_only.anchors_by_id) == {
+            str(s1.assessment.anchor_point_id)
+        }
+        outside = historical_repository.historical_assessments(
+            replace(
+                query,
+                from_at=end + timedelta(milliseconds=1),
+                to_at=end + timedelta(milliseconds=2),
+            )
+        )
+        assert outside == HistoricalAssessmentSliceV1(
+            assessments=(),
+            anchors_by_id={},
+        )
+        assert historical_repository.historical_assessment_for_anchor(
+            batch.batch_id,
+            str(uuid5(NAMESPACE_URL, "missing-anchor")),
+        ) is None
+        assert repository_control.snapshot() == before
 
     def test_stage_is_atomic_typed_and_preserves_live_tables(
         self,
@@ -674,14 +784,9 @@ class HistoricalRepositoryContract:
         historical_repository.stage_batch(first)
         historical_repository.stage_batch(second)
         first_assessment = _assessment(first)
-        second_assessment = _assessment(second)
         historical_repository.store_assessments(
             first.batch_id,
             [first_assessment],
-        )
-        historical_repository.store_assessments(
-            second.batch_id,
-            [second_assessment],
         )
         crossed = replace(first_assessment, batch_id=second.batch_id)
         assert crossed.assessment is first_assessment.assessment
@@ -692,6 +797,110 @@ class HistoricalRepositoryContract:
                 second.batch_id,
                 [crossed],
             )
+
+        assert repository_control.snapshot() == before
+
+    def test_assessment_store_rejects_a_partial_exact_set_without_writes(
+        self,
+        historical_repository: HistoricalRepositoryV1,
+        prepared_batch_factory: PreparedBatchFactory,
+        repository_control: RepositoryContractControl,
+    ) -> None:
+        batch = prepared_batch_factory(0)
+        historical_repository.stage_batch(batch)
+        assessments = (
+            _assessment(batch, sensor_id="s1"),
+            _assessment(batch, sensor_id="s2"),
+        )
+        historical_repository.store_assessments(batch.batch_id, assessments)
+        before = repository_control.snapshot()
+
+        with pytest.raises(
+            HistoricalBatchConflict,
+            match="exact assessment set",
+        ):
+            historical_repository.store_assessments(
+                batch.batch_id,
+                assessments[:1],
+            )
+
+        assert repository_control.snapshot() == before
+
+    def test_assessment_store_never_completes_a_persisted_partial_inventory(
+        self,
+        historical_repository: HistoricalRepositoryV1,
+        prepared_batch_factory: PreparedBatchFactory,
+        repository_control: RepositoryContractControl,
+    ) -> None:
+        batch = prepared_batch_factory(0)
+        historical_repository.stage_batch(batch)
+        assessments = (
+            _assessment(batch, sensor_id="s1"),
+            _assessment(batch, sensor_id="s2"),
+        )
+        historical_repository.store_assessments(
+            batch.batch_id,
+            assessments[:1],
+        )
+        before = repository_control.snapshot()
+
+        with pytest.raises(
+            HistoricalBatchConflict,
+            match="exact assessment set",
+        ):
+            historical_repository.store_assessments(
+                batch.batch_id,
+                assessments,
+            )
+
+        assert repository_control.snapshot() == before
+
+    def test_assessment_store_rejects_duplicate_anchor_before_any_write(
+        self,
+        historical_repository: HistoricalRepositoryV1,
+        prepared_batch_factory: PreparedBatchFactory,
+        repository_control: RepositoryContractControl,
+    ) -> None:
+        batch = prepared_batch_factory(0)
+        historical_repository.stage_batch(batch)
+        assessments = (
+            _assessment(batch, fold_id="synthetic-fold-1"),
+            _assessment(batch, fold_id="synthetic-fold-2"),
+        )
+        assert assessments[0].assessment.anchor_point_id == assessments[1].assessment.anchor_point_id
+        assert assessments[0].assessment.assessment_id != assessments[1].assessment.assessment_id
+        before = repository_control.snapshot()
+
+        with pytest.raises(
+            HistoricalBatchConflict,
+            match="multiple historical assessments target one anchor",
+        ):
+            historical_repository.store_assessments(batch.batch_id, assessments)
+
+        assert repository_control.snapshot() == before
+
+    def test_assessment_store_rejects_noncanonical_uuid5_identity_without_write(
+        self,
+        historical_repository: HistoricalRepositoryV1,
+        prepared_batch_factory: PreparedBatchFactory,
+        repository_control: RepositoryContractControl,
+    ) -> None:
+        batch = prepared_batch_factory(0)
+        historical_repository.stage_batch(batch)
+        valid = _assessment(batch)
+        forged = replace(
+            valid,
+            assessment=valid.assessment.model_copy(
+                update={"assessment_id": uuid5(NAMESPACE_URL, "forged-valid-uuid5")}
+            ),
+        )
+        before = repository_control.snapshot()
+
+        with pytest.raises(
+            HistoricalBatchConflict,
+            match="identity is not canonical",
+        ):
+            historical_repository.store_assessments(batch.batch_id, [forged])
 
         assert repository_control.snapshot() == before
 

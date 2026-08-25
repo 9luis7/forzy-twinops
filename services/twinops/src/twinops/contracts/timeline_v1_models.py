@@ -46,6 +46,7 @@ _SCHEMA_NAMES = (
     "historical-assessment",
     "collection-policy",
     "timeline-event-candidate",
+    "timeline-assessment-overview",
     "timeline-overview",
     "timeline-page",
     "timeline-decision-facts",
@@ -253,6 +254,120 @@ class TimelineAggregationSummaryV1(ContractModelTimelineV1):
     returned_point_count: int = Field(alias="returnedPointCount", ge=0)
     omitted_point_count: int = Field(alias="omittedPointCount", ge=0)
     reduced_series_count: int = Field(alias="reducedSeriesCount", ge=0)
+
+
+class TimelineAssessmentMaterializationV1(ContractModelTimelineV1):
+    state: Literal[
+        "no_active_historical_batch", "not_materialized", "materialized"
+    ]
+    assessment_count: int = Field(alias="assessmentCount", ge=0)
+    assessment_manifest_sha256: Sha256V1 | None = Field(
+        alias="assessmentManifestSha256"
+    )
+
+
+class TimelineAssessmentAggregationSummaryV1(ContractModelTimelineV1):
+    requested_max_points: int = Field(alias="requestedMaxPoints", ge=40, le=4000)
+    original_assessment_count: int = Field(
+        alias="originalAssessmentCount", ge=0
+    )
+    returned_assessment_count: int = Field(
+        alias="returnedAssessmentCount", ge=0
+    )
+    omitted_assessment_count: int = Field(
+        alias="omittedAssessmentCount", ge=0
+    )
+    reduced_series_count: int = Field(alias="reducedSeriesCount", ge=0)
+
+
+class TimelineAssessmentSeriesAggregationV1(ContractModelTimelineV1):
+    method: Literal["none", "time_bucket_envelope_v1"]
+    requested_max_points: int = Field(alias="requestedMaxPoints", ge=40, le=4000)
+    original_assessment_count: int = Field(
+        alias="originalAssessmentCount", ge=1
+    )
+    returned_assessment_count: int = Field(
+        alias="returnedAssessmentCount", ge=1
+    )
+    omitted_assessment_count: int = Field(
+        alias="omittedAssessmentCount", ge=0
+    )
+
+
+class TimelineAssessmentSeriesPointV1(ContractModelTimelineV1):
+    assessment_id: Uuid5V1 = Field(alias="assessmentId")
+    anchor_point_id: Uuid5V1 = Field(alias="anchorPointId")
+    event_at: UtcTimestampV1 = Field(alias="eventAt")
+    anomaly_score: float | None = Field(alias="anomalyScore", ge=0, le=100)
+    deterioration_score: float | None = Field(
+        alias="deteriorationScore", ge=0, le=100
+    )
+    status: Literal["normal", "watch", "alert", "insufficient_data"]
+    quality_status: Literal["ok", "degraded", "insufficient_data"] = Field(
+        alias="qualityStatus"
+    )
+    candidate_state: Literal["candidate_not_ground_truth"] | None = Field(
+        alias="candidateState"
+    )
+
+    @model_validator(mode="after")
+    def assessment_point_invariants(self) -> Self:
+        candidate = self.status in {"watch", "alert"}
+        evaluable = self.status != "insufficient_data"
+        if (
+            (self.anomaly_score is not None) != evaluable
+            or (self.deterioration_score is not None) != evaluable
+            or (self.candidate_state is not None) != candidate
+        ):
+            raise ValueError("assessment series point state is inconsistent")
+        return self
+
+
+class TimelineAssessmentSeriesV1(ContractModelTimelineV1):
+    series_id: Uuid5V1 = Field(alias="seriesId")
+    segment_id: Uuid5V1 = Field(alias="segmentId")
+    sensor_id: Literal["s1", "s2"] = Field(alias="sensorId")
+    model_family: NonEmptyStringV1 = Field(alias="modelFamily")
+    model_version: NonEmptyStringV1 = Field(alias="modelVersion")
+    model_hash: Sha256V1 = Field(alias="modelHash")
+    fold_id: NonEmptyStringV1 = Field(alias="foldId")
+    fold_hash: Sha256V1 = Field(alias="foldHash")
+    report_hash: Sha256V1 = Field(alias="reportHash")
+    score_semantics: Literal[
+        "relative_to_walk_forward_historical_baseline_not_failure_probability"
+    ] = Field(alias="scoreSemantics")
+    training_window: TimelineClosedRangeV1 = Field(alias="trainingWindow")
+    human_validation_required: Literal[True] = Field(
+        alias="humanValidationRequired"
+    )
+    ground_truth_labels_available: Literal[False] = Field(
+        alias="groundTruthLabelsAvailable"
+    )
+    limitations: list[NonEmptyStringV1]
+    aggregation: TimelineAssessmentSeriesAggregationV1
+    points: list[TimelineAssessmentSeriesPointV1] = Field(min_length=1)
+
+
+class TimelineAssessmentOverviewV1(ContractModelTimelineV1):
+    schema_version: Literal["1.0"] = Field(alias="schemaVersion")
+    asset_id: Literal["forzy-motor-01"] = Field(alias="assetId")
+    active_historical_batch_id: Sha256V1 | None = Field(
+        alias="activeHistoricalBatchId"
+    )
+    requested_range: TimelineRequestedRangeV1 = Field(alias="requestedRange")
+    effective_range: TimelineHalfOpenRangeV1 | None = Field(alias="effectiveRange")
+    materialization: TimelineAssessmentMaterializationV1
+    aggregation_summary: TimelineAssessmentAggregationSummaryV1 = Field(
+        alias="aggregationSummary"
+    )
+    series: list[TimelineAssessmentSeriesV1]
+
+    @model_validator(mode="after")
+    def invariants(self) -> Self:
+        assert_timeline_invariants_v1(
+            self.model_dump_public(), "timeline-assessment-overview"
+        )
+        return self
 
 
 class TimelineOperatingCycleV1(ContractModelTimelineV1):
@@ -1349,7 +1464,7 @@ def _assert_context(value: dict[str, object]) -> None:
             anchor["pointId"] == assessment["anchorPointId"]
             and anchor["sensorId"] == assessment["sensorId"]
             and anchor["operatingCycleId"] == assessment["operatingCycleId"]
-            and _timestamp(assessment["assessmentAt"]) <= _timestamp(anchor["eventAt"])
+            and _timestamp(assessment["assessmentAt"]) == _timestamp(anchor["eventAt"])
         ):
             raise ValueError("historical assessment anchor facts are crossed")
     else:
@@ -1397,6 +1512,218 @@ def _assert_context(value: dict[str, object]) -> None:
             raise ValueError("live assessment trust exceeds channel availability")
 
 
+_ASSESSMENT_SERIES_BASE_LIMITATIONS = [
+    "historical_source_participated_in_baseline_construction_and_evaluation",
+    "no_confirmed_failure_labels_available",
+    "relative_score_not_failure_probability_confidence_rul_or_diagnosis",
+]
+
+
+def timeline_assessment_series_key_v1(
+    *,
+    segment_id: str,
+    sensor_id: str,
+    model_family: str,
+    model_version: str,
+    model_hash: str,
+    fold_id: str,
+    fold_hash: str,
+    report_hash: str,
+    score_semantics: str,
+    training_window: dict[str, str],
+) -> str:
+    """Match the browser's stableJson grouping key byte for byte."""
+
+    return json.dumps(
+        [
+            segment_id,
+            sensor_id,
+            model_family,
+            model_version,
+            model_hash,
+            fold_id,
+            fold_hash,
+            report_hash,
+            score_semantics,
+            training_window,
+        ],
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    )
+
+
+def _assert_assessment_overview(value: dict[str, object]) -> None:
+    requested = value["requestedRange"]
+    effective = value["effectiveRange"]
+    materialization = value["materialization"]
+    summary = value["aggregationSummary"]
+    series = value["series"]
+    if not all(
+        isinstance(item, dict)
+        for item in (requested, materialization, summary)
+    ) or not isinstance(series, list):
+        raise ValueError("assessment overview nested facts are malformed")
+    if (
+        requested["from"] is not None
+        and requested["to"] is not None
+        and _timestamp(requested["from"]) >= _timestamp(requested["to"])
+    ):
+        raise ValueError("assessment requested range is not increasing")
+    if effective is not None and (
+        not isinstance(effective, dict)
+        or _timestamp(effective["from"]) >= _timestamp(effective["to"])
+    ):
+        raise ValueError("assessment effective range is not increasing")
+
+    state = materialization["state"]
+    global_count = materialization["assessmentCount"]
+    manifest = materialization["assessmentManifestSha256"]
+    active_batch = value["activeHistoricalBatchId"]
+    original = summary["originalAssessmentCount"]
+    returned = summary["returnedAssessmentCount"]
+    omitted = summary["omittedAssessmentCount"]
+    max_points = summary["requestedMaxPoints"]
+    if state == "no_active_historical_batch":
+        valid_state = active_batch is None and global_count == 0 and manifest is None
+    elif state == "not_materialized":
+        valid_state = active_batch is not None and global_count == 0 and manifest is None
+    else:
+        valid_state = (
+            state == "materialized"
+            and active_batch is not None
+            and global_count > 0
+            and manifest is not None
+        )
+    if not valid_state:
+        raise ValueError("assessment materialization state is inconsistent")
+    if not (
+        original == returned + omitted
+        and original <= global_count
+        and returned <= max_points
+        and (original > 0) == bool(series)
+        and (original > 0) == (effective is not None)
+    ):
+        raise ValueError("assessment overview aggregate counts are inconsistent")
+    if state != "materialized" and (original or returned or omitted or series):
+        raise ValueError("unmaterialized overview cannot expose assessment rows")
+
+    series_keys: list[str] = []
+    series_ids: set[str] = set()
+    assessment_ids: set[str] = set()
+    anchor_ids: set[str] = set()
+    original_total = 0
+    returned_total = 0
+    omitted_total = 0
+    reduced_total = 0
+    all_points: list[dict[str, object]] = []
+    for row in series:
+        if not isinstance(row, dict) or not isinstance(row["aggregation"], dict):
+            raise ValueError("assessment series row is malformed")
+        aggregation = row["aggregation"]
+        points = row["points"]
+        training = row["trainingWindow"]
+        if not isinstance(points, list) or not isinstance(training, dict):
+            raise ValueError("assessment series evidence is malformed")
+        row_original = aggregation["originalAssessmentCount"]
+        row_returned = aggregation["returnedAssessmentCount"]
+        row_omitted = aggregation["omittedAssessmentCount"]
+        method = aggregation["method"]
+        if not (
+            aggregation["requestedMaxPoints"] == max_points
+            and row_original == row_returned + row_omitted
+            and row_returned == len(points)
+            and (method == "none") == (row_omitted == 0)
+            and _timestamp(training["start"]) <= _timestamp(training["end"])
+        ):
+            raise ValueError("assessment series aggregation is inconsistent")
+        point_keys = [
+            (point["eventAt"], point["anchorPointId"], point["assessmentId"])
+            for point in points
+        ]
+        if point_keys != sorted(point_keys) or len(point_keys) != len(
+            set(point_keys)
+        ):
+            raise ValueError("assessment series points are not uniquely ordered")
+        point_times = [_timestamp(point["eventAt"]) for point in points]
+        if point_times != sorted(point_times) or len(point_times) != len(
+            set(point_times)
+        ):
+            raise ValueError("assessment series eventAt must be strictly increasing")
+        if any(
+            _timestamp(training["end"]) >= event_at
+            or effective is None
+            or not (
+                _timestamp(effective["from"])
+                <= event_at
+                < _timestamp(effective["to"])
+            )
+            or requested["from"] is not None
+            and event_at < _timestamp(requested["from"])
+            or requested["to"] is not None
+            and event_at >= _timestamp(requested["to"])
+            for event_at in point_times
+        ):
+            raise ValueError("assessment series point is outside its causal query range")
+        has_candidate = any(
+            point["candidateState"] == "candidate_not_ground_truth"
+            for point in points
+        )
+        expected_limitations = sorted(
+            [*_ASSESSMENT_SERIES_BASE_LIMITATIONS]
+            + (["candidate_not_ground_truth"] if has_candidate else [])
+        )
+        if row["limitations"] != expected_limitations:
+            raise ValueError("assessment series limitations do not match points")
+        for point in points:
+            assessment_id = point["assessmentId"]
+            anchor_id = point["anchorPointId"]
+            if assessment_id in assessment_ids or anchor_id in anchor_ids:
+                raise ValueError("assessment overview repeats immutable identities")
+            assessment_ids.add(assessment_id)
+            anchor_ids.add(anchor_id)
+            all_points.append(point)
+        series_key = timeline_assessment_series_key_v1(
+            segment_id=row["segmentId"],
+            sensor_id=row["sensorId"],
+            model_family=row["modelFamily"],
+            model_version=row["modelVersion"],
+            model_hash=row["modelHash"],
+            fold_id=row["foldId"],
+            fold_hash=row["foldHash"],
+            report_hash=row["reportHash"],
+            score_semantics=row["scoreSemantics"],
+            training_window=training,
+        )
+        if row["seriesId"] in series_ids:
+            raise ValueError("assessment seriesId is repeated")
+        series_ids.add(row["seriesId"])
+        series_keys.append(series_key)
+        original_total += row_original
+        returned_total += row_returned
+        omitted_total += row_omitted
+        reduced_total += int(method == "time_bucket_envelope_v1")
+    if series_keys != sorted(series_keys) or len(series_keys) != len(set(series_keys)):
+        raise ValueError("assessment series are not uniquely ordered")
+    if not (
+        original_total == original
+        and returned_total == returned
+        and omitted_total == omitted
+        and reduced_total == summary["reducedSeriesCount"]
+    ):
+        raise ValueError("assessment series totals do not match the overview")
+    if all_points:
+        first = min(_timestamp(point["eventAt"]) for point in all_points)
+        last = max(_timestamp(point["eventAt"]) for point in all_points)
+        expected_effective = {
+            "from": serialize_public_utc_millis_v1(first),
+            "to": serialize_public_utc_millis_v1(last + timedelta(milliseconds=1)),
+        }
+        if effective != expected_effective:
+            raise ValueError("assessment effective range does not match returned envelopes")
+
+
 def assert_timeline_invariants_v1(
     value: dict[str, object], schema_name: str | None = None
 ) -> dict[str, object]:
@@ -1407,7 +1734,9 @@ def assert_timeline_invariants_v1(
     _assert_finite_json_tree(value)
     name = schema_name
     if name is None:
-        if "segments" in value:
+        if "materialization" in value and "aggregationSummary" in value:
+            name = "timeline-assessment-overview"
+        elif "segments" in value:
             name = "timeline-overview"
         elif "collectionPolicyId" in value and "configurationHash" in value:
             name = "collection-policy"
@@ -1436,6 +1765,8 @@ def assert_timeline_invariants_v1(
         _assert_collection_policy(value)
     elif name == "timeline-event-candidate":
         _assert_candidate(value)
+    elif name == "timeline-assessment-overview":
+        _assert_assessment_overview(value)
     elif name == "timeline-overview":
         _assert_overview(value)
     elif name == "timeline-page":

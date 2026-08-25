@@ -10,7 +10,10 @@ from conftest import live_reading, prepared_batch, store_live_reading
 import pytest
 
 from twinops.contracts.timeline_v1_models import HistoricalSensorReadingV1
-from twinops.storage.historical_repository_v1 import HistoricalBatchConflict
+from twinops.storage.historical_repository_v1 import (
+    HistoricalBatchConflict,
+    HistoricalBatchSummaryV1,
+)
 from twinops.storage.sqlite_historical_repository_v1 import (
     SQLiteHistoricalRepositoryV1,
 )
@@ -60,6 +63,69 @@ def test_sqlite_active_batch_id_returns_none_without_an_active_row(tmp_path) -> 
     )
 
     assert repository.active_batch_id("forzy-motor-01") is None
+
+
+def test_sqlite_active_batch_summary_is_one_parent_only_metadata_query(
+    tmp_path,
+) -> None:
+    path = tmp_path / "active-batch-summary.sqlite3"
+    batch_id = "sha256:" + "a" * 64
+    manifest = "sha256:" + "b" * 64
+    assessment_manifest = "sha256:" + "c" * 64
+    connection = sqlite3.connect(path)
+    try:
+        connection.execute(
+            "CREATE TABLE historical_import_batches_v1 ("
+            "batch_id TEXT NOT NULL,asset_id TEXT NOT NULL,status TEXT NOT NULL,"
+            "source_sha256 TEXT NOT NULL,manifest_sha256 TEXT NOT NULL,"
+            "raw_row_count INTEGER NOT NULL,sample_count INTEGER NOT NULL,"
+            "operating_cycle_count INTEGER NOT NULL,assessment_count INTEGER NOT NULL,"
+            "assessment_manifest_sha256 TEXT,staged_at TEXT NOT NULL,activated_at TEXT)"
+        )
+        connection.execute(
+            "INSERT INTO historical_import_batches_v1 VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                batch_id,
+                "forzy-motor-01",
+                "active",
+                "sha256:" + "d" * 64,
+                manifest,
+                10,
+                20,
+                2,
+                5,
+                assessment_manifest,
+                "2026-08-25T12:00:00.000Z",
+                "2026-08-25T13:00:00.000Z",
+            ),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+    statements: list[str] = []
+
+    def connect(database_path):
+        result = sqlite3.connect(database_path)
+        result.set_trace_callback(statements.append)
+        return result
+
+    repository = SQLiteHistoricalRepositoryV1(path, connection_factory=connect)
+    repository._stored_batch = lambda *args, **kwargs: (_ for _ in ()).throw(
+        AssertionError("runtime summary must not rehydrate source/raw/sample rows")
+    )
+
+    result = repository.active_batch_summary("forzy-motor-01")
+
+    assert isinstance(result, HistoricalBatchSummaryV1)
+    assert result.batch_id == batch_id
+    assert result.assessment_count == 5
+    selects = [statement for statement in statements if statement.startswith("SELECT")]
+    assert len(selects) == 1
+    assert "historical_import_batches_v1" in selects[0]
+    assert "source_bytes" not in selects[0]
+    assert "historical_raw_rows_v1" not in selects[0]
+    assert "historical_samples_v1" not in selects[0]
 
 
 @pytest.mark.parametrize(

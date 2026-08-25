@@ -4,15 +4,25 @@ from datetime import datetime, timedelta, timezone
 import json
 from types import SimpleNamespace
 
+import psycopg
 from psycopg.pq import TransactionStatus
 from psycopg.rows import dict_row
 import pytest
 
 from conftest import live_reading, prepared_batch
 from twinops.contracts.timeline_v1_models import HistoricalSensorReadingV1
-from twinops.storage.historical_repository_v1 import HistoricalBatchConflict
+from twinops.storage.historical_repository_v1 import (
+    HistoricalBatchConflict,
+    HistoricalBatchSummaryV1,
+)
+from twinops.storage.historical_repository_v1 import HistoricalAssessmentRangeQueryV1
 from twinops.storage.postgres_historical_repository_v1 import (
     PostgresHistoricalRepositoryV1,
+)
+from twinops.storage.sqlite_historical_repository_v1 import (
+    _ASSESSMENT_COLUMNS,
+    _assessment_manifest_hash,
+    _assessment_values,
 )
 from twinops.timeline.repository_v1 import TimelineReadQueryV1
 
@@ -20,6 +30,7 @@ from twinops.timeline.repository_v1 import TimelineReadQueryV1
 class _Cursor:
     def __init__(self, rows):
         self._rows = rows
+        self.rowcount = 1
 
     def fetchall(self):
         return self._rows
@@ -36,19 +47,267 @@ class _Connection:
         self.row_factory = dict_row
         self.responses = list(responses)
         self.statements = []
+        self.committed = False
+        self.rolled_back = False
 
     def execute(self, sql, parameters=()):
         self.statements.append((" ".join(sql.split()), parameters))
-        return _Cursor(self.responses.pop(0))
+        response = self.responses.pop(0)
+        if isinstance(response, BaseException):
+            raise response
+        return _Cursor(response)
 
     def close(self):
         self.closed = True
+
+    def commit(self):
+        self.committed = True
+
+    def rollback(self):
+        self.rolled_back = True
 
 
 def _repository(connection):
     return PostgresHistoricalRepositoryV1(
         "postgresql://unit.invalid/test",
         connection_factory=lambda _: connection,
+    )
+
+
+def _assessment_read_row(stored, batch):
+    values = dict(zip(_ASSESSMENT_COLUMNS, _assessment_values(stored), strict=True))
+    for field in (
+        "training_window_start",
+        "training_window_end",
+        "window_start",
+        "window_end",
+        "assessment_at",
+    ):
+        values[field] = datetime.fromisoformat(values[field][:-1] + "+00:00")
+    anchor = next(
+        sample.reading
+        for sample in batch.samples
+        if sample.point_id == str(stored.assessment.anchor_point_id)
+    )
+    values["anchor_canonical_json"] = json.dumps(
+        anchor.model_dump_public(),
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return values
+
+
+def test_postgres_assessment_reads_are_single_query_exact_and_range_bounded() -> None:
+    from services.twinops.tests.storage.historical_repository_contract import (
+        _assessment,
+    )
+
+    batch = prepared_batch(1)
+    stored = _assessment(batch)
+    row = _assessment_read_row(stored, batch)
+    range_connection = _Connection([[row]])
+    query = HistoricalAssessmentRangeQueryV1(
+        asset_id=batch.asset_id,
+        batch_id=batch.batch_id,
+        from_at=stored.assessment.assessment_at,
+        to_at=stored.assessment.assessment_at + timedelta(milliseconds=1),
+        sensor_id="s1",
+    )
+
+    result = _repository(range_connection).historical_assessments(query)
+
+    assert result.assessments == (stored.assessment,)
+    assert set(result.anchors_by_id) == {
+        str(stored.assessment.anchor_point_id)
+    }
+    assert len(range_connection.statements) == 1
+    sql, parameters = range_connection.statements[0]
+    assert "JOIN historical_samples_v1" in sql
+    assert "a.assessment_at>=%s" in sql
+    assert "a.assessment_at<%s" in sql
+    assert "a.sensor_id=%s" in sql
+    assert parameters == (
+        batch.batch_id,
+        batch.asset_id,
+        batch.asset_id,
+        query.from_at,
+        query.to_at,
+        "s1",
+    )
+
+    exact_connection = _Connection([[row]])
+    exact = _repository(exact_connection).historical_assessment_for_anchor(
+        batch.batch_id,
+        str(stored.assessment.anchor_point_id),
+    )
+    assert exact == stored.assessment
+    assert len(exact_connection.statements) == 1
+    assert "LIMIT 2" in exact_connection.statements[0][0]
+
+
+def test_postgres_assessment_store_takes_one_global_identity_lock_before_lookup(
+    monkeypatch,
+) -> None:
+    """Catches two batches racing through absent assessment identity rows."""
+
+    from services.twinops.tests.storage.historical_repository_contract import (
+        _assessment,
+    )
+
+    batch = prepared_batch(1)
+    assessments = (
+        _assessment(batch, sensor_id="s2", exact_anchor=True),
+        _assessment(batch, sensor_id="s1", exact_anchor=True),
+    )
+    values = tuple(_assessment_values(item) for item in assessments)
+    manifest = _assessment_manifest_hash(batch.batch_id, values)
+    before = SimpleNamespace(
+        prepared=batch,
+        summary=SimpleNamespace(
+            status="staged",
+            assessment_count=0,
+            assessment_manifest_sha256=None,
+        ),
+    )
+    after = SimpleNamespace(
+        prepared=batch,
+        summary=SimpleNamespace(
+            status="staged",
+            assessment_count=2,
+            assessment_manifest_sha256=manifest,
+        ),
+    )
+    connection = _Connection(
+        [
+            [],  # batch advisory lock
+            [],  # global assessment identity advisory lock
+            [],  # target-batch inventory
+            [],  # global identity owner lookup
+            [],  # insert s2
+            [],  # insert s1
+            [],  # metadata update
+        ]
+    )
+    repository = _repository(connection)
+    stored_batches = iter((before, after))
+    monkeypatch.setattr(
+        repository,
+        "_stored_batch",
+        lambda *args, **kwargs: next(stored_batches),
+    )
+    monkeypatch.setattr(
+        repository,
+        "_stored_assessment_values",
+        lambda *args, **kwargs: values,
+    )
+
+    result = repository.store_assessments(batch.batch_id, assessments)
+
+    lock_statements = [
+        statement
+        for statement in connection.statements
+        if "pg_advisory_xact_lock" in statement[0]
+    ]
+    assert lock_statements == [
+        (
+            "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
+            (batch.batch_id,),
+        ),
+        (
+            "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
+            ("historical-assessment-global-identity-v1",),
+        ),
+    ]
+    owner_lookup_index = next(
+        index
+        for index, (sql, _) in enumerate(connection.statements)
+        if "assessment_id = ANY" in sql
+    )
+    assert all(
+        connection.statements.index(statement) < owner_lookup_index
+        for statement in lock_statements
+    )
+    assert result.inserted_count == 2
+    assert connection.committed is True
+
+
+def test_postgres_assessment_store_translates_unique_violation_to_domain_conflict(
+    monkeypatch,
+) -> None:
+    from services.twinops.tests.storage.historical_repository_contract import (
+        _assessment,
+    )
+
+    batch = prepared_batch(1)
+    assessment = _assessment(batch, exact_anchor=True)
+    before = SimpleNamespace(
+        prepared=batch,
+        summary=SimpleNamespace(
+            status="staged",
+            assessment_count=0,
+            assessment_manifest_sha256=None,
+        ),
+    )
+    connection = _Connection(
+        [
+            [],
+            [],
+            [],
+            [],
+            psycopg.errors.UniqueViolation("duplicate assessment identity"),
+        ]
+    )
+    repository = _repository(connection)
+    monkeypatch.setattr(repository, "_stored_batch", lambda *args, **kwargs: before)
+
+    with pytest.raises(
+        HistoricalBatchConflict,
+        match="identity conflicts with stored data",
+    ):
+        repository.store_assessments(batch.batch_id, [assessment])
+
+    assert connection.rolled_back is True
+    assert connection.committed is False
+
+
+def test_postgres_assessment_store_rejects_persisted_partial_set_before_dml(
+    monkeypatch,
+) -> None:
+    from services.twinops.tests.storage.historical_repository_contract import (
+        _assessment,
+    )
+
+    batch = prepared_batch(1)
+    assessments = (
+        _assessment(batch, sensor_id="s1", exact_anchor=True),
+        _assessment(batch, sensor_id="s2", exact_anchor=True),
+    )
+    first_values = _assessment_values(assessments[0])
+    existing_row = {
+        "assessment_id": first_values[0],
+        "batch_id": first_values[1],
+        "canonical_json": first_values[-1],
+    }
+    before = SimpleNamespace(
+        prepared=batch,
+        summary=SimpleNamespace(
+            status="staged",
+            assessment_count=1,
+            assessment_manifest_sha256="sha256:" + "9" * 64,
+        ),
+    )
+    connection = _Connection([[], [], [existing_row], [existing_row]])
+    repository = _repository(connection)
+    monkeypatch.setattr(repository, "_stored_batch", lambda *args, **kwargs: before)
+
+    with pytest.raises(HistoricalBatchConflict, match="exact assessment set"):
+        repository.store_assessments(batch.batch_id, assessments)
+
+    assert connection.rolled_back is True
+    assert all(
+        not sql.startswith(("INSERT", "UPDATE", "DELETE"))
+        for sql, _ in connection.statements
     )
 
 
@@ -75,6 +334,46 @@ def test_postgres_active_batch_id_returns_none_without_an_active_row() -> None:
     connection = _Connection([[]])
 
     assert _repository(connection).active_batch_id("forzy-motor-01") is None
+    assert connection.closed is True
+
+
+def test_postgres_active_batch_summary_is_one_parent_only_metadata_query() -> None:
+    batch_id = "sha256:" + "a" * 64
+    connection = _Connection(
+        [[
+            {
+                "batch_id": batch_id,
+                "asset_id": "forzy-motor-01",
+                "status": "active",
+                "source_sha256": "sha256:" + "b" * 64,
+                "manifest_sha256": "sha256:" + "c" * 64,
+                "raw_row_count": 10,
+                "sample_count": 20,
+                "operating_cycle_count": 2,
+                "assessment_count": 5,
+                "assessment_manifest_sha256": "sha256:" + "d" * 64,
+                "staged_at": datetime(2026, 8, 25, 12, tzinfo=timezone.utc),
+                "activated_at": datetime(2026, 8, 25, 13, tzinfo=timezone.utc),
+            }
+        ]]
+    )
+    repository = _repository(connection)
+    repository._stored_batch = lambda *args, **kwargs: (_ for _ in ()).throw(
+        AssertionError("runtime summary must not rehydrate source/raw/sample rows")
+    )
+
+    result = repository.active_batch_summary("forzy-motor-01")
+
+    assert isinstance(result, HistoricalBatchSummaryV1)
+    assert result.batch_id == batch_id
+    assert result.assessment_count == 5
+    assert len(connection.statements) == 1
+    sql, parameters = connection.statements[0]
+    assert "historical_import_batches_v1" in sql
+    assert "source_bytes" not in sql
+    assert "historical_raw_rows_v1" not in sql
+    assert "historical_samples_v1" not in sql
+    assert parameters == ("forzy-motor-01",)
     assert connection.closed is True
 
 

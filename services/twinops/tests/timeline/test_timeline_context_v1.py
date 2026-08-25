@@ -92,7 +92,10 @@ def test_point_context_uses_only_metadata_active_batch_guards() -> None:
     context = service.context(_query_for_point(str(points[0].point_id)))
 
     assert context.provenance.active_historical_batch_id == repository.batch_id
-    assert repository.active_batch_id_calls == 3
+    assert repository.active_batch_id_calls == 4
+    assert repository.assessment_anchor_reads == [
+        (repository.batch_id, str(points[0].point_id))
+    ]
 
 
 def test_point_context_reuses_the_archive_warmed_by_overview() -> None:

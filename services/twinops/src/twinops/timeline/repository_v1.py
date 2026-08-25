@@ -10,6 +10,7 @@ from uuid import NAMESPACE_URL, uuid5
 
 from twinops.contracts.timeline_v1_models import (
     CollectionPolicyV1,
+    HistoricalAssessmentV1,
     HistoricalSensorReadingV1,
     TimelinePointV1,
     parse_public_utc_millis_v1,
@@ -19,7 +20,11 @@ from twinops.contracts.v2_models import CanonicalSensorReadingV2
 
 
 if TYPE_CHECKING:
-    from twinops.storage.historical_repository_v1 import HistoricalBatchSummaryV1
+    from twinops.storage.historical_repository_v1 import (
+        HistoricalAssessmentRangeQueryV1,
+        HistoricalAssessmentSliceV1,
+        HistoricalBatchSummaryV1,
+    )
 
 
 TimelineSensorIdV1 = Literal["s1", "s2"]
@@ -209,7 +214,22 @@ class TimelineReadRepositoryV1(Protocol):
         self, asset_id: str
     ) -> HistoricalBatchSummaryV1 | None: ...
 
+    def active_batch_summary(
+        self, asset_id: str
+    ) -> HistoricalBatchSummaryV1 | None: ...
+
     def active_batch_id(self, asset_id: str) -> str | None: ...
+
+    def historical_assessment_for_anchor(
+        self,
+        batch_id: str,
+        anchor_point_id: str,
+    ) -> HistoricalAssessmentV1 | None: ...
+
+    def historical_assessments(
+        self,
+        query: HistoricalAssessmentRangeQueryV1,
+    ) -> HistoricalAssessmentSliceV1: ...
 
     def read_archive_points(self, query: TimelineReadQueryV1) -> TimelineSliceV1: ...
 

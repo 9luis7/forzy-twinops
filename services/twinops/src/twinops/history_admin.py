@@ -20,6 +20,10 @@ import psycopg
 from twinops.contracts.timeline_v1_models import parse_public_utc_millis_v1
 from twinops.ingestion.historical_import_v1 import prepare_historical_batch
 from twinops.ingestion.history_profiles_v1 import registered_profile
+from twinops.ml.historical_assessments_v1 import (
+    HistoricalAssessmentBuildV1,
+    build_historical_assessments_v1,
+)
 from twinops.security.admin_result_writer_v1 import (
     AdminResultWriterV1,
     validate_admin_result_v1,
@@ -42,7 +46,11 @@ from twinops.storage.collection_policy_v1 import (
     ensure_initial_collection_policy,
     initial_collection_policy,
 )
-from twinops.storage.historical_repository_v1 import HistoricalRepositoryV1
+from twinops.storage.historical_repository_v1 import (
+    HistoricalRepositoryV1,
+    StoredHistoricalAssessmentV1,
+    historical_assessment_id_v1,
+)
 from twinops.storage.postgres_historical_repository_v1 import (
     PostgresHistoricalRepositoryV1,
 )
@@ -54,6 +62,8 @@ from twinops.storage.schema_migrations import (
 )
 from twinops.storage.sqlite_historical_repository_v1 import (
     SQLiteHistoricalRepositoryV1,
+    _assessment_manifest_hash,
+    _assessment_values,
 )
 
 
@@ -61,6 +71,7 @@ _SHA256_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 _EXPECTED_SCHEMA_VERSION = "003"
 _ASSET_ID = "forzy-motor-01"
 _PROFILE_ID = "forzy-history-2026-05-19-v1"
+_ARTIFACT_DIR = Path(__file__).resolve().parents[4] / "artifacts" / "ml" / "real-forzy"
 _WRITE_COMMANDS = frozenset(
     {
         "migrate-local",
@@ -94,6 +105,19 @@ _RESULT_KEYS = {
             "command", "mode", "environment", "targetFingerprint", "schemaVersion",
             "assetId", "batchId", "sourceSha256", "manifestSha256", "rawRowCount",
             "sampleCount", "operatingCycleCount", "inserted", "writesPerformed",
+        }
+    ),
+    "build-assessments": frozenset(
+        {
+            "command", "mode", "environment", "targetFingerprint",
+            "schemaVersion", "assetId", "batchId", "sourceSha256",
+            "historyManifestSha256", "artifactSha256",
+            "featureManifestSha256", "reportSha256", "configSha256",
+            "modelFamily", "modelVersion", "assessmentManifestSha256",
+            "assessmentCount", "candidateCount", "validatedAnchorCount",
+            "validatedEpisodeCount", "anchorInvariantViolationCount",
+            "episodeInvariantViolationCount", "insertedCount",
+            "existingCount", "writesPerformed",
         }
     ),
     "activate-history": frozenset(
@@ -227,6 +251,10 @@ def _parser() -> argparse.ArgumentParser:
     _add_mode(assessments)
     _add_result(assessments)
     assessments.add_argument("--batch-id", required=True)
+    assessments.add_argument("--artifact-sha256", required=True)
+    assessments.add_argument("--feature-manifest-sha256", required=True)
+    assessments.add_argument("--report-sha256", required=True)
+    assessments.add_argument("--config-sha256", required=True)
 
     activate = subcommands.add_parser("activate-history")
     _add_common(activate)
@@ -311,7 +339,14 @@ def _parse_args(argv: Sequence[str] | None):
             "assessment manifest",
         )
     if args.command == "build-assessments":
-        _canonical_sha256(args.batch_id, "batch ID")
+        for name in (
+            "batch_id",
+            "artifact_sha256",
+            "feature_manifest_sha256",
+            "report_sha256",
+            "config_sha256",
+        ):
+            _canonical_sha256(getattr(args, name), name)
     return args
 
 
@@ -917,6 +952,220 @@ def _stage(args, env, clock, repository_factory):
     return result, writer
 
 
+_ASSESSMENT_BASE_LIMITATIONS = (
+    "historical_source_participated_in_baseline_construction_and_evaluation",
+    "no_confirmed_failure_labels_available",
+    "relative_score_not_failure_probability_confidence_rul_or_diagnosis",
+)
+
+
+def _validate_assessment_build(
+    prepared,
+    build: HistoricalAssessmentBuildV1,
+    args,
+) -> tuple[str, str, str]:
+    if not isinstance(build, HistoricalAssessmentBuildV1):
+        raise HistoryAdminError("assessment_build")
+    if (
+        build.artifact_sha256 != args.artifact_sha256
+        or build.feature_manifest_sha256 != args.feature_manifest_sha256
+        or build.report_sha256 != args.report_sha256
+        or build.config_sha256 != args.config_sha256
+        or type(build.assessments) is not tuple
+        or not build.assessments
+    ):
+        raise HistoryAdminError("assessment_identity")
+    anchors = {
+        str(sample.point_id): sample.reading for sample in prepared.samples
+    }
+    seen_ids: set[str] = set()
+    seen_anchor_ids: set[str] = set()
+    model_identities: set[tuple[str, str]] = set()
+    candidate_count = 0
+    for stored in build.assessments:
+        if not isinstance(stored, StoredHistoricalAssessmentV1):
+            raise HistoryAdminError("assessment_build")
+        assessment = stored.assessment
+        assessment_id = str(assessment.assessment_id)
+        anchor_id = str(assessment.anchor_point_id)
+        anchor = anchors.get(anchor_id)
+        candidate = assessment.status in {"watch", "alert"}
+        expected_limitations = list(_ASSESSMENT_BASE_LIMITATIONS)
+        if candidate:
+            expected_limitations.append("candidate_not_ground_truth")
+        expected_limitations.sort()
+        if (
+            stored.batch_id != prepared.batch_id
+            or assessment_id in seen_ids
+            or anchor_id in seen_anchor_ids
+            or assessment_id
+            != historical_assessment_id_v1(
+                prepared.batch_id,
+                assessment.fold_id,
+                anchor_id,
+            )
+            or anchor is None
+            or str(anchor.reading_id) != str(assessment.anchor_point_id)
+            or anchor.sensor_id != assessment.sensor_id
+            or anchor.operating_cycle_id != assessment.operating_cycle_id
+            or anchor.event_at != assessment.assessment_at
+            or assessment.assessment_window.end != assessment.assessment_at
+            or assessment.training_window.end >= assessment.assessment_window.start
+            or assessment.model_hash != args.artifact_sha256
+            or assessment.report_hash != args.report_sha256
+            or assessment.model_family != "robust-baseline"
+            or assessment.model_version != "1.0.1"
+            or assessment.limitations != expected_limitations
+            or any(
+                score is not None and not 0 <= score <= 100
+                for score in (
+                    assessment.anomaly_score,
+                    assessment.deterioration_score,
+                )
+            )
+        ):
+            raise HistoryAdminError("assessment_identity")
+        seen_ids.add(assessment_id)
+        seen_anchor_ids.add(anchor_id)
+        model_identities.add(
+            (assessment.model_family, assessment.model_version)
+        )
+        candidate_count += int(candidate)
+    if (
+        model_identities != {("robust-baseline", "1.0.1")}
+        or build.candidate_count != candidate_count
+        or build.validated_anchor_count != len(build.assessments)
+        or build.validated_episode_count != candidate_count
+    ):
+        raise HistoryAdminError("assessment_validation")
+    values = tuple(_assessment_values(item) for item in build.assessments)
+    manifest = _assessment_manifest_hash(prepared.batch_id, values)
+    return manifest, "robust-baseline", "1.0.1"
+
+
+def _build_assessments(args, env, repository_factory):
+    writer = AdminResultWriterV1(args.result_json)
+    writer.preflight()
+    repository, permit = _repository_for_existing(
+        args,
+        env,
+        repository_factory,
+    )
+    evidence = _lookup_existing_batch(repository, args.batch_id)
+    if evidence is None:
+        raise HistoryAdminError("batch_identity")
+    summary = evidence.summary
+    prepared = evidence.prepared
+    expected = SimpleBatchSummary.from_prepared(prepared)
+    _require_same_stage_evidence(summary, expected)
+    if summary.status not in {"staged", "active"}:
+        raise HistoryAdminError("batch_status")
+    if args.mode == "apply" and summary.status != "staged":
+        raise HistoryAdminError("assessment_apply_requires_staged")
+    if (
+        (summary.assessment_count == 0)
+        != (summary.assessment_manifest_sha256 is None)
+    ):
+        raise HistoryAdminError("assessment_identity")
+    if permit is not None:
+        reattest_local_database(permit)
+    try:
+        build = build_historical_assessments_v1(
+            prepared,
+            _ARTIFACT_DIR,
+            expected_artifact_sha256=args.artifact_sha256,
+            expected_feature_manifest_sha256=args.feature_manifest_sha256,
+            expected_report_sha256=args.report_sha256,
+            expected_config_sha256=args.config_sha256,
+        )
+    except HistoryAdminError:
+        raise
+    except BaseException as exc:
+        raise HistoryAdminError("assessment_build") from exc
+    manifest, model_family, model_version = _validate_assessment_build(
+        prepared,
+        build,
+        args,
+    )
+    assessment_count = len(build.assessments)
+    if summary.assessment_count == 0:
+        expected_inserted = assessment_count
+        expected_existing = 0
+    elif (
+        summary.assessment_count == assessment_count
+        and summary.assessment_manifest_sha256 == manifest
+    ):
+        expected_inserted = 0
+        expected_existing = assessment_count
+    else:
+        raise HistoryAdminError("assessment_identity")
+
+    if args.mode == "apply":
+        if permit is not None:
+            reattest_local_database(permit)
+        try:
+            stored = repository.store_assessments(
+                prepared.batch_id,
+                build.assessments,
+            )
+        except BaseException as exc:
+            raise HistoryAdminError("assessment_store") from exc
+        if not (
+            stored.batch_id == prepared.batch_id
+            and stored.inserted_count == expected_inserted
+            and stored.existing_count == expected_existing
+            and stored.total_count == assessment_count
+            and stored.assessment_manifest_sha256 == manifest
+        ):
+            raise HistoryAdminError("assessment_store")
+        writes = stored.writes_performed
+        _preflight_repository(repository, _target(args, env, permit=permit))
+        fresh = _lookup_existing_batch(repository, prepared.batch_id)
+        if fresh is None or fresh.prepared != prepared:
+            raise HistoryAdminError("assessment_reread")
+        _require_same_stage_evidence(fresh.summary, expected)
+        if not (
+            fresh.summary.status == "staged"
+            and fresh.summary.assessment_count == assessment_count
+            and fresh.summary.assessment_manifest_sha256 == manifest
+        ):
+            raise HistoryAdminError("assessment_reread")
+        inserted_count = stored.inserted_count
+        existing_count = stored.existing_count
+    else:
+        writes = 0
+        inserted_count = expected_inserted
+        existing_count = expected_existing
+
+    return {
+        "command": "build-assessments",
+        "mode": args.mode,
+        "environment": args.environment,
+        "targetFingerprint": args.expected_target_fingerprint,
+        "schemaVersion": args.expected_schema_version,
+        "assetId": prepared.asset_id,
+        "batchId": prepared.batch_id,
+        "sourceSha256": prepared.source_sha256,
+        "historyManifestSha256": prepared.manifest_sha256,
+        "artifactSha256": build.artifact_sha256,
+        "featureManifestSha256": build.feature_manifest_sha256,
+        "reportSha256": build.report_sha256,
+        "configSha256": build.config_sha256,
+        "modelFamily": model_family,
+        "modelVersion": model_version,
+        "assessmentManifestSha256": manifest,
+        "assessmentCount": assessment_count,
+        "candidateCount": build.candidate_count,
+        "validatedAnchorCount": build.validated_anchor_count,
+        "validatedEpisodeCount": build.validated_episode_count,
+        "anchorInvariantViolationCount": 0,
+        "episodeInvariantViolationCount": 0,
+        "insertedCount": inserted_count,
+        "existingCount": existing_count,
+        "writesPerformed": writes,
+    }, writer
+
+
 @dataclass(frozen=True)
 class SimpleBatchSummary:
     asset_id: str
@@ -1283,6 +1532,12 @@ def main(
             result = _migrate_local(args, clock)
         elif args.command == "stage-history":
             result, writer = _stage(args, source_env, clock, repository_factory)
+        elif args.command == "build-assessments":
+            result, writer = _build_assessments(
+                args,
+                source_env,
+                repository_factory,
+            )
         elif args.command == "activate-history":
             result, writer = _activate(args, source_env, clock, repository_factory)
         elif args.command == "show-active":
