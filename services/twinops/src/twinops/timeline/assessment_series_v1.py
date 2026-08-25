@@ -151,6 +151,10 @@ def _is_evaluable(assessment: HistoricalAssessmentV1) -> bool:
     return assessment.anomaly_score is not None
 
 
+def _is_candidate(assessment: HistoricalAssessmentV1) -> bool:
+    return assessment.status in {"watch", "alert"}
+
+
 def _score_extrema(
     assessments: tuple[HistoricalAssessmentV1, ...],
     indexes: range,
@@ -191,6 +195,17 @@ def _required_envelope_indices(
             required.update(
                 _score_extrema(assessments, indexes, "deterioration_score")
             )
+        start = end
+    start = 0
+    while start < len(assessments):
+        candidate = _is_candidate(assessments[start])
+        end = start + 1
+        while end < len(assessments) and (
+            _is_candidate(assessments[end]) == candidate
+        ):
+            end += 1
+        if candidate:
+            required.update((start, end - 1))
         start = end
     return required
 

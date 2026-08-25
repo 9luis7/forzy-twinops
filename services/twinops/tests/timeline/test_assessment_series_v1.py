@@ -53,6 +53,7 @@ def _assessment(
     index: int,
     *,
     fold_id: str = "walk-forward-fold-1",
+    sensor_id: str = "s1",
     score: float | None = 25.0,
     deterioration_score: float | None | object = _DERIVED,
     status: str = "normal",
@@ -60,7 +61,7 @@ def _assessment(
     training_end: str = "2026-08-25T13:00:00.000Z",
 ):
     event_at = BASE + timedelta(milliseconds=index)
-    anchor = make_point(index, event_at=event_at, sensor_id="s1")
+    anchor = make_point(index, event_at=event_at, sensor_id=sensor_id)
     anchor_id = str(anchor.point_id)
     candidate = status in {"watch", "alert"}
     deterioration = (
@@ -76,7 +77,7 @@ def _assessment(
                 anchor_id,
             ),
             "foldId": fold_id,
-            "sensorId": "s1",
+            "sensorId": sensor_id,
             "operatingCycleId": str(anchor.operating_cycle_id),
             "trainingWindow": {
                 "start": training_start,
@@ -203,6 +204,120 @@ def test_downsample_preserves_first_min_max_last_and_candidate_copy() -> None:
         [*BASE_LIMITATIONS, "candidate_not_ground_truth"]
     )
     TimelineAssessmentOverviewV1.model_validate(result.model_dump_public())
+
+
+def test_budget_rejects_when_single_point_candidate_episodes_exceed_it() -> None:
+    rows = [
+        _assessment(
+            index,
+            score=25.0,
+            deterioration_score=12.5,
+            status=(
+                "normal"
+                if index % 2 == 0
+                else ("watch" if index % 4 == 1 else "alert")
+            ),
+        )
+        for index in range(100)
+    ]
+
+    with pytest.raises(
+        TimelineAssessmentBudgetConflictV1,
+        match="complete assessment envelope",
+    ):
+        compose_assessment_overview_v1(
+            query=_query(max_points=40),
+            active_batch=_summary(100),
+            assessment_slice=_slice(rows),
+            point_segment_ids={
+                str(anchor.point_id): SEGMENT for _, anchor in rows
+            },
+        )
+
+
+def test_envelope_preserves_first_and_last_point_of_each_candidate_run() -> None:
+    candidate_indexes = {*range(3, 7), *range(12, 17)}
+    rows = [
+        _assessment(
+            index,
+            score=25.0,
+            deterioration_score=12.5,
+            status=(
+                "normal"
+                if index not in candidate_indexes
+                else ("watch" if index % 2 else "alert")
+            ),
+        )
+        for index in range(20)
+    ]
+
+    selected = _envelope(tuple(row[0] for row in rows), quota=6)
+
+    assert [str(item.anchor_point_id) for item in selected] == [
+        str(rows[index][1].point_id) for index in (0, 3, 6, 12, 16, 19)
+    ]
+
+
+def test_candidate_boundaries_and_null_run_boundaries_are_never_bridged() -> None:
+    rows = [
+        _assessment(0, score=25.0, deterioration_score=12.5),
+        _assessment(1, score=25.0, deterioration_score=12.5, status="watch"),
+        _assessment(2, score=25.0, deterioration_score=12.5, status="alert"),
+        _assessment(3, score=25.0, deterioration_score=12.5, status="watch"),
+        _assessment(4, score=None, status="insufficient_data"),
+        _assessment(5, score=None, status="insufficient_data"),
+        _assessment(6, score=25.0, deterioration_score=12.5, status="alert"),
+        _assessment(7, score=25.0, deterioration_score=12.5, status="watch"),
+        _assessment(8, score=25.0, deterioration_score=12.5, status="alert"),
+        _assessment(9, score=25.0, deterioration_score=12.5),
+    ]
+
+    selected = _envelope(tuple(row[0] for row in rows), quota=8)
+
+    assert [str(item.anchor_point_id) for item in selected] == [
+        str(rows[index][1].point_id)
+        for index in (0, 1, 3, 4, 5, 6, 8, 9)
+    ]
+
+
+def test_candidate_floor_equal_to_budget_is_deterministic_across_series() -> None:
+    groups = []
+    expected_ids: dict[str, set[str]] = {}
+    group_index = 0
+    for sensor_id in ("s1", "s2"):
+        for fold_id in ("fold-a", "fold-b"):
+            key = f"{sensor_id}-{fold_id}"
+            rows = [
+                _assessment(
+                    group_index * 100 + index,
+                    sensor_id=sensor_id,
+                    fold_id=fold_id,
+                    score=25.0,
+                    deterioration_score=12.5,
+                    status=("watch" if index % 2 else "normal"),
+                )
+                for index in range(18)
+            ]
+            items = tuple(row[0] for row in rows)
+            groups.append((key, items))
+            expected_ids[key] = {
+                str(rows[0][1].point_id),
+                *(str(rows[index][1].point_id) for index in range(1, 18, 2)),
+            }
+            group_index += 1
+
+    quotas = _allocate_quotas(groups, max_points=40)
+
+    assert quotas == {
+        "s1-fold-a": 10,
+        "s1-fold-b": 10,
+        "s2-fold-a": 10,
+        "s2-fold-b": 10,
+    }
+    assert _allocate_quotas(groups, max_points=40) == quotas
+    for key, items in groups:
+        selected = _envelope(items, quota=quotas[key])
+        assert {str(item.anchor_point_id) for item in selected} == expected_ids[key]
 
 
 def test_series_grouping_matches_the_javascript_stable_json_key() -> None:
@@ -437,6 +552,7 @@ def test_quota_tail_is_spread_across_canonical_sensors_and_folds() -> None:
                 tuple(
                     _assessment(
                         group_index * 10 + index,
+                        sensor_id=key[:2],
                         fold_id=key,
                         score=25.0,
                         deterioration_score=12.5,
@@ -449,6 +565,7 @@ def test_quota_tail_is_spread_across_canonical_sensors_and_folds() -> None:
     quotas = _allocate_quotas(groups, max_points=15)
 
     assert [quotas[key] for key in keys] == [2, 3, 2, 3, 2, 3]
+    assert _allocate_quotas(groups, max_points=15) == quotas
 
 
 def test_budget_below_complete_envelope_floor_fails_without_collapsing_folds() -> None:
