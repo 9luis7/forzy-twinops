@@ -29,6 +29,7 @@ const timelineContext = JSON.parse(
     "utf8"
   )
 );
+const canonicalCursor = "AQIDBA";
 
 it("requests a validated overview through the fixed same-origin route", async () => {
   const fetchImpl = vi.fn().mockResolvedValue({ ok: true, json: async () => overview });
@@ -58,13 +59,26 @@ it("requests original samples through the fixed same-origin route", async () => 
     sensorId: "s2",
     metric: "vibrationAcceleration",
     limit: 200,
-    cursor: "abc_DEF-123",
+    cursor: canonicalCursor,
   })).resolves.toBe(timelinePage);
 
   expect(fetchImpl).toHaveBeenCalledWith(
-    "/api/v2/assets/motor%2F01/timeline/samples?from=2026-05-19T14%3A46%3A10.921Z&to=2026-08-13T00%3A00%3A00.000Z&sensorId=s2&metric=vibrationAcceleration&limit=200&cursor=abc_DEF-123",
+    `/api/v2/assets/motor%2F01/timeline/samples?from=2026-05-19T14%3A46%3A10.921Z&to=2026-08-13T00%3A00%3A00.000Z&sensorId=s2&metric=vibrationAcceleration&limit=200&cursor=${canonicalCursor}`,
     { method: "GET", signal: undefined }
   );
+});
+
+it("accepts a canonical cursor at the 4096-character boundary", async () => {
+  const maxCursor = "A".repeat(4096);
+  const fetchImpl = vi.fn().mockResolvedValue({ ok: true, json: async () => timelinePage });
+  const source = createGatewayTwinDataSourceV2({ fetchImpl });
+
+  await expect(source.getTimelineSamples("forzy-motor-01", {
+    cursor: maxCursor,
+  })).resolves.toBe(timelinePage);
+
+  expect(fetchImpl).toHaveBeenCalledTimes(1);
+  expect(fetchImpl.mock.calls[0][0].endsWith(`cursor=${maxCursor}`)).toBe(true);
 });
 
 it("requests an exact original-point context through the fixed same-origin route", async () => {
@@ -132,6 +146,8 @@ it.each([
   ["decimal limit", { limit: 1.5 }, /limit/],
   ["blank cursor", { cursor: "" }, /cursor/],
   ["non-base64url cursor", { cursor: "abc+def" }, /cursor/],
+  ["modulo-one cursor", { cursor: "A" }, /cursor/],
+  ["non-canonical residual bits", { cursor: "abc_DEF-123" }, /cursor/],
   ["oversized cursor", { cursor: "a".repeat(4097) }, /cursor/],
   ["null cursor", { cursor: null }, /cursor/],
 ])("rejects invalid samples input: %s", async (_, options, expectedError) => {
@@ -186,6 +202,46 @@ it("rejects an absolute URL disguised as a timeline asset", async () => {
   await expect(source.getTimelineOverview("https://evil.example/asset", {})).rejects.toThrow(/assetId/);
 
   expect(fetchImpl).not.toHaveBeenCalled();
+});
+
+it.each([
+  ["getTimelineOverview", ".", {}],
+  ["getTimelineOverview", "..", {}],
+  ["getTimelineSamples", ".", {}],
+  ["getTimelineSamples", "..", {}],
+  ["getTimelineContext", ".", { pointId: timelineContext.anchor.pointId }],
+  ["getTimelineContext", "..", { pointId: timelineContext.anchor.pointId }],
+])("rejects dot-segment assetId before fetch for %s: %s", async (method, assetId, options) => {
+  const fetchImpl = vi.fn();
+  const source = createGatewayTwinDataSourceV2({ fetchImpl });
+
+  await expect(source[method](assetId, options)).rejects.toThrow(/assetId/);
+
+  expect(fetchImpl).not.toHaveBeenCalled();
+});
+
+it.each([
+  ["getTimelineOverview", {}, overview, "timeline"],
+  ["getTimelineSamples", {}, timelinePage, "timeline/samples"],
+  ["getTimelineContext", { pointId: timelineContext.anchor.pointId }, timelineContext, "timeline/context"],
+])("keeps encoded asset text inside the fixed allowlist for %s", async (
+  method,
+  options,
+  response,
+  operation,
+) => {
+  const assetId = "%2e%2e/../motor";
+  const fetchImpl = vi.fn().mockResolvedValue({ ok: true, json: async () => response });
+  const source = createGatewayTwinDataSourceV2({ fetchImpl });
+
+  await source[method](assetId, options);
+
+  const requestTarget = fetchImpl.mock.calls[0][0];
+  const resolved = new URL(requestTarget, "https://twinops.example/");
+  expect(resolved.origin).toBe("https://twinops.example");
+  expect(resolved.pathname).toBe(
+    `/api/v2/assets/${encodeURIComponent(assetId)}/${operation}`
+  );
 });
 
 it.each([

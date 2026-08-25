@@ -578,6 +578,249 @@ describe("historical navigation", () => {
     expect(result.current.displayContext).toBe(snapshot);
   });
 
+  it("surfaces an active overview AbortError as retryable failure", async () => {
+    const source = sourceStub();
+    const abortFailure = new DOMException("upstream mislabeled failure", "AbortError");
+    source.getTimelineOverview.mockRejectedValue(abortFailure);
+    const doc = visibleDocument();
+    const { result } = renderHook(() => useTwinOps(), {
+      wrapper: wrapperFor({
+        dataSource: source,
+        clock: outsideWindowClock,
+        documentRef: doc.target,
+      }),
+    });
+    await flush();
+
+    await act(async () => {
+      await result.current.showHistory();
+    });
+
+    expect(result.current.timelineErrors.overview).toBe(abortFailure);
+    expect(result.current.timelineLoading.overview).toBe(false);
+    expect(result.current.displayContext).toBe(snapshot);
+  });
+
+  it("surfaces an active page AbortError as retryable failure", async () => {
+    const source = sourceStub();
+    const abortFailure = new DOMException("upstream mislabeled failure", "AbortError");
+    source.getTimelineSamples.mockRejectedValue(abortFailure);
+    const doc = visibleDocument();
+    const { result } = renderHook(() => useTwinOps(), {
+      wrapper: wrapperFor({
+        dataSource: source,
+        clock: outsideWindowClock,
+        documentRef: doc.target,
+      }),
+    });
+    await flush();
+
+    await act(async () => {
+      await result.current.showHistory();
+    });
+
+    expect(result.current.timelineErrors.page).toBe(abortFailure);
+    expect(result.current.timelineLoading.page).toBe(false);
+    expect(result.current.timelineOverview).toBe(overview);
+    expect(result.current.displayContext).toBe(snapshot);
+  });
+
+  it("surfaces an active context AbortError without replacing the committed context", async () => {
+    const source = sourceStub();
+    const abortFailure = new DOMException("upstream mislabeled failure", "AbortError");
+    source.getTimelineContext
+      .mockResolvedValueOnce(historicalContext)
+      .mockRejectedValueOnce(abortFailure);
+    const doc = visibleDocument();
+    const { result } = renderHook(() => useTwinOps(), {
+      wrapper: wrapperFor({
+        dataSource: source,
+        clock: outsideWindowClock,
+        documentRef: doc.target,
+      }),
+    });
+    await flush();
+
+    await act(async () => {
+      await result.current.selectTimelinePoint(historicalContext.anchor.pointId);
+    });
+    const committed = result.current.historicalContext;
+
+    await act(async () => {
+      await result.current.selectTimelinePoint(historicalContext.anchor.pointId);
+    });
+
+    expect(result.current.timelineErrors.context).toBe(abortFailure);
+    expect(result.current.timelineLoading.context).toBe(false);
+    expect(result.current.pendingSelection).toBeNull();
+    expect(result.current.historicalContext).toBe(committed);
+    expect(result.current.displayContext).toBe(committed);
+  });
+
+  it("surfaces an active non-abort page error independently", async () => {
+    const source = sourceStub();
+    const pageFailure = new Error("samples unavailable");
+    source.getTimelineSamples.mockRejectedValue(pageFailure);
+    const doc = visibleDocument();
+    const { result } = renderHook(() => useTwinOps(), {
+      wrapper: wrapperFor({
+        dataSource: source,
+        clock: outsideWindowClock,
+        documentRef: doc.target,
+      }),
+    });
+    await flush();
+
+    await act(async () => {
+      await result.current.showHistory();
+    });
+
+    expect(result.current.timelineErrors.page).toBe(pageFailure);
+    expect(result.current.timelineLoading.page).toBe(false);
+    expect(result.current.timelineOverview).toBe(overview);
+  });
+
+  it.each([
+    ["overview", "getTimelineOverview", "timelineOverview", overview],
+    ["page", "getTimelineSamples", "timelinePage", timelinePage],
+  ])("ignores any failure from an obsolete %s owner", async (
+    errorKey,
+    method,
+    valueKey,
+    expectedValue,
+  ) => {
+    const source = sourceStub();
+    const obsolete = deferred();
+    let obsoleteSignal;
+    source[method].mockImplementationOnce((_, { signal }) => {
+      obsoleteSignal = signal;
+      return obsolete.promise;
+    });
+    const doc = visibleDocument();
+    const { result } = renderHook(() => useTwinOps(), {
+      wrapper: wrapperFor({
+        dataSource: source,
+        clock: outsideWindowClock,
+        documentRef: doc.target,
+      }),
+    });
+    await flush();
+
+    let obsoleteHistoryPromise;
+    act(() => {
+      obsoleteHistoryPromise = result.current.showHistory();
+    });
+    await flush();
+    await act(async () => {
+      await result.current.showHistory();
+    });
+
+    expect(obsoleteSignal.aborted).toBe(true);
+    const committedValue = result.current[valueKey];
+
+    await act(async () => {
+      obsolete.reject(new Error("obsolete transport failure"));
+      await obsoleteHistoryPromise;
+    });
+
+    expect(result.current.timelineErrors[errorKey]).toBeNull();
+    expect(result.current[valueKey]).toBe(committedValue);
+    expect(result.current[valueKey]).toBe(expectedValue);
+  });
+
+  it("ignores any failure from an obsolete context owner", async () => {
+    const source = sourceStub();
+    const obsolete = deferred();
+    let obsoleteSignal;
+    source.getTimelineContext
+      .mockImplementationOnce((_, { signal }) => {
+        obsoleteSignal = signal;
+        return obsolete.promise;
+      })
+      .mockResolvedValueOnce(historicalContext);
+    const doc = visibleDocument();
+    const { result } = renderHook(() => useTwinOps(), {
+      wrapper: wrapperFor({
+        dataSource: source,
+        clock: outsideWindowClock,
+        documentRef: doc.target,
+      }),
+    });
+    await flush();
+
+    let obsoleteSelectionPromise;
+    act(() => {
+      obsoleteSelectionPromise = result.current.selectTimelinePoint(
+        historicalContext.anchor.pointId
+      );
+    });
+    await flush();
+    await act(async () => {
+      await result.current.selectTimelinePoint(historicalContext.anchor.pointId);
+    });
+
+    expect(obsoleteSignal.aborted).toBe(true);
+    const committed = result.current.historicalContext;
+
+    await act(async () => {
+      obsolete.reject(new Error("obsolete context failure"));
+      await obsoleteSelectionPromise;
+    });
+
+    expect(result.current.timelineErrors.context).toBeNull();
+    expect(result.current.pendingSelection).toBeNull();
+    expect(result.current.historicalContext).toBe(committed);
+    expect(result.current.displayContext).toBe(committed);
+  });
+
+  it("ignores aborted overview and page AbortErrors after showNow", async () => {
+    const source = sourceStub();
+    const signals = [];
+    const rejectWhenAborted = (_, { signal }) => {
+      signals.push(signal);
+      return new Promise((_, reject) => {
+        signal.addEventListener("abort", () => {
+          reject(new DOMException("aborted", "AbortError"));
+        });
+      });
+    };
+    source.getTimelineOverview.mockImplementation(rejectWhenAborted);
+    source.getTimelineSamples.mockImplementation(rejectWhenAborted);
+    const doc = visibleDocument();
+    const { result } = renderHook(() => useTwinOps(), {
+      wrapper: wrapperFor({
+        dataSource: source,
+        clock: outsideWindowClock,
+        documentRef: doc.target,
+      }),
+    });
+    await flush();
+
+    let historyPromise;
+    act(() => {
+      historyPromise = result.current.showHistory();
+    });
+    await flush();
+    act(() => result.current.showNow());
+    await act(async () => {
+      await historyPromise;
+    });
+
+    expect(signals).toHaveLength(2);
+    expect(signals.every((signal) => signal.aborted)).toBe(true);
+    expect(result.current.timelineErrors).toEqual({
+      overview: null,
+      page: null,
+      context: null,
+    });
+    expect(result.current.timelineLoading).toEqual({
+      overview: false,
+      page: false,
+      context: false,
+    });
+    expect(result.current.viewMode).toBe("now");
+  });
+
   it("rejects an invalid context response without replacing the prior commit", async () => {
     const source = sourceStub();
     const invalidContext = {
@@ -648,13 +891,14 @@ describe("historical navigation", () => {
     expect(result.current.timelineLoading.context).toBe(false);
 
     await act(async () => {
-      pending.resolve(missingChannelContext);
+      pending.reject(new DOMException("aborted", "AbortError"));
       await pendingPromise;
     });
 
     expect(result.current.viewMode).toBe("now");
     expect(result.current.historicalContext).toBe(historicalContext);
     expect(result.current.displayContext).toBe(snapshot);
+    expect(result.current.timelineErrors.context).toBeNull();
   });
 
   it("updates stored now independently and reveals it only on showNow", async () => {

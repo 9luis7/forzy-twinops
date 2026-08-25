@@ -157,7 +157,6 @@ export function TwinOpsProvider({
         if (
           overviewRequestRef.current === owner
           && !owner.controller.signal.aborted
-          && !isAbortError(requestError)
         ) {
           dispatchTimeline({ type: "OVERVIEW_FAILED", error: requestError });
         }
@@ -196,7 +195,6 @@ export function TwinOpsProvider({
         if (
           pageRequestRef.current === owner
           && !owner.controller.signal.aborted
-          && !isAbortError(requestError)
         ) {
           dispatchTimeline({ type: "PAGE_FAILED", error: requestError });
         }
@@ -246,7 +244,6 @@ export function TwinOpsProvider({
         if (
           contextRequestRef.current === owner
           && !owner.controller.signal.aborted
-          && !isAbortError(requestError)
         ) {
           dispatchTimeline({ type: "CONTEXT_FAILED", error: requestError });
         }

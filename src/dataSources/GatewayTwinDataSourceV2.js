@@ -12,6 +12,7 @@ const TIMELINE_METRICS = Object.freeze([
   "temperature",
 ]);
 const UUID_V5_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+const BASE64URL_RE = /^[A-Za-z0-9_-]+$/;
 
 const assertBaseUrl = (baseUrl) => {
   if (
@@ -51,6 +52,9 @@ const assertCanonicalUtcMillis = (value, name) => {
 
 const assertTimelineAssetId = (assetId) => {
   assertAssetId(assetId);
+  if (assetId === "." || assetId === "..") {
+    throw new TypeError("GatewayTwinDataSourceV2 timeline assetId cannot be a dot segment");
+  }
   if (/^[a-z][a-z0-9+.-]*:/i.test(assetId) || assetId.startsWith("//")) {
     throw new TypeError("GatewayTwinDataSourceV2 timeline assetId cannot be an absolute URL");
   }
@@ -89,6 +93,31 @@ const assertTimelineRange = (from, to) => {
   }
 };
 
+const isCanonicalBase64Url = (value) => {
+  if (
+    typeof value !== "string"
+    || value.length === 0
+    || value.length > 4096
+    || !BASE64URL_RE.test(value)
+    || value.length % 4 === 1
+    || typeof globalThis.atob !== "function"
+    || typeof globalThis.btoa !== "function"
+  ) return false;
+
+  const standard = value.replace(/-/g, "+").replace(/_/g, "/");
+  const padded = standard + "=".repeat((4 - (standard.length % 4)) % 4);
+  try {
+    const decoded = globalThis.atob(padded);
+    const canonical = globalThis.btoa(decoded)
+      .replace(/\+/g, "-")
+      .replace(/\//g, "_")
+      .replace(/=+$/, "");
+    return canonical === value;
+  } catch {
+    return false;
+  }
+};
+
 const overviewQuery = ({ from, to, sensorId, metric, maxPoints }) => {
   assertTimelineRange(from, to);
   if (sensorId !== undefined && !["s1", "s2", "all"].includes(sensorId)) {
@@ -123,7 +152,7 @@ const samplesQuery = ({ from, to, sensorId, metric, limit, cursor }) => {
   }
   if (
     cursor !== undefined
-    && (typeof cursor !== "string" || cursor.length === 0 || cursor.length > 4096 || !/^[A-Za-z0-9_-]+$/.test(cursor))
+    && !isCanonicalBase64Url(cursor)
   ) {
     throw new TypeError("TwinOps timeline cursor must be a non-empty base64url token");
   }
