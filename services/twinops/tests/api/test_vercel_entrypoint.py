@@ -222,6 +222,19 @@ def test_vercel_function_excludes_local_secrets_and_nonruntime_files():
         assert pattern in exclude_files
 
 
+def test_vercel_function_bundles_every_schema_migration_used_by_startup():
+    repository_root = Path(__file__).parents[4]
+    config = json.loads((repository_root / "vercel.json").read_text(encoding="utf-8"))
+    include_files = config["functions"]["api/index.py"]["includeFiles"]
+
+    for migration in (
+        "002_real_twin_v2.sql",
+        "003_unified_history_timeline_postgres.sql",
+        "003_unified_history_timeline_sqlite.sql",
+    ):
+        assert f"migrations/{migration}" in include_files
+
+
 def test_vercel_upload_context_ignores_agent_metadata():
     repository_root = Path(__file__).parents[4]
     ignore_patterns = {
@@ -234,6 +247,8 @@ def test_vercel_upload_context_ignores_agent_metadata():
 
     assert ".agents/**" in ignore_patterns
     assert ".superpowers/**" in ignore_patterns
+    assert ".tmp/**" in ignore_patterns
+    assert "tmp/**" in ignore_patterns
     assert "**/.pytest_cache" in ignore_patterns
     assert "skills-lock.json" in ignore_patterns
 
