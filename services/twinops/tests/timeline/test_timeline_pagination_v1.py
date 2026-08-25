@@ -5,7 +5,6 @@ from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 import json
 from pathlib import Path
-from types import SimpleNamespace
 from uuid import NAMESPACE_URL, uuid5
 
 import pytest
@@ -59,10 +58,15 @@ class _Repository:
         self.live = tuple(live)
         self.batch_id = batch_id
         self.source_reads = 0
+        self.active_batch_id_calls = 0
+
+    def active_batch_id(self, asset_id):
+        assert asset_id == "forzy-motor-01"
+        self.active_batch_id_calls += 1
+        return self.batch_id
 
     def active_batch(self, asset_id):
-        assert asset_id == "forzy-motor-01"
-        return None if self.batch_id is None else SimpleNamespace(batch_id=self.batch_id)
+        raise AssertionError("timeline pagination must not call deep active_batch")
 
     @staticmethod
     def _read(points, query):
@@ -118,6 +122,16 @@ def _query() -> TimelineReadQueryV1:
         metric=None,
         limit=2,
     )
+
+
+def test_pagination_uses_only_metadata_active_batch_guards() -> None:
+    repository = _Repository((), ())
+    paginator = TimelinePaginatorV1(repository, TimelineCursorCodecV1())
+
+    page = paginator.page(_query(), cursor=None)
+
+    assert page.active_historical_batch_id == _BATCH
+    assert repository.active_batch_id_calls == 2
 
 
 def test_all_pages_merge_tied_archive_and_live_points_without_deduplication() -> None:

@@ -2,14 +2,89 @@
 
 from datetime import datetime, timedelta, timezone
 from hashlib import sha256
+import sqlite3
 from uuid import NAMESPACE_URL, uuid5
 
 from conftest import live_reading, prepared_batch, store_live_reading
+import pytest
 
+from twinops.storage.historical_repository_v1 import HistoricalBatchConflict
+from twinops.storage.sqlite_historical_repository_v1 import (
+    SQLiteHistoricalRepositoryV1,
+)
 from twinops.timeline.repository_v1 import (
     TimelineReadQueryV1,
     timeline_order_key_v1,
 )
+
+
+def _metadata_only_sqlite_repository(tmp_path, rows):
+    path = tmp_path / "active-batch-id.sqlite3"
+    connection = sqlite3.connect(path)
+    try:
+        connection.execute(
+            "CREATE TABLE historical_import_batches_v1 ("
+            "batch_id TEXT NOT NULL,asset_id TEXT NOT NULL,status TEXT NOT NULL)"
+        )
+        connection.executemany(
+            "INSERT INTO historical_import_batches_v1 "
+            "(batch_id,asset_id,status) VALUES (?,?,?)",
+            rows,
+        )
+        connection.commit()
+    finally:
+        connection.close()
+    repository = SQLiteHistoricalRepositoryV1(path)
+    repository._stored_batch = lambda *args, **kwargs: (_ for _ in ()).throw(
+        AssertionError("metadata identity read must not rehydrate child rows")
+    )
+    return repository
+
+
+def test_sqlite_active_batch_id_reads_only_canonical_parent_metadata(tmp_path) -> None:
+    batch_id = "sha256:" + "a" * 64
+    repository = _metadata_only_sqlite_repository(
+        tmp_path,
+        ((batch_id, "forzy-motor-01", "active"),),
+    )
+
+    assert repository.active_batch_id("forzy-motor-01") == batch_id
+
+
+def test_sqlite_active_batch_id_returns_none_without_an_active_row(tmp_path) -> None:
+    repository = _metadata_only_sqlite_repository(
+        tmp_path,
+        (("sha256:" + "a" * 64, "forzy-motor-01", "staged"),),
+    )
+
+    assert repository.active_batch_id("forzy-motor-01") is None
+
+
+@pytest.mark.parametrize(
+    ("rows", "message"),
+    (
+        (
+            (("not-a-canonical-hash", "forzy-motor-01", "active"),),
+            "active batch ID is not canonical sha256",
+        ),
+        (
+            (
+                ("sha256:" + "a" * 64, "forzy-motor-01", "active"),
+                ("sha256:" + "b" * 64, "forzy-motor-01", "active"),
+            ),
+            "multiple active historical batches",
+        ),
+    ),
+)
+def test_sqlite_active_batch_id_rejects_invalid_active_metadata(
+    tmp_path,
+    rows,
+    message,
+) -> None:
+    repository = _metadata_only_sqlite_repository(tmp_path, rows)
+
+    with pytest.raises(HistoricalBatchConflict, match=message):
+        repository.active_batch_id("forzy-motor-01")
 
 
 def test_sqlite_reads_only_original_points_from_the_active_archive(

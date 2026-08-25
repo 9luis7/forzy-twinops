@@ -218,8 +218,7 @@ class TimelinePaginatorV1:
     ) -> TimelinePageV1:
         if query.after is not None:
             raise ValueError("public timeline pagination owns the exclusive boundary")
-        active = self._repository.active_batch(query.asset_id)
-        active_batch_id = None if active is None else str(active.batch_id)
+        active_batch_id = self._repository.active_batch_id(query.asset_id)
         query_fingerprint = timeline_query_fingerprint_v1(query)
         after = None
         if cursor is not None:
@@ -242,9 +241,8 @@ class TimelinePaginatorV1:
         read_query = replace(query, after=after)
         archive = self._repository.read_archive_points(read_query)
         live = self._repository.read_live_points(read_query)
-        active_after_reads = self._repository.active_batch(query.asset_id)
-        active_batch_id_after_reads = (
-            None if active_after_reads is None else str(active_after_reads.batch_id)
+        active_batch_id_after_reads = self._repository.active_batch_id(
+            query.asset_id
         )
         if active_batch_id_after_reads != active_batch_id or any(
             point.source_kind != "historical_archive"

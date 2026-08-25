@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from types import SimpleNamespace
 from uuid import NAMESPACE_URL, uuid5
 
 from twinops.contracts.timeline_v1_models import (
@@ -130,12 +129,15 @@ class FakeTimelineRepositoryV1:
         self.policy_reads: list[set[str]] = []
         self.point_reads: list[tuple[str, str]] = []
         self.pair_reads: list[tuple[str, str]] = []
-        self.active_batch_calls = 0
+        self.active_batch_id_calls = 0
+
+    def active_batch_id(self, asset_id: str) -> str | None:
+        assert asset_id == "forzy-motor-01"
+        self.active_batch_id_calls += 1
+        return self.batch_id
 
     def active_batch(self, asset_id: str):
-        assert asset_id == "forzy-motor-01"
-        self.active_batch_calls += 1
-        return None if self.batch_id is None else SimpleNamespace(batch_id=self.batch_id)
+        raise AssertionError("timeline reads must not call deep active_batch")
 
     @staticmethod
     def _read(

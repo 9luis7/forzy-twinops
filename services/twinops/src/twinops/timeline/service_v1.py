@@ -228,17 +228,6 @@ def timeline_overview_query_fingerprint_v1(
     return "sha256:" + sha256(_canonical_json_bytes(payload)).hexdigest()
 
 
-def _active_batch_id(summary: object | None) -> str | None:
-    if summary is None:
-        return None
-    batch_id = getattr(summary, "batch_id", None)
-    if not isinstance(batch_id, str):
-        raise TimelineOverviewRepositoryErrorV1(
-            "active batch summary has no canonical batch ID"
-        )
-    return batch_id
-
-
 def _read_all_source_points(
     repository: TimelineReadRepositoryV1,
     query: TimelineOverviewQueryV1,
@@ -360,8 +349,7 @@ def _read_timeline_snapshot(
         sensor_ids=_SENSORS,
         metric=metric,
     )
-    active_before = repository.active_batch(asset_id)
-    active_batch_id = _active_batch_id(active_before)
+    active_batch_id = repository.active_batch_id(asset_id)
     archive = _read_all_source_points(
         repository,
         read_query,
@@ -372,8 +360,7 @@ def _read_timeline_snapshot(
         read_query,
         source_kind="live_collection",
     )
-    active_after = repository.active_batch(asset_id)
-    if _active_batch_id(active_after) != active_batch_id:
+    if repository.active_batch_id(asset_id) != active_batch_id:
         raise TimelineOverviewSnapshotConflictV1(
             "active historical batch changed"
         )
@@ -484,9 +471,7 @@ def _context_channels(
             raise TimelineContextRepositoryErrorV1(
                 "exact pair crosses collection policy evidence"
             )
-    active_after_pair = _active_batch_id(
-        repository.active_batch(anchor.asset_id)
-    )
+    active_after_pair = repository.active_batch_id(anchor.asset_id)
     if active_after_pair != snapshot.active_batch_id:
         raise TimelineOverviewSnapshotConflictV1(
             "active historical batch changed"

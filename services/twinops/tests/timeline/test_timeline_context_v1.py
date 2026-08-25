@@ -72,6 +72,17 @@ def _archive_points(*, include_second_segment: bool = True):
     return tuple(sorted(points, key=timeline_order_key_v1))
 
 
+def test_point_context_uses_only_metadata_active_batch_guards() -> None:
+    points = _archive_points(include_second_segment=False)
+    repository = FakeTimelineRepositoryV1(archive=points)
+    service = service_v1.TimelineServiceV1(repository)
+
+    context = service.context(_query_for_point(str(points[0].point_id)))
+
+    assert context.provenance.active_historical_batch_id == repository.batch_id
+    assert repository.active_batch_id_calls == 3
+
+
 def _point_with_adversarial_identity(
     index: int,
     *,

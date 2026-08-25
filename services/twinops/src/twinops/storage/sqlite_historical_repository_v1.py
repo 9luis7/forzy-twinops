@@ -1183,6 +1183,19 @@ class SQLiteHistoricalRepositoryV1:
         finally:
             connection.close()
 
+    def active_batch_id(self, asset_id: str) -> str | None:
+        with self._connection() as connection:
+            rows = connection.execute(
+                "SELECT batch_id FROM historical_import_batches_v1 "
+                "WHERE asset_id=? AND status='active' ORDER BY batch_id",
+                (asset_id,),
+            ).fetchall()
+        if len(rows) > 1:
+            raise HistoricalBatchConflict("multiple active historical batches")
+        if not rows:
+            return None
+        return _require_sha256(rows[0]["batch_id"], "active batch ID")
+
     def active_batch(self, asset_id: str) -> HistoricalBatchSummaryV1 | None:
         with self._connection() as connection:
             rows = connection.execute(

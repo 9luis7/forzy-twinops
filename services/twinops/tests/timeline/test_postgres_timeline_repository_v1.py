@@ -6,8 +6,10 @@ from types import SimpleNamespace
 
 from psycopg.pq import TransactionStatus
 from psycopg.rows import dict_row
+import pytest
 
 from conftest import live_reading, prepared_batch
+from twinops.storage.historical_repository_v1 import HistoricalBatchConflict
 from twinops.storage.postgres_historical_repository_v1 import (
     PostgresHistoricalRepositoryV1,
 )
@@ -47,6 +49,59 @@ def _repository(connection):
         "postgresql://unit.invalid/test",
         connection_factory=lambda _: connection,
     )
+
+
+def test_postgres_active_batch_id_reads_only_canonical_parent_metadata() -> None:
+    batch_id = "sha256:" + "a" * 64
+    connection = _Connection([[{"batch_id": batch_id}]])
+    repository = _repository(connection)
+    repository._stored_batch = lambda *args, **kwargs: (_ for _ in ()).throw(
+        AssertionError("metadata identity read must not rehydrate child rows")
+    )
+
+    assert repository.active_batch_id("forzy-motor-01") == batch_id
+    assert connection.statements == [
+        (
+            "SELECT batch_id FROM historical_import_batches_v1 "
+            "WHERE asset_id=%s AND status='active' ORDER BY batch_id",
+            ("forzy-motor-01",),
+        )
+    ]
+    assert connection.closed is True
+
+
+def test_postgres_active_batch_id_returns_none_without_an_active_row() -> None:
+    connection = _Connection([[]])
+
+    assert _repository(connection).active_batch_id("forzy-motor-01") is None
+    assert connection.closed is True
+
+
+@pytest.mark.parametrize(
+    ("rows", "message"),
+    (
+        (
+            [{"batch_id": "not-a-canonical-hash"}],
+            "active batch ID is not canonical sha256",
+        ),
+        (
+            [
+                {"batch_id": "sha256:" + "a" * 64},
+                {"batch_id": "sha256:" + "b" * 64},
+            ],
+            "multiple active historical batches",
+        ),
+    ),
+)
+def test_postgres_active_batch_id_rejects_invalid_active_metadata(
+    rows,
+    message,
+) -> None:
+    connection = _Connection([rows])
+
+    with pytest.raises(HistoricalBatchConflict, match=message):
+        _repository(connection).active_batch_id("forzy-motor-01")
+    assert connection.closed is True
 
 
 def test_postgres_archive_adapter_uses_active_predicate_and_limit_plus_one() -> None:

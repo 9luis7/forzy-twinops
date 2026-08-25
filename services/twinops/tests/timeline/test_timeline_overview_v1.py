@@ -49,6 +49,15 @@ def _query(**changes):
     return TimelineOverviewQueryV1(**(values | changes))
 
 
+def test_overview_uses_only_metadata_active_batch_guards() -> None:
+    repository = FakeTimelineRepositoryV1()
+
+    overview = _service(repository).overview(_query())
+
+    assert overview.active_historical_batch_id == BATCH_A
+    assert repository.active_batch_id_calls == 2
+
+
 @pytest.mark.parametrize(
     "change",
     (
