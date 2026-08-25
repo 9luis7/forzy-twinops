@@ -87,7 +87,7 @@ def build_historical_assessments_v1(
     frame, cycle_ids = _prepared_feature_frame(prepared_batch, feature_config)
     folds = build_walk_forward_folds(frame, holdout_count=holdout_count)
     evaluation = evaluate_walk_forward_rows(frame, bundle.pipeline, folds)
-    _validate_causal_episode_rows(evaluation.rows, frame)
+    validated_episode_count = _validate_causal_episode_rows(evaluation.rows, frame)
     _validate_report_folds(frame, folds, bundle.report)
 
     anchors_by_reading: dict[str, HistoricalStoredSampleV1] = {}
@@ -208,7 +208,7 @@ def build_historical_assessments_v1(
         config_sha256=expected_config_sha256,
         candidate_count=candidate_count,
         validated_anchor_count=len(assessments),
-        validated_episode_count=candidate_count,
+        validated_episode_count=validated_episode_count,
     )
 
 
@@ -303,7 +303,7 @@ def _validate_report_folds(
 def _validate_causal_episode_rows(
     rows: Sequence[WalkForwardRowAssessmentV1],
     frame: pd.DataFrame,
-) -> None:
+) -> int:
     source_by_reading: dict[str, tuple[str, int, datetime]] = {}
     cycles_by_sensor_event: dict[tuple[str, datetime], set[int]] = {}
     for source_row in frame.itertuples():
@@ -318,9 +318,10 @@ def _validate_causal_episode_rows(
         source_by_reading[reading_id] = facts
         cycles_by_sensor_event.setdefault((facts[0], facts[2]), set()).add(facts[1])
 
-    grouped: dict[
-        tuple[str, str, int, str], list[WalkForwardRowAssessmentV1]
+    rows_by_fold_reading: dict[
+        tuple[str, str], WalkForwardRowAssessmentV1
     ] = {}
+    streams: set[tuple[str, str, int]] = set()
     for row in rows:
         source = source_by_reading.get(row.reading_id)
         if source is None:
@@ -328,46 +329,123 @@ def _validate_causal_episode_rows(
         sensor_id, cycle_id, event_at = source
         if sensor_id != row.sensor_id or event_at != row.anchor_event_at:
             raise ValueError("episode validation found crossed source facts")
-        if row.status == "normal":
-            if (
-                row.episode_id is not None
-                or row.episode_started_at is not None
-                or row.persistence_seconds != 0
-                or row.persistence_count != 0
-            ):
-                raise ValueError("normal row cannot carry causal episode facts")
-            continue
-        if row.episode_id is None or row.episode_started_at is None:
-            raise ValueError("candidate row requires causal episode facts")
-        if row.episode_started_at > row.anchor_event_at:
-            raise ValueError("episode start cannot be in the future")
-        if not (
-            row.training_end
-            < row.episode_started_at
-            <= row.window_end
-            == row.anchor_event_at
-        ):
-            raise ValueError("episode timestamps are not causal")
-        start_cycles = cycles_by_sensor_event.get(
-            (row.sensor_id, row.episode_started_at), set()
-        )
-        if start_cycles and cycle_id not in start_cycles:
-            raise ValueError("episode start crosses an operating cycle")
-        grouped.setdefault(
-            (row.fold_id, row.sensor_id, cycle_id, row.episode_id), []
-        ).append(row)
+        key = (row.fold_id, row.reading_id)
+        if key in rows_by_fold_reading:
+            raise ValueError("episode validation found a duplicated fold reading")
+        rows_by_fold_reading[key] = row
+        streams.add((row.fold_id, row.sensor_id, cycle_id))
 
-    for episode_rows in grouped.values():
-        episode_rows.sort(key=lambda row: (row.anchor_event_at, row.reading_id))
-        episode_start = episode_rows[0].anchor_event_at
-        for count, row in enumerate(episode_rows, start=1):
-            if row.episode_started_at != episode_start:
-                raise ValueError("episode start is not the earliest causal row")
-            if row.persistence_count != count:
-                raise ValueError("episode persistence count is not causal")
-            expected_seconds = (row.anchor_event_at - episode_start).total_seconds()
-            if row.persistence_seconds != expected_seconds:
-                raise ValueError("episode persistence seconds are not causal")
+    consumed: set[tuple[str, str]] = set()
+    validated_candidate_count = 0
+    for fold_id, sensor_id, cycle_id in sorted(streams):
+        source_rows = frame.loc[
+            frame["sensor_id"].astype(str).eq(sensor_id)
+            & frame["cycle_id"].astype(int).eq(cycle_id)
+        ].copy()
+        source_rows = source_rows.assign(
+            _reading_order=source_rows["reading_id"].fillna("").astype(str)
+        ).sort_values(["event_at", "_reading_order"], kind="stable")
+        episode_state: tuple[
+            tuple[object, ...], str, datetime, int
+        ] | None = None
+        for source_row in source_rows.itertuples():
+            reading_id = str(source_row.reading_id)
+            key = (fold_id, reading_id)
+            row = rows_by_fold_reading.get(key)
+            if row is None:
+                episode_state = None
+                continue
+            consumed.add(key)
+            boundary = (
+                str(getattr(source_row, "source", "unknown")),
+                _boundary_value(
+                    getattr(source_row, "collection_policy_id", None)
+                ),
+                row.model_family,
+                row.model_version,
+                row.fold_id,
+                row.sensor_id,
+                cycle_id,
+            )
+            quality_flags = _quality_flags(
+                getattr(source_row, "quality_flags", ())
+            )
+            if any("gap" in flag.lower() for flag in quality_flags):
+                episode_state = None
+            if episode_state is not None and episode_state[0] != boundary:
+                episode_state = None
+
+            if row.status == "normal":
+                if (
+                    row.episode_id is not None
+                    or row.episode_started_at is not None
+                    or row.persistence_seconds != 0
+                    or row.persistence_count != 0
+                ):
+                    raise ValueError("normal row cannot carry causal episode facts")
+                episode_state = None
+                continue
+            if row.episode_id is None or row.episode_started_at is None:
+                raise ValueError("candidate row requires causal episode facts")
+            if row.episode_started_at > row.anchor_event_at:
+                raise ValueError("episode start cannot be in the future")
+            if not (
+                row.training_end
+                < row.episode_started_at
+                <= row.window_end
+                == row.anchor_event_at
+            ):
+                raise ValueError("episode timestamps are not causal")
+            start_cycles = cycles_by_sensor_event.get(
+                (row.sensor_id, row.episode_started_at), set()
+            )
+            if start_cycles and cycle_id not in start_cycles:
+                raise ValueError("episode start crosses an operating cycle")
+
+            if episode_state is None:
+                expected_id = row.episode_id
+                expected_start = row.anchor_event_at
+                expected_count = 1
+            else:
+                _, expected_id, expected_start, previous_count = episode_state
+                expected_count = previous_count + 1
+            expected_seconds = (
+                row.anchor_event_at - expected_start
+            ).total_seconds()
+            if (
+                row.episode_id != expected_id
+                or row.episode_started_at != expected_start
+                or row.persistence_count != expected_count
+                or row.persistence_seconds != expected_seconds
+            ):
+                raise ValueError("episode crosses a causal boundary")
+            episode_state = (
+                boundary,
+                row.episode_id,
+                row.episode_started_at,
+                row.persistence_count,
+            )
+            validated_candidate_count += 1
+
+    if consumed != set(rows_by_fold_reading):
+        raise ValueError("episode validation did not consume every assessment row")
+    return validated_candidate_count
+
+
+def _quality_flags(value: object) -> tuple[str, ...]:
+    if value is None or (isinstance(value, float) and pd.isna(value)):
+        return ()
+    if isinstance(value, str):
+        candidates = (value,)
+    else:
+        candidates = tuple(str(item) for item in value)
+    return tuple(sorted(set(flag for flag in candidates if flag)))
+
+
+def _boundary_value(value: object) -> object:
+    if value is None or pd.isna(value):
+        return None
+    return value
 
 
 def _prepared_feature_frame(

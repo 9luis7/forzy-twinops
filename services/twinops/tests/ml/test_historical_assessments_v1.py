@@ -215,6 +215,139 @@ def test_episode_validator_rejects_future_and_cross_cycle_starts():
         )
 
 
+@pytest.mark.parametrize(
+    "break_kind",
+    (
+        "normal",
+        "missing_evaluation",
+        "feature_invalid",
+        "duplicate",
+        "non_finite",
+        "gap",
+        "source",
+        "policy",
+        "model_family",
+        "model_version",
+    ),
+)
+def test_episode_validator_reconstructs_every_available_causal_boundary(
+    break_kind,
+):
+    from twinops.ml.historical_assessments_v1 import _validate_causal_episode_rows
+
+    start = datetime(2026, 5, 19, 15, 2, tzinfo=timezone.utc)
+    first = _episode_assessment(
+        reading_id="reading-0",
+        anchor_at=start,
+        episode_id="forged-continuation",
+        episode_started_at=start,
+        persistence_count=1,
+    )
+    last = _episode_assessment(
+        reading_id="reading-2",
+        anchor_at=start + timedelta(seconds=2),
+        episode_id="forged-continuation",
+        episode_started_at=start,
+        persistence_count=2,
+    )
+    frame = _three_row_episode_frame(start)
+    rows = [first, last]
+
+    if break_kind == "normal":
+        rows.insert(
+            1,
+            _episode_assessment(
+                reading_id="reading-1",
+                anchor_at=start + timedelta(seconds=1),
+                status="normal",
+            ),
+        )
+    elif break_kind == "feature_invalid":
+        frame.loc[1, "feature_valid"] = False
+    elif break_kind == "duplicate":
+        frame.loc[1, "is_new_information"] = False
+    elif break_kind == "non_finite":
+        frame.loc[1, "velocity_ewma"] = float("nan")
+    elif break_kind == "gap":
+        frame.at[2, "quality_flags"] = ("gap_before",)
+    elif break_kind == "source":
+        frame.loc[2, "source"] = "other-history"
+    elif break_kind == "policy":
+        frame.loc[2, "collection_policy_id"] = "policy-b"
+    elif break_kind == "model_family":
+        rows[-1] = replace(last, model_family="other-baseline")
+    elif break_kind == "model_version":
+        rows[-1] = replace(last, model_version="1.0.2")
+
+    with pytest.raises(ValueError, match="boundary"):
+        _validate_causal_episode_rows(tuple(rows), frame)
+
+
+def _episode_assessment(
+    *,
+    reading_id: str,
+    anchor_at: datetime,
+    status: str = "watch",
+    episode_id: str | None = None,
+    episode_started_at: datetime | None = None,
+    persistence_count: int = 0,
+) -> WalkForwardRowAssessmentV1:
+    persistence_seconds = (
+        0.0
+        if episode_started_at is None
+        else (anchor_at - episode_started_at).total_seconds()
+    )
+    return WalkForwardRowAssessmentV1(
+        fold_id="fold-v1-0000",
+        sensor_id="s1",
+        reading_id=reading_id,
+        anchor_event_at=anchor_at,
+        training_start=anchor_at - timedelta(minutes=2),
+        training_end=anchor_at - timedelta(minutes=1),
+        window_start=anchor_at - timedelta(seconds=1),
+        window_end=anchor_at,
+        status=status,
+        anomaly_score=80.0 if status != "normal" else 10.0,
+        deterioration_score=50.0 if status != "normal" else 5.0,
+        episode_id=episode_id,
+        episode_started_at=episode_started_at,
+        persistence_seconds=persistence_seconds,
+        persistence_count=persistence_count,
+        quality_status="ok",
+        quality_flags=(),
+        evidence=(),
+        model_family="robust-baseline",
+        model_version="1.0.1",
+        fold_model_hash="sha256:" + "e" * 64,
+    )
+
+
+def _three_row_episode_frame(start: datetime):
+    import pandas as pd
+
+    rows = []
+    for offset in range(3):
+        event_at = start + timedelta(seconds=offset)
+        rows.append(
+            {
+                "reading_id": f"reading-{offset}",
+                "sensor_id": "s1",
+                "cycle_id": 2,
+                "event_at": event_at,
+                "source": "forzy-csv",
+                "collection_policy_id": "policy-a",
+                "quality_flags": (),
+                "feature_valid": True,
+                "is_new_information": True,
+                "velocity_ewma": 0.1,
+                "velocity_slope": 0.0,
+                "velocity_change_point": 0.0,
+                "temperature_deviation": 0.0,
+            }
+        )
+    return pd.DataFrame(rows)
+
+
 def _episode_frame(anchor_at: datetime):
     import pandas as pd
 

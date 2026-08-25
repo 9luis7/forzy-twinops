@@ -283,6 +283,71 @@ def test_row_evaluator_resets_candidate_episode_on_every_causal_break():
     assert rows[4].status == "alert"
 
 
+@pytest.mark.parametrize(
+    "break_kind",
+    (
+        "duplicate",
+        "missing_reading",
+        "non_finite",
+        "feature_invalid",
+        "gap",
+        "source",
+        "policy",
+    ),
+)
+def test_row_evaluator_resets_deterioration_score_state_at_causal_break(
+    break_kind,
+):
+    from twinops.ml.backtest import evaluate_walk_forward_rows
+
+    frame = _row_evaluation_frame()
+    official = [
+        "velocity_ewma",
+        "velocity_slope",
+        "velocity_change_point",
+        "temperature_deviation",
+    ]
+    frame.loc[:, official] = 0.0
+    frame["collection_policy_id"] = "policy-a"
+    test_indexes = frame.index[frame.cycle_id.eq(2)].tolist()
+    frame.loc[test_indexes[:2], "velocity_ewma"] = 1.0
+    break_index = test_indexes[2]
+    target_index = break_index if break_kind in {"gap", "source", "policy"} else test_indexes[3]
+    target_reading_id = frame.loc[target_index, "reading_id"]
+    frame.loc[target_index, "velocity_ewma"] = 1.0 / 6.0
+
+    if break_kind == "duplicate":
+        frame.loc[break_index, "is_new_information"] = False
+    elif break_kind == "missing_reading":
+        frame.loc[break_index, "reading_id"] = None
+    elif break_kind == "non_finite":
+        frame.loc[break_index, "velocity_ewma"] = float("nan")
+    elif break_kind == "feature_invalid":
+        frame.loc[break_index, "feature_valid"] = False
+    elif break_kind == "gap":
+        frame.at[break_index, "quality_flags"] = ("gap_before",)
+    elif break_kind == "source":
+        frame.loc[break_index, "source"] = "other-history"
+    elif break_kind == "policy":
+        frame.loc[break_index, "collection_policy_id"] = "policy-b"
+
+    result = evaluate_walk_forward_rows(
+        frame,
+        RobustBaseline(
+            BaselineConfig(
+                minimum_scale=1.0,
+                robust_z_at_score_100=1.0,
+            )
+        ),
+        [WalkForwardFold(train_cycle_ids=(0, 1), test_cycle_ids=(2,))],
+    )
+    target = next(row for row in result.rows if row.reading_id == target_reading_id)
+
+    assert target.anomaly_score == pytest.approx(100.0 / 6.0)
+    assert target.deterioration_score == pytest.approx(35.0 / 6.0)
+    assert target.status == "normal"
+
+
 @pytest.mark.skipif(not EXPORTER_AVAILABLE, reason="covered by the VS6A RED tracer")
 def test_legacy_top_ten_candidate_event_bytes_remain_unchanged():
     frame = _six_cycle_features()

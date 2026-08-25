@@ -146,23 +146,28 @@ def evaluate_walk_forward_rows(
         eligible_rows = normalized.loc[eligible].copy()
         if eligible_rows["reading_id"].astype(str).duplicated().any():
             raise ValueError("a causal fold cannot evaluate the same reading more than once")
-        scored = model.score(eligible_rows) if not eligible_rows.empty else eligible_rows
-        scored_by_index = {index: row for index, row in scored.iterrows()}
+        scored_by_index = _score_causal_segments(normalized, eligible, model)
         state_by_boundary: dict[tuple[object, ...], tuple[str, datetime, int]] = {}
+        last_boundary_by_stream: dict[tuple[str, int], tuple[object, ...]] = {}
         ordered = normalized.assign(_reading_order=normalized["reading_id"].fillna(""))
         ordered = ordered.sort_values(
             ["event_at", "_reading_order", "sensor_id"], kind="stable"
         )
         for index, source_row in ordered.iterrows():
+            stream = (str(source_row.sensor_id), int(source_row.cycle_id))
             boundary = (
                 str(source_row.get("source", "unknown")),
                 str(source_row.sensor_id),
                 int(source_row.cycle_id),
-                source_row.get("collection_policy_id"),
+                _boundary_value(source_row.get("collection_policy_id")),
                 model.model_name,
                 model.model_version,
                 fold_id,
             )
+            previous_boundary = last_boundary_by_stream.get(stream)
+            if previous_boundary is not None and previous_boundary != boundary:
+                state_by_boundary.pop(previous_boundary, None)
+            last_boundary_by_stream[stream] = boundary
             if index not in scored_by_index:
                 state_by_boundary.pop(boundary, None)
                 continue
@@ -255,6 +260,50 @@ def evaluate_walk_forward_rows(
     )
 
 
+def _score_causal_segments(
+    frame: pd.DataFrame,
+    eligible: pd.Series,
+    model: RobustBaseline,
+) -> dict[int, pd.Series]:
+    scored_by_index: dict[int, pd.Series] = {}
+    groups = frame.groupby(["sensor_id", "cycle_id"], sort=False).indices
+    for positions in groups.values():
+        ordered = frame.iloc[np.asarray(positions, dtype=int)].copy()
+        ordered = ordered.assign(_reading_order=ordered["reading_id"].fillna(""))
+        ordered = ordered.sort_values(["event_at", "_reading_order"], kind="stable")
+        segment: list[int] = []
+        previous_boundary: tuple[object, object] | None = None
+
+        def flush() -> None:
+            if not segment:
+                return
+            scored = model.score(frame.loc[segment].copy())
+            scored_by_index.update(
+                {index: row for index, row in scored.iterrows()}
+            )
+            segment.clear()
+
+        for index, source_row in ordered.iterrows():
+            boundary = (
+                str(source_row.get("source", "unknown")),
+                _boundary_value(source_row.get("collection_policy_id")),
+            )
+            quality_flags = _quality_flags(source_row.get("quality_flags", ()))
+            gap_before = any("gap" in flag.lower() for flag in quality_flags)
+            if not bool(eligible.loc[index]):
+                flush()
+                previous_boundary = None
+                continue
+            if gap_before or (
+                previous_boundary is not None and previous_boundary != boundary
+            ):
+                flush()
+            segment.append(int(index))
+            previous_boundary = boundary
+        flush()
+    return scored_by_index
+
+
 def _validate_fold(frame: pd.DataFrame, fold: WalkForwardFold) -> None:
     if not fold.train_cycle_ids or not fold.test_cycle_ids:
         raise ValueError("walk-forward folds require train and test cycles")
@@ -304,6 +353,12 @@ def _quality_flags(value: object) -> tuple[str, ...]:
     else:
         candidates = tuple(str(item) for item in value)
     return tuple(sorted(set(flag for flag in candidates if flag)))
+
+
+def _boundary_value(value: object) -> object:
+    if value is None or pd.isna(value):
+        return None
+    return value
 
 
 def _as_datetime(value: object) -> datetime:
