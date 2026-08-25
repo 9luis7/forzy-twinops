@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 import re
+import secrets
 import stat
 import subprocess
 import sys
@@ -22,8 +23,32 @@ SPEC_SHA256 = "20629d860f19a212bc2b941d6270e2316c747a0b85c473f0b51bbee6106e3a44"
 PLANS = ("A", "B", "C", "D", "E")
 CRITERIA = tuple(f"AC-{number:02d}" for number in range(1, 29))
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
+PREFIXED_SHA256 = re.compile(r"^sha256:[0-9a-f]{64}$")
 GIT_SHA = re.compile(r"^[0-9a-f]{40}$")
 RESULT_NAME = re.compile(r"^build-assessments-local-causal-[A-Za-z0-9_-]+\.json$")
+ATTESTATION_NAME = re.compile(
+    r"^phase-b-local-causal-attestation-[A-Za-z0-9_-]+\.json$"
+)
+ATTESTATION_RESULT_KEYS = {
+    "command", "mode", "environment", "targetFingerprint", "schemaVersion",
+    "assetId", "batchId", "sourceSha256", "historyManifestSha256",
+    "artifactSha256", "featureManifestSha256", "reportSha256", "configSha256",
+    "modelFamily", "modelVersion", "assessmentManifestSha256", "assessmentCount",
+    "candidateCount", "validatedAnchorCount", "validatedEpisodeCount",
+    "anchorInvariantViolationCount", "episodeInvariantViolationCount",
+    "insertedCount", "existingCount", "writesPerformed",
+}
+ATTESTATION_SHA_FIELDS = (
+    "targetFingerprint", "batchId", "sourceSha256", "historyManifestSha256",
+    "artifactSha256", "featureManifestSha256", "reportSha256", "configSha256",
+    "assessmentManifestSha256",
+)
+ATTESTATION_COUNT_FIELDS = (
+    "assessmentCount", "candidateCount", "validatedAnchorCount",
+    "validatedEpisodeCount", "anchorInvariantViolationCount",
+    "episodeInvariantViolationCount", "insertedCount", "existingCount",
+    "writesPerformed",
+)
 
 OWNER_CRITERIA = {
     "A": ("AC-06",),
@@ -557,6 +582,922 @@ def export_local_causal_manifest(args: argparse.Namespace) -> None:
         raise LedgerError("local causal manifest could not be byte-verified")
 
 
+def _compact_canonical_json(value: object) -> bytes:
+    return (
+        json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        + "\n"
+    ).encode("utf-8")
+
+
+def _is_reparse(path_stat: os.stat_result) -> bool:
+    return bool(
+        getattr(path_stat, "st_file_attributes", 0)
+        & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+    ) or stat.S_ISLNK(path_stat.st_mode)
+
+
+def _attestation_identity(value: os.stat_result) -> tuple[int, int]:
+    return (int(value.st_dev), int(value.st_ino))
+
+
+def _attestation_file_identity(
+    value: os.stat_result,
+) -> tuple[int, int, int, int, int]:
+    return (
+        int(value.st_dev),
+        int(value.st_ino),
+        int(value.st_size),
+        int(value.st_mtime_ns),
+        int(value.st_nlink),
+    )
+
+
+def _require_attestation_directory(path: Path, value: os.stat_result) -> os.stat_result:
+    if not stat.S_ISDIR(value.st_mode) or _is_reparse(value):
+        raise LedgerError("attestation boundary must be direct and non-reparse")
+    return value
+
+
+def _require_attestation_file(
+    path: Path,
+    value: os.stat_result,
+    *,
+    link_count: int | None = 1,
+) -> os.stat_result:
+    if not stat.S_ISREG(value.st_mode) or _is_reparse(value):
+        raise LedgerError("attestation file must be direct, regular, and non-reparse")
+    if link_count is not None and int(value.st_nlink) != link_count:
+        raise LedgerError("attestation file has an invalid link count")
+    return value
+
+
+def _open_windows_attestation_directory(path: Path) -> int:
+    import ctypes
+    from ctypes import wintypes
+
+    create_file = ctypes.windll.kernel32.CreateFileW
+    create_file.argtypes = (
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.HANDLE,
+    )
+    create_file.restype = wintypes.HANDLE
+    handle = create_file(
+        str(path),
+        0x1 | 0x80,
+        0x1 | 0x2,
+        None,
+        3,
+        0x02000000 | 0x00200000,
+        None,
+    )
+    invalid = ctypes.c_void_p(-1).value
+    if handle in (None, invalid):
+        raise OSError("attestation directory handle unavailable")
+    return int(handle)
+
+
+def _windows_attestation_handle_info(
+    handle: int,
+) -> tuple[tuple[int, int], int, int]:
+    import ctypes
+    from ctypes import wintypes
+
+    class ByHandleFileInformation(ctypes.Structure):
+        _fields_ = (
+            ("dwFileAttributes", wintypes.DWORD),
+            ("ftCreationTime", wintypes.FILETIME),
+            ("ftLastAccessTime", wintypes.FILETIME),
+            ("ftLastWriteTime", wintypes.FILETIME),
+            ("dwVolumeSerialNumber", wintypes.DWORD),
+            ("nFileSizeHigh", wintypes.DWORD),
+            ("nFileSizeLow", wintypes.DWORD),
+            ("nNumberOfLinks", wintypes.DWORD),
+            ("nFileIndexHigh", wintypes.DWORD),
+            ("nFileIndexLow", wintypes.DWORD),
+        )
+
+    class FileId128(ctypes.Structure):
+        _fields_ = (("Identifier", ctypes.c_ubyte * 16),)
+
+    class FileIdInformation(ctypes.Structure):
+        _fields_ = (
+            ("VolumeSerialNumber", ctypes.c_ulonglong),
+            ("FileId", FileId128),
+        )
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    get_information = kernel32.GetFileInformationByHandle
+    get_information.argtypes = (
+        wintypes.HANDLE,
+        ctypes.POINTER(ByHandleFileInformation),
+    )
+    get_information.restype = wintypes.BOOL
+    get_information_ex = kernel32.GetFileInformationByHandleEx
+    get_information_ex.argtypes = (
+        wintypes.HANDLE,
+        ctypes.c_int,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+    )
+    get_information_ex.restype = wintypes.BOOL
+    information = ByHandleFileInformation()
+    if not get_information(wintypes.HANDLE(handle), ctypes.byref(information)):
+        error = ctypes.get_last_error()
+        raise OSError(error, "attestation handle identity unavailable")
+    file_id_information = FileIdInformation()
+    if not get_information_ex(
+        wintypes.HANDLE(handle),
+        18,
+        ctypes.byref(file_id_information),
+        ctypes.sizeof(file_id_information),
+    ):
+        error = ctypes.get_last_error()
+        raise OSError(error, "attestation handle file ID unavailable")
+    identity = (
+        int(file_id_information.VolumeSerialNumber),
+        int.from_bytes(bytes(file_id_information.FileId.Identifier), "little"),
+    )
+    return (
+        identity,
+        int(information.dwFileAttributes),
+        int(information.nNumberOfLinks),
+    )
+
+
+def _require_windows_attestation_directory_handle(
+    handle: int,
+    expected_identity: tuple[int, int],
+) -> None:
+    identity, attributes, _links = _windows_attestation_handle_info(handle)
+    if (
+        identity != expected_identity
+        or not attributes & 0x10
+        or attributes & 0x400
+    ):
+        raise LedgerError("pinned attestation directory handle identity changed")
+
+
+def _unlink_windows_attestation_file_if_identity(
+    path: Path,
+    expected_identity: tuple[int, int],
+) -> bool:
+    import ctypes
+    from ctypes import wintypes
+
+    class FileDispositionInformation(ctypes.Structure):
+        _fields_ = (("DeleteFile", ctypes.c_ubyte),)
+
+    class FileDispositionInformationEx(ctypes.Structure):
+        _fields_ = (("Flags", wintypes.DWORD),)
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    create_file = kernel32.CreateFileW
+    create_file.argtypes = (
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.HANDLE,
+    )
+    create_file.restype = wintypes.HANDLE
+    close_handle = kernel32.CloseHandle
+    close_handle.argtypes = (wintypes.HANDLE,)
+    close_handle.restype = wintypes.BOOL
+    set_information = kernel32.SetFileInformationByHandle
+    set_information.argtypes = (
+        wintypes.HANDLE,
+        ctypes.c_int,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+    )
+    set_information.restype = wintypes.BOOL
+    handle = create_file(
+        str(path),
+        0x00010000 | 0x80,
+        0x1 | 0x2,
+        None,
+        3,
+        0x00200000,
+        None,
+    )
+    invalid = ctypes.c_void_p(-1).value
+    if handle in (None, invalid):
+        return False
+    marked_for_deletion = False
+    try:
+        identity, attributes, _links = _windows_attestation_handle_info(int(handle))
+        if (
+            identity != expected_identity
+            or attributes & 0x10
+            or attributes & 0x400
+        ):
+            return False
+        disposition_ex = FileDispositionInformationEx(0x1 | 0x2)
+        marked_for_deletion = bool(
+            set_information(
+                wintypes.HANDLE(handle),
+                21,
+                ctypes.byref(disposition_ex),
+                ctypes.sizeof(disposition_ex),
+            )
+        )
+        if not marked_for_deletion and ctypes.get_last_error() in {1, 50, 87}:
+            disposition = FileDispositionInformation(True)
+            marked_for_deletion = bool(
+                set_information(
+                    wintypes.HANDLE(handle),
+                    4,
+                    ctypes.byref(disposition),
+                    ctypes.sizeof(disposition),
+                )
+            )
+    finally:
+        close_handle(wintypes.HANDLE(handle))
+    if not marked_for_deletion:
+        return False
+    try:
+        current = os.lstat(path)
+    except FileNotFoundError:
+        return True
+    except OSError:
+        return False
+    return _attestation_identity(current) != expected_identity
+
+
+def _close_windows_attestation_handle(handle: int | None) -> None:
+    if handle is None:
+        return
+    import ctypes
+    from ctypes import wintypes
+
+    close_handle = ctypes.windll.kernel32.CloseHandle
+    close_handle.argtypes = (wintypes.HANDLE,)
+    close_handle.restype = wintypes.BOOL
+    close_handle(wintypes.HANDLE(handle))
+
+
+class _PinnedAttestationBoundary:
+    def __init__(self, root: Path) -> None:
+        self.root = root
+        self.tmp = root / "tmp"
+        self.guard = self.tmp / "twinops-admin-results"
+        self.root_identity: tuple[int, int] | None = None
+        self.tmp_identity: tuple[int, int] | None = None
+        self.guard_identity: tuple[int, int] | None = None
+        self.root_descriptor: int | None = None
+        self.tmp_descriptor: int | None = None
+        self.guard_descriptor: int | None = None
+        self.tmp_handle: int | None = None
+        self.guard_handle: int | None = None
+        self._pin()
+
+    @staticmethod
+    def _directory_flags() -> int:
+        return (
+            os.O_RDONLY
+            | getattr(os, "O_DIRECTORY", 0)
+            | getattr(os, "O_NOFOLLOW", 0)
+            | getattr(os, "O_CLOEXEC", 0)
+        )
+
+    def _pin(self) -> None:
+        try:
+            root_stat = _require_attestation_directory(self.root, os.lstat(self.root))
+            tmp_stat = _require_attestation_directory(self.tmp, os.lstat(self.tmp))
+            guard_stat = _require_attestation_directory(self.guard, os.lstat(self.guard))
+            if os.path.ismount(self.tmp) or os.path.ismount(self.guard):
+                raise LedgerError("attestation boundary must not contain a mount point")
+            self.root_identity = _attestation_identity(root_stat)
+            self.tmp_identity = _attestation_identity(tmp_stat)
+            self.guard_identity = _attestation_identity(guard_stat)
+            if os.name == "nt":
+                self.tmp_handle = _open_windows_attestation_directory(self.tmp)
+                _require_windows_attestation_directory_handle(
+                    self.tmp_handle,
+                    self.tmp_identity,
+                )
+                self.guard_handle = _open_windows_attestation_directory(self.guard)
+                _require_windows_attestation_directory_handle(
+                    self.guard_handle,
+                    self.guard_identity,
+                )
+            else:
+                flags = self._directory_flags()
+                self.root_descriptor = os.open(self.root, flags)
+                self.tmp_descriptor = os.open(
+                    "tmp", flags, dir_fd=self.root_descriptor,
+                )
+                self.guard_descriptor = os.open(
+                    self.guard.name, flags, dir_fd=self.tmp_descriptor,
+                )
+            self.reattest()
+        except BaseException as error:
+            self.close()
+            if isinstance(error, LedgerError):
+                raise
+            raise LedgerError("attestation boundary could not be pinned") from error
+
+    def close(self) -> None:
+        for attribute in ("guard_descriptor", "tmp_descriptor", "root_descriptor"):
+            descriptor = getattr(self, attribute)
+            if descriptor is not None:
+                try:
+                    os.close(descriptor)
+                finally:
+                    setattr(self, attribute, None)
+        for attribute in ("guard_handle", "tmp_handle"):
+            handle = getattr(self, attribute)
+            if handle is not None:
+                try:
+                    _close_windows_attestation_handle(handle)
+                finally:
+                    setattr(self, attribute, None)
+
+    def __enter__(self) -> _PinnedAttestationBoundary:
+        return self
+
+    def __exit__(self, *_exception: object) -> None:
+        self.close()
+
+    def reattest(self) -> None:
+        if (
+            self.root_identity is None
+            or self.tmp_identity is None
+            or self.guard_identity is None
+        ):
+            raise LedgerError("attestation boundary identity is unavailable")
+        try:
+            root_stat = _require_attestation_directory(self.root, os.lstat(self.root))
+            tmp_stat = _require_attestation_directory(self.tmp, os.lstat(self.tmp))
+            guard_stat = _require_attestation_directory(self.guard, os.lstat(self.guard))
+            if (
+                _attestation_identity(root_stat) != self.root_identity
+                or _attestation_identity(tmp_stat) != self.tmp_identity
+                or _attestation_identity(guard_stat) != self.guard_identity
+            ):
+                raise LedgerError("attestation boundary identity changed")
+            for descriptor, identity, path in (
+                (self.root_descriptor, self.root_identity, self.root),
+                (self.tmp_descriptor, self.tmp_identity, self.tmp),
+                (self.guard_descriptor, self.guard_identity, self.guard),
+            ):
+                if descriptor is not None and _attestation_identity(
+                    _require_attestation_directory(path, os.fstat(descriptor))
+                ) != identity:
+                    raise LedgerError("pinned attestation boundary identity changed")
+            for handle, identity in (
+                (self.tmp_handle, self.tmp_identity),
+                (self.guard_handle, self.guard_identity),
+            ):
+                if handle is not None:
+                    _require_windows_attestation_directory_handle(handle, identity)
+        except LedgerError:
+            raise
+        except OSError as error:
+            raise LedgerError("attestation boundary could not be reattested") from error
+
+    def raw_child_stat(self, name: str) -> os.stat_result:
+        if Path(name).name != name or ":" in name:
+            raise LedgerError("attestation child filename is not allowed")
+        if self.guard_descriptor is not None:
+            return os.stat(name, dir_fd=self.guard_descriptor, follow_symlinks=False)
+        return os.lstat(self.guard / name)
+
+    def child_stat(self, name: str, *, link_count: int | None = 1) -> os.stat_result:
+        try:
+            value = self.raw_child_stat(name)
+        except FileNotFoundError:
+            raise
+        except OSError as error:
+            raise LedgerError("attestation child could not be inspected") from error
+        return _require_attestation_file(
+            self.guard / name,
+            value,
+            link_count=link_count,
+        )
+
+    def open_child(self, name: str, flags: int, mode: int = 0o600) -> int:
+        if self.guard_descriptor is not None:
+            return os.open(name, flags, mode, dir_fd=self.guard_descriptor)
+        return os.open(self.guard / name, flags, mode)
+
+    def link_child(self, source_name: str, destination_name: str) -> None:
+        if self.guard_descriptor is not None:
+            os.link(
+                source_name,
+                destination_name,
+                src_dir_fd=self.guard_descriptor,
+                dst_dir_fd=self.guard_descriptor,
+                follow_symlinks=False,
+            )
+            return
+        os.link(
+            self.guard / source_name,
+            self.guard / destination_name,
+            follow_symlinks=False,
+        )
+
+    def unlink_child(self, name: str) -> None:
+        if self.guard_descriptor is not None:
+            os.unlink(name, dir_fd=self.guard_descriptor)
+            return
+        os.unlink(self.guard / name)
+
+    def _pinned_guard_is_intact_for_rollback(self) -> bool:
+        try:
+            if self.guard_descriptor is not None:
+                return (
+                    self.guard_identity is not None
+                    and _attestation_identity(os.fstat(self.guard_descriptor))
+                    == self.guard_identity
+                )
+            self.reattest()
+            return True
+        except (OSError, LedgerError):
+            return False
+
+    def unlink_if_identity(
+        self, name: str, expected_identity: tuple[int, int] | None,
+    ) -> bool:
+        if expected_identity is None or not self._pinned_guard_is_intact_for_rollback():
+            return False
+        if os.name == "nt":
+            return _unlink_windows_attestation_file_if_identity(
+                self.guard / name,
+                expected_identity,
+            )
+        try:
+            current = self.raw_child_stat(name)
+            if (
+                _attestation_identity(current) != expected_identity
+                or not stat.S_ISREG(current.st_mode)
+                or _is_reparse(current)
+            ):
+                return False
+            self.unlink_child(name)
+            try:
+                self.raw_child_stat(name)
+            except FileNotFoundError:
+                return True
+            return False
+        except (OSError, LedgerError):
+            return False
+
+    def fsync_guard(self) -> None:
+        if self.guard_descriptor is not None:
+            os.fsync(self.guard_descriptor)
+
+
+def _attestation_paths(args: argparse.Namespace) -> tuple[Path, Path, Path]:
+    root = Path.cwd().resolve()
+    guarded = root / "tmp" / "twinops-admin-results"
+    source = Path(args.source_result)
+    output = Path(args.output)
+    if not RESULT_NAME.fullmatch(source.name):
+        raise LedgerError("attestation source filename is not allowed")
+    if not ATTESTATION_NAME.fullmatch(output.name):
+        raise LedgerError("attestation output filename is not allowed")
+    if (
+        not source.is_absolute()
+        or ".." in source.parts
+        or source.parent != guarded
+    ):
+        raise LedgerError("attestation source must be a direct guarded file")
+    if (
+        not output.is_absolute()
+        or ".." in output.parts
+        or output.parent != guarded
+        or output == source
+    ):
+        raise LedgerError("attestation output must be a new direct guarded file")
+    return root, source, output
+
+
+def _read_attestation_source(
+    args: argparse.Namespace,
+    boundary: _PinnedAttestationBoundary,
+    source: Path,
+    output: Path,
+) -> bytes:
+    boundary.reattest()
+    try:
+        boundary.raw_child_stat(output.name)
+    except FileNotFoundError:
+        pass
+    except OSError as error:
+        raise LedgerError("attestation output cannot be inspected") from error
+    else:
+        raise LedgerError("attestation output must not already exist")
+
+    try:
+        before_open = boundary.child_stat(source.name)
+    except OSError as error:
+        raise LedgerError("attestation source is not a guarded regular file") from error
+    pinned_identity = _attestation_file_identity(before_open)
+    descriptor: int | None = None
+    try:
+        descriptor = boundary.open_child(
+            source.name,
+            os.O_RDONLY
+            | getattr(os, "O_BINARY", 0)
+            | getattr(os, "O_NOFOLLOW", 0),
+        )
+        opened = _require_attestation_file(source, os.fstat(descriptor))
+        if _attestation_file_identity(opened) != pinned_identity:
+            raise LedgerError("attestation source changed before it could be read")
+        chunks: list[bytes] = []
+        remaining = int(opened.st_size) + 1
+        while remaining > 0:
+            chunk = os.read(descriptor, min(1024 * 1024, remaining))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        source_bytes = b"".join(chunks)
+        after_read = _require_attestation_file(source, os.fstat(descriptor))
+        if (
+            _attestation_file_identity(after_read) != pinned_identity
+            or len(source_bytes) != int(opened.st_size)
+        ):
+            raise LedgerError("attestation source changed while it was read")
+    except OSError as error:
+        raise LedgerError("attestation source is not a guarded regular file") from error
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+    try:
+        after_close = boundary.child_stat(source.name)
+    except OSError as error:
+        raise LedgerError("attestation source changed after it was read") from error
+    if _attestation_file_identity(after_close) != pinned_identity:
+        raise LedgerError("attestation source changed after it was read")
+    boundary.reattest()
+    if opened.st_mtime < _parse_rfc3339(args.source_not_before).timestamp():
+        raise LedgerError("attestation source is stale")
+    return source_bytes
+
+
+def _verify_attestation_git_state(reviewed_code_commit: str) -> None:
+    root = Path.cwd().resolve()
+
+    def git(*arguments: str) -> subprocess.CompletedProcess[str]:
+        try:
+            return subprocess.run(
+                ["git", *arguments],
+                cwd=root,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+        except OSError as error:
+            raise LedgerError("attestation Git state could not be inspected") from error
+
+    top_level = git("rev-parse", "--show-toplevel")
+    if top_level.returncode != 0 or top_level.stderr:
+        raise LedgerError("attestation must run at a Git worktree root")
+    try:
+        discovered_root = Path(top_level.stdout.strip()).resolve()
+    except OSError as error:
+        raise LedgerError("attestation Git root could not be resolved") from error
+    if discovered_root != root:
+        raise LedgerError("attestation must run at the Git worktree root")
+    head = git("rev-parse", "--verify", "HEAD")
+    current_head = head.stdout.strip()
+    if (
+        head.returncode != 0
+        or head.stderr
+        or not GIT_SHA.fullmatch(reviewed_code_commit)
+        or reviewed_code_commit != current_head
+    ):
+        raise LedgerError("reviewed code commit must equal current HEAD")
+    index_flags = git("ls-files", "-v", "-z")
+    if index_flags.returncode != 0 or index_flags.stderr or any(
+        not entry.startswith("H ")
+        for entry in index_flags.stdout.split("\0")
+        if entry
+    ):
+        raise LedgerError("attestation rejects hidden tracked index flags")
+    tracked_status = git(
+        "status", "--porcelain=v1", "--untracked-files=no", "--ignore-submodules=none",
+    )
+    if tracked_status.returncode != 0 or tracked_status.stdout or tracked_status.stderr:
+        raise LedgerError("attestation requires a clean tracked worktree and index")
+    status_result = git(
+        "status", "--porcelain=v1", "--untracked-files=all", "--ignore-submodules=none",
+        "--", ".", ":(exclude)services/twinops/.pytest_cache",
+        ":(exclude)services/twinops/.pytest_cache/**",
+    )
+    if status_result.returncode != 0 or status_result.stdout or status_result.stderr:
+        raise LedgerError("attestation requires a clean tracked worktree and index")
+
+
+def _read_verified_attestation_child(
+    boundary: _PinnedAttestationBoundary,
+    name: str,
+    expected_identity: tuple[int, int, int, int, int],
+) -> bytes:
+    descriptor: int | None = None
+    try:
+        descriptor = boundary.open_child(
+            name,
+            os.O_RDONLY
+            | getattr(os, "O_BINARY", 0)
+            | getattr(os, "O_NOFOLLOW", 0),
+        )
+        before = _require_attestation_file(
+            boundary.guard / name,
+            os.fstat(descriptor),
+        )
+        if _attestation_file_identity(before) != expected_identity:
+            raise LedgerError("attestation output identity changed before verification")
+        chunks: list[bytes] = []
+        remaining = int(before.st_size) + 1
+        while remaining > 0:
+            chunk = os.read(descriptor, min(1024 * 1024, remaining))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        payload = b"".join(chunks)
+        after = _require_attestation_file(
+            boundary.guard / name,
+            os.fstat(descriptor),
+        )
+        if (
+            _attestation_file_identity(after) != expected_identity
+            or len(payload) != int(before.st_size)
+        ):
+            raise LedgerError("attestation output identity changed during verification")
+    except OSError as error:
+        raise LedgerError("attestation output could not be byte-verified") from error
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+    try:
+        after_close = boundary.child_stat(name)
+    except OSError as error:
+        raise LedgerError("attestation output changed after verification") from error
+    if _attestation_file_identity(after_close) != expected_identity:
+        raise LedgerError("attestation output changed after verification")
+    return payload
+
+
+def _atomic_create(
+    boundary: _PinnedAttestationBoundary,
+    output_name: str,
+    data: bytes,
+    reviewed_code_commit: str,
+) -> None:
+    private_name: str | None = None
+    private_identity: tuple[int, int] | None = None
+    published_identity: tuple[int, int] | None = None
+    succeeded = False
+    descriptor: int | None = None
+    try:
+        for _attempt in range(16):
+            candidate = f".{output_name}.{secrets.token_hex(16)}.tmp"
+            try:
+                descriptor = boundary.open_child(
+                    candidate,
+                    os.O_WRONLY
+                    | os.O_CREAT
+                    | os.O_EXCL
+                    | getattr(os, "O_BINARY", 0),
+                    0o600,
+                )
+                private_name = candidate
+                opened_raw = os.fstat(descriptor)
+                private_identity = _attestation_identity(opened_raw)
+                _require_attestation_file(
+                    boundary.guard / candidate,
+                    opened_raw,
+                )
+                break
+            except FileExistsError:
+                descriptor = None
+        else:
+            raise LedgerError("attestation private file allocation failed")
+
+        if descriptor is None or private_name is None or private_identity is None:
+            raise LedgerError("attestation private file identity is unavailable")
+        offset = 0
+        while offset < len(data):
+            written = os.write(descriptor, data[offset:])
+            if written <= 0:
+                raise LedgerError("attestation private file could not be written")
+            offset += written
+        os.fsync(descriptor)
+        written_stat = _require_attestation_file(
+            boundary.guard / private_name,
+            os.fstat(descriptor),
+        )
+        if (
+            _attestation_identity(written_stat) != private_identity
+            or int(written_stat.st_size) != len(data)
+        ):
+            raise LedgerError("attestation private file identity changed")
+        os.close(descriptor)
+        descriptor = None
+        private_stat = boundary.child_stat(private_name)
+        private_full_identity = _attestation_file_identity(private_stat)
+        if (
+            _attestation_identity(private_stat) != private_identity
+            or int(private_stat.st_size) != len(data)
+        ):
+            raise LedgerError("attestation private file changed after close")
+
+        try:
+            boundary.raw_child_stat(output_name)
+        except FileNotFoundError:
+            pass
+        else:
+            raise LedgerError("attestation output must not already exist")
+        _verify_attestation_git_state(reviewed_code_commit)
+        boundary.reattest()
+        try:
+            boundary.link_child(private_name, output_name)
+        except FileExistsError as error:
+            raise LedgerError("attestation output must not already exist") from error
+        except OSError as error:
+            try:
+                failed_link_stat = boundary.raw_child_stat(output_name)
+                if (
+                    stat.S_ISREG(failed_link_stat.st_mode)
+                    and not _is_reparse(failed_link_stat)
+                    and _attestation_identity(failed_link_stat) == private_identity
+                ):
+                    published_identity = private_identity
+            except (FileNotFoundError, OSError, LedgerError):
+                pass
+            raise LedgerError("attestation output could not be atomically created") from error
+        published_identity = private_identity
+
+        linked_stat = boundary.child_stat(output_name, link_count=None)
+        if (
+            _attestation_identity(linked_stat) != published_identity
+            or int(linked_stat.st_nlink) != 2
+        ):
+            raise LedgerError("attestation published link identity is invalid")
+        if not boundary.unlink_if_identity(private_name, private_identity):
+            raise LedgerError("attestation private file could not be removed safely")
+        private_name = None
+
+        published_stat = boundary.child_stat(output_name)
+        published_full_identity = _attestation_file_identity(published_stat)
+        if published_full_identity != private_full_identity:
+            raise LedgerError("attestation published file identity changed")
+        if _read_verified_attestation_child(
+            boundary,
+            output_name,
+            published_full_identity,
+        ) != data:
+            raise LedgerError("attestation output bytes do not match")
+        boundary.reattest()
+        _verify_attestation_git_state(reviewed_code_commit)
+        boundary.fsync_guard()
+        boundary.reattest()
+        if _attestation_file_identity(
+            boundary.child_stat(output_name)
+        ) != published_full_identity:
+            raise LedgerError("attestation output changed after final verification")
+        if _read_verified_attestation_child(
+            boundary,
+            output_name,
+            published_full_identity,
+        ) != data:
+            raise LedgerError("attestation output bytes changed after final verification")
+        succeeded = True
+    except LedgerError:
+        raise
+    except Exception as error:
+        raise LedgerError("attestation output publication failed") from error
+    finally:
+        if descriptor is not None:
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
+        if not succeeded and published_identity is not None:
+            boundary.unlink_if_identity(output_name, published_identity)
+        if private_name is not None:
+            boundary.unlink_if_identity(private_name, private_identity)
+
+
+def _build_local_causal_attestation(
+    args: argparse.Namespace,
+    source_bytes: bytes,
+) -> dict[str, object]:
+    try:
+        result = json.loads(source_bytes)
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise LedgerError("local causal attestation source is invalid JSON") from error
+    if not isinstance(result, dict):
+        raise LedgerError("local causal attestation source must be a JSON object")
+    if source_bytes != _compact_canonical_json(result):
+        raise LedgerError("local causal attestation source is not canonical JSON")
+    _ensure_keys(result, ATTESTATION_RESULT_KEYS, "local causal attestation source")
+    expected_literals = {
+        "command": "build-assessments",
+        "mode": "dry-run",
+        "environment": "local",
+        "schemaVersion": "003",
+        "assetId": "forzy-motor-01",
+        "modelFamily": "robust-baseline",
+        "modelVersion": "1.0.1",
+        "writesPerformed": 0,
+    }
+    if any(result[field] != expected for field, expected in expected_literals.items()):
+        raise LedgerError("local causal attestation source has invalid literals")
+    if not all(
+        isinstance(result[field], str) and PREFIXED_SHA256.fullmatch(result[field])
+        for field in ATTESTATION_SHA_FIELDS
+    ):
+        raise LedgerError("local causal attestation source has malformed hashes")
+    if not all(
+        type(result[field]) is int and result[field] >= 0
+        for field in ATTESTATION_COUNT_FIELDS
+    ):
+        raise LedgerError("local causal attestation source has malformed counts")
+    if result["assessmentCount"] <= 0:
+        raise LedgerError("local causal attestation source has no assessments")
+    if not (
+        result["candidateCount"] <= result["assessmentCount"]
+        and result["validatedAnchorCount"] == result["assessmentCount"]
+        and result["validatedEpisodeCount"] == result["candidateCount"]
+        and result["anchorInvariantViolationCount"] == 0
+        and result["episodeInvariantViolationCount"] == 0
+        and result["insertedCount"] + result["existingCount"]
+        == result["assessmentCount"]
+    ):
+        raise LedgerError("local causal attestation source violates count invariants")
+    expected_identities = {
+        "targetFingerprint": args.expected_target_fingerprint,
+        "assetId": args.expected_asset_id,
+        "batchId": args.expected_batch_id,
+        "sourceSha256": args.expected_source_sha256,
+        "historyManifestSha256": args.expected_history_manifest_sha256,
+        "artifactSha256": args.expected_artifact_sha256,
+        "featureManifestSha256": args.expected_feature_manifest_sha256,
+        "reportSha256": args.expected_report_sha256,
+        "configSha256": args.expected_config_sha256,
+        "modelFamily": args.expected_model_family,
+        "modelVersion": args.expected_model_version,
+        "assessmentManifestSha256": args.expected_assessment_manifest_sha256,
+    }
+    if any(
+        result[field] != expected for field, expected in expected_identities.items()
+    ):
+        raise LedgerError("local causal attestation source has an unexpected identity")
+    output = {
+        "reviewedCodeCommit": args.reviewed_code_commit,
+        "batchId": result["batchId"],
+        "sourceSha256": result["sourceSha256"],
+        "historyManifestSha256": result["historyManifestSha256"],
+        "artifactSha256": result["artifactSha256"],
+        "featureManifestSha256": result["featureManifestSha256"],
+        "reportSha256": result["reportSha256"],
+        "configSha256": result["configSha256"],
+        "modelFamily": result["modelFamily"],
+        "modelVersion": result["modelVersion"],
+        "assessmentManifestSha256": result["assessmentManifestSha256"],
+        "assessmentCount": result["assessmentCount"],
+        "candidateCount": result["candidateCount"],
+        "validatedAnchorCount": result["validatedAnchorCount"],
+        "validatedEpisodeCount": result["validatedEpisodeCount"],
+        "anchorInvariantViolationCount": result["anchorInvariantViolationCount"],
+        "episodeInvariantViolationCount": result["episodeInvariantViolationCount"],
+        "sourceResultSha256": "sha256:" + hashlib.sha256(source_bytes).hexdigest(),
+    }
+    return output
+
+
+def export_local_causal_attestation(args: argparse.Namespace) -> None:
+    _verify_attestation_git_state(args.reviewed_code_commit)
+    root, source_path, output_path = _attestation_paths(args)
+    with _PinnedAttestationBoundary(root) as boundary:
+        source_bytes = _read_attestation_source(
+            args,
+            boundary,
+            source_path,
+            output_path,
+        )
+        output = _build_local_causal_attestation(args, source_bytes)
+        _verify_attestation_git_state(args.reviewed_code_commit)
+        _atomic_create(
+            boundary,
+            output_path.name,
+            _compact_canonical_json(output),
+            args.reviewed_code_commit,
+        )
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
     commands = parser.add_subparsers(dest="command", required=True)
@@ -574,6 +1515,16 @@ def _parser() -> argparse.ArgumentParser:
     export = commands.add_parser("export-local-causal-manifest")
     for argument in ("source-result", "source-not-before", "reviewed-code-commit", "expected-batch-id", "expected-artifact-sha256", "expected-report-sha256", "expected-config-sha256", "output"):
         export.add_argument(f"--{argument}", required=True)
+    attestation = commands.add_parser("export-local-causal-attestation")
+    for argument in (
+        "source-result", "source-not-before", "reviewed-code-commit",
+        "expected-target-fingerprint", "expected-asset-id", "expected-batch-id",
+        "expected-source-sha256", "expected-history-manifest-sha256",
+        "expected-artifact-sha256", "expected-feature-manifest-sha256",
+        "expected-report-sha256", "expected-config-sha256", "expected-model-family",
+        "expected-model-version", "expected-assessment-manifest-sha256", "output",
+    ):
+        attestation.add_argument(f"--{argument}", required=True)
     return parser
 
 
@@ -593,7 +1544,8 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "ingest-review": ingest_review(Path(args.ledger), Path(args.review_report))
         elif args.command == "ingest-evidence-review": ingest_evidence_review(Path(args.ledger), Path(args.review_report), args.verified_code_commit, args.evidence_commit)
         elif args.command == "update-criterion": update_criterion(Path(args.ledger), args.criterion, args.status, args.evidence_kind, args.evidence_ref, args.verified_code_commit)
-        else: export_local_causal_manifest(args)
+        elif args.command == "export-local-causal-manifest": export_local_causal_manifest(args)
+        else: export_local_causal_attestation(args)
     except LedgerError as error:
         print(str(error), file=sys.stderr)
         return 2
