@@ -9,6 +9,7 @@ from uuid import UUID
 from uuid import NAMESPACE_URL, uuid5
 
 from twinops.contracts.timeline_v1_models import (
+    CollectionPolicyV1,
     HistoricalSensorReadingV1,
     TimelinePointV1,
     parse_public_utc_millis_v1,
@@ -203,3 +204,7 @@ class TimelineReadRepositoryV1(Protocol):
     def points_for_pair(
         self, asset_id: str, sample_pair_id: str
     ) -> tuple[TimelinePointV1, ...]: ...
+
+    def collection_policies(
+        self, policy_ids: set[str]
+    ) -> dict[str, CollectionPolicyV1]: ...
