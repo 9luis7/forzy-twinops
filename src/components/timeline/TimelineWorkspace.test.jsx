@@ -8,6 +8,7 @@ import overviewFixture from "../../../contracts/timeline/v1/fixtures/overview-un
 import pageFixture from "../../../contracts/timeline/v1/fixtures/page.valid.json";
 import contextFixture from "../../../contracts/timeline/v1/fixtures/context-historical-candidate.valid.json";
 import gapContextFixture from "../../../contracts/timeline/v1/fixtures/context-historical-gap.valid.json";
+import assessmentOverviewFixture from "../../../contracts/timeline/v1/fixtures/assessment-overview-materialized.valid.json";
 import AssessmentPanel from "../operations/AssessmentPanel.jsx";
 import SensorCard from "../operations/SensorCard.jsx";
 import HistoricalContextEvidence from "./HistoricalContextEvidence.jsx";
@@ -272,5 +273,52 @@ describe("historical gap presentation", () => {
     expect(assessment).not.toHaveTextContent(
       /score|diagnóstico|probabilidade|RUL|causa\b|checklist|recomendação/i,
     );
+  });
+});
+
+describe("historical assessment trend placement", () => {
+  it("places persisted assessment evidence before the selected context without deriving a selection", async () => {
+    const { default: TimelineWorkspace } = await import("./TimelineWorkspace.jsx");
+    const selectTimelinePoint = vi.fn();
+    render(
+      <TimelineWorkspace
+        assessmentOverview={structuredClone(assessmentOverviewFixture)}
+        context={structuredClone(contextFixture)}
+        errors={{ overview: null, page: null, assessments: null, context: null }}
+        loading={{ overview: false, page: false, assessments: false, context: false }}
+        overview={structuredClone(overviewFixture)}
+        page={structuredClone(pageFixture)}
+        pendingSelection={null}
+        selectTimelinePoint={selectTimelinePoint}
+      >
+        <section data-testid="selected-context">Contexto selecionado preservado</section>
+      </TimelineWorkspace>,
+    );
+
+    const trend = screen.getByTestId("assessment-trend");
+    const selected = screen.getByTestId("selected-context");
+    expect(trend.compareDocumentPosition(selected) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+    expect(selectTimelinePoint).not.toHaveBeenCalled();
+  });
+
+  it("keeps the last valid trend visible during refresh failure", async () => {
+    const { default: TimelineWorkspace } = await import("./TimelineWorkspace.jsx");
+    render(
+      <TimelineWorkspace
+        assessmentOverview={structuredClone(assessmentOverviewFixture)}
+        context={null}
+        errors={{ overview: null, page: null, assessments: new Error("unavailable"), context: null }}
+        loading={{ overview: false, page: false, assessments: false, context: false }}
+        overview={structuredClone(overviewFixture)}
+        page={null}
+        pendingSelection={null}
+        selectTimelinePoint={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByTestId("assessment-trend")).toBeInTheDocument();
+    expect(screen.getByText(
+      "As avalia\u00e7\u00f5es n\u00e3o puderam ser atualizadas. A \u00faltima s\u00e9rie v\u00e1lida continua vis\u00edvel.",
+    )).toHaveAttribute("role", "alert");
   });
 });

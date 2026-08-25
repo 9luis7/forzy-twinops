@@ -5,6 +5,7 @@ import collectionPolicySchema from "../../contracts/timeline/v1/collection-polic
 import historicalAssessmentSchema from "../../contracts/timeline/v1/historical-assessment.schema.json";
 import historicalSensorReadingSchema from "../../contracts/timeline/v1/historical-sensor-reading.schema.json";
 import timelineContextSchema from "../../contracts/timeline/v1/timeline-context.schema.json";
+import timelineAssessmentOverviewSchema from "../../contracts/timeline/v1/timeline-assessment-overview.schema.json";
 import timelineDecisionFactsSchema from "../../contracts/timeline/v1/timeline-decision-facts.schema.json";
 import timelineEventCandidateSchema from "../../contracts/timeline/v1/timeline-event-candidate.schema.json";
 import timelineOverviewSchema from "../../contracts/timeline/v1/timeline-overview.schema.json";
@@ -25,6 +26,7 @@ const defaultTimelineSchemas = [
   timelinePageSchema,
   timelineDecisionFactsSchema,
   timelineContextSchema,
+  timelineAssessmentOverviewSchema,
 ];
 const defaultAssetAssessmentSchema = assetConditionAssessmentSchema;
 
@@ -1022,12 +1024,141 @@ const assertContext = (value) => {
   }
 };
 
+const assessmentSeriesKey = (series) => stableJson([
+  series.segmentId,
+  series.sensorId,
+  series.modelFamily,
+  series.modelVersion,
+  series.modelHash,
+  series.foldId,
+  series.foldHash,
+  series.reportHash,
+  series.scoreSemantics,
+  series.trainingWindow,
+]);
+
+const assertAssessmentOverview = (value) => {
+  const requested = value.requestedRange;
+  if (requested.from !== null) timestamp(requested.from, "requestedRange.from");
+  if (requested.to !== null) timestamp(requested.to, "requestedRange.to");
+  if (requested.from !== null && requested.to !== null
+    && milliseconds(requested.from) >= milliseconds(requested.to)) {
+    fail("assessment requestedRange must be increasing");
+  }
+
+  if (value.effectiveRange !== null) {
+    timestamp(value.effectiveRange.from, "effectiveRange.from");
+    timestamp(value.effectiveRange.to, "effectiveRange.to");
+    if (milliseconds(value.effectiveRange.from) >= milliseconds(value.effectiveRange.to)) {
+      fail("assessment effectiveRange must be increasing");
+    }
+  }
+
+  const seriesIds = new Set();
+  const groupKeys = new Set();
+  const assessmentIds = new Set();
+  const anchorIds = new Set();
+  let originalCount = 0;
+  let returnedCount = 0;
+  let omittedCount = 0;
+  let reducedSeriesCount = 0;
+  let previousGroupKey = null;
+
+  for (const series of value.series) {
+    if (seriesIds.has(series.seriesId)) fail("assessment seriesId must be unique across grouping facts");
+    seriesIds.add(series.seriesId);
+    const groupKey = assessmentSeriesKey(series);
+    if (groupKeys.has(groupKey)) fail("assessment grouping facts must map to exactly one series");
+    if (previousGroupKey !== null && groupKey <= previousGroupKey) {
+      fail("assessment series must be canonically ordered by grouping facts");
+    }
+    groupKeys.add(groupKey);
+    previousGroupKey = groupKey;
+
+    timestamp(series.trainingWindow.start, "trainingWindow.start");
+    timestamp(series.trainingWindow.end, "trainingWindow.end");
+    if (milliseconds(series.trainingWindow.start) > milliseconds(series.trainingWindow.end)) {
+      fail("assessment trainingWindow must be chronological");
+    }
+    assertCanonicalStrings(series.limitations, "assessment series limitations");
+
+    const aggregation = series.aggregation;
+    if (aggregation.requestedMaxPoints !== value.aggregationSummary.requestedMaxPoints) {
+      fail("assessment series budget must match the response budget");
+    }
+    if (aggregation.returnedAssessmentCount !== series.points.length
+      || aggregation.originalAssessmentCount
+        !== aggregation.returnedAssessmentCount + aggregation.omittedAssessmentCount) {
+      fail("assessment series aggregation counts do not reconcile");
+    }
+    if ((aggregation.method === "none") !== (aggregation.omittedAssessmentCount === 0)) {
+      fail("assessment series aggregation method does not match omissions");
+    }
+    if (aggregation.method !== "none") reducedSeriesCount += 1;
+    originalCount += aggregation.originalAssessmentCount;
+    returnedCount += aggregation.returnedAssessmentCount;
+    omittedCount += aggregation.omittedAssessmentCount;
+
+    let previousEventAt = null;
+    let hasCandidate = false;
+    for (const point of series.points) {
+      timestamp(point.eventAt, "assessment point eventAt");
+      if (milliseconds(series.trainingWindow.end) >= milliseconds(point.eventAt)) {
+        fail("assessment series training must end before every scored point");
+      }
+      if (previousEventAt !== null && point.eventAt <= previousEventAt) {
+        fail("assessment series points must be strictly chronological");
+      }
+      previousEventAt = point.eventAt;
+      if (assessmentIds.has(point.assessmentId)) fail("assessmentId must be globally unique");
+      if (anchorIds.has(point.anchorPointId)) fail("assessment anchorPointId must be globally unique");
+      assessmentIds.add(point.assessmentId);
+      anchorIds.add(point.anchorPointId);
+      if (point.candidateState === "candidate_not_ground_truth") hasCandidate = true;
+
+      if (value.effectiveRange === null
+        || milliseconds(point.eventAt) < milliseconds(value.effectiveRange.from)
+        || milliseconds(point.eventAt) >= milliseconds(value.effectiveRange.to)) {
+        fail("assessment point falls outside effectiveRange");
+      }
+      if (requested.from !== null && milliseconds(point.eventAt) < milliseconds(requested.from)) {
+        fail("assessment point precedes requestedRange");
+      }
+      if (requested.to !== null && milliseconds(point.eventAt) >= milliseconds(requested.to)) {
+        fail("assessment point reaches or exceeds requestedRange");
+      }
+    }
+    const disclosesCandidate = series.limitations.includes("candidate_not_ground_truth");
+    if (hasCandidate !== disclosesCandidate
+      || (hasCandidate && series.limitations[0] !== "candidate_not_ground_truth")) {
+      fail("assessment series candidate facts and limitations do not match");
+    }
+  }
+
+  const summary = value.aggregationSummary;
+  if (summary.originalAssessmentCount !== originalCount
+    || summary.returnedAssessmentCount !== returnedCount
+    || summary.omittedAssessmentCount !== omittedCount
+    || summary.reducedSeriesCount !== reducedSeriesCount
+    || summary.originalAssessmentCount !== value.materialization.assessmentCount
+    || summary.returnedAssessmentCount > summary.requestedMaxPoints) {
+    fail("assessment overview aggregation counts do not reconcile");
+  }
+  if (value.materialization.state !== "materialized"
+    && (originalCount !== 0 || returnedCount !== 0 || value.effectiveRange !== null)) {
+    fail("unmaterialized assessment overview cannot contain score evidence");
+  }
+};
+
 export function assertTimelineInvariantsV1(value, schemaName = null) {
   if (!value || typeof value !== "object" || Array.isArray(value)) fail("timeline payload must be an object");
   assertJsonTree(value);
   let name = schemaName?.replace(TIMELINE_SCHEMA_PREFIX, "") ?? null;
   if (name === null) {
-    if (Object.hasOwn(value, "segments")) name = "timeline-overview";
+    if (Object.hasOwn(value, "materialization") && Object.hasOwn(value, "series")) {
+      name = "timeline-assessment-overview";
+    }
+    else if (Object.hasOwn(value, "segments")) name = "timeline-overview";
     else if (Object.hasOwn(value, "configurationHash")) name = "collection-policy";
     else if (Object.hasOwn(value, "candidateId")) name = "timeline-event-candidate";
     else if (Object.hasOwn(value, "decisionFacts")) name = "timeline-context";
@@ -1050,6 +1181,7 @@ export function assertTimelineInvariantsV1(value, schemaName = null) {
   else if (name === "timeline-page") assertPage(value);
   else if (name === "timeline-decision-facts") assertDecisionFacts(value);
   else if (name === "timeline-context") assertContext(value);
+  else if (name === "timeline-assessment-overview") assertAssessmentOverview(value);
   else fail(`unknown timeline schema:${name}`);
   return value;
 }
@@ -1073,3 +1205,4 @@ export const assertTimelineOverviewV1 = (value) => assertTimelinePayloadV1("time
 export const assertTimelinePageV1 = (value) => assertTimelinePayloadV1("timeline-page", value);
 export const assertTimelineDecisionFactsV1 = (value) => assertTimelinePayloadV1("timeline-decision-facts", value);
 export const assertTimelineContextV1 = (value) => assertTimelinePayloadV1("timeline-context", value);
+export const assertTimelineAssessmentOverviewV1 = (value) => assertTimelinePayloadV1("timeline-assessment-overview", value);

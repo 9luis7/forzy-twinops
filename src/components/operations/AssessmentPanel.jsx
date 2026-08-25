@@ -10,6 +10,10 @@ const statusLabels = {
   alert: "Alerta relativo",
   insufficient_data: "Dados insuficientes",
 };
+const HISTORICAL_SCALE_COPY = "Score relativo ao baseline hist\u00f3rico (escala 0\u2013100). N\u00e3o \u00e9 probabilidade de falha, confian\u00e7a calibrada, RUL nem diagn\u00f3stico.";
+const HISTORICAL_CANDIDATE_COPY = "Candidato n\u00e3o confirmado para revis\u00e3o humana. Este desvio n\u00e3o confirma falha, causa ou componente.";
+const HISTORICAL_LABELS_COPY = "O conjunto de dados n\u00e3o cont\u00e9m r\u00f3tulos de falha confirmada.";
+const HISTORICAL_VALIDATION_COPY = "Valida\u00e7\u00e3o humana obrigat\u00f3ria antes de qualquer a\u00e7\u00e3o operacional.";
 
 function formatMeasurement(value, suffix = "") {
   return Number.isFinite(value) ? `${numberFormatter.format(value)}${suffix}` : "Indisponível";
@@ -28,6 +32,7 @@ export default function AssessmentPanel({ assessment, historical = false }) {
           evidence: assessment.evidence,
           modelName: assessment.modelFamily,
           modelVersion: assessment.modelVersion,
+          trainingEnd: assessment.trainingWindow?.end ?? null,
         }
       : {
           status: assessment.assessment.status,
@@ -37,6 +42,7 @@ export default function AssessmentPanel({ assessment, historical = false }) {
           evidence: assessment.evidence,
           modelName: assessment.model.name,
           modelVersion: assessment.model.version,
+          trainingEnd: assessment.model.trainedUntil ?? null,
         };
 
   return (
@@ -66,11 +72,16 @@ export default function AssessmentPanel({ assessment, historical = false }) {
       ) : (
         <>
           <p className="model-disclaimer">
-            Desvio relativo ao histórico — não é probabilidade de falha
+            {historicalAssessment
+              ? HISTORICAL_SCALE_COPY
+              : "Desvio relativo ao hist\u00f3rico \u2014 n\u00e3o \u00e9 probabilidade de falha"}
           </p>
           <p className="assessment-status">
             {statusLabels[assessmentValues.status] ?? "Estado não informado"}
           </p>
+          {historicalAssessment && ["watch", "alert"].includes(assessmentValues.status) ? (
+            <p className="timeline-inline-warning">{HISTORICAL_CANDIDATE_COPY}</p>
+          ) : null}
           <dl className="score-grid">
             <div>
               <dt>Score de anomalia relativo</dt>
@@ -98,9 +109,22 @@ export default function AssessmentPanel({ assessment, historical = false }) {
               </ul>
             </div>
           ) : null}
-          <p className="model-meta">
-            Modelo {assessmentValues.modelName} {assessmentValues.modelVersion}. Validação humana obrigatória.
-          </p>
+          {historicalAssessment ? (
+            <>
+              <p className="model-meta">
+                Modelo {assessmentValues.modelName} {assessmentValues.modelVersion}
+                {assessmentValues.trainingEnd === null
+                  ? "."
+                  : ` \u00b7 treinamento causal encerrado em ${assessmentValues.trainingEnd}.`}
+              </p>
+              <p className="model-meta">{HISTORICAL_LABELS_COPY}</p>
+              <p className="model-meta">{HISTORICAL_VALIDATION_COPY}</p>
+            </>
+          ) : (
+            <p className="model-meta">
+              Modelo {assessmentValues.modelName} {assessmentValues.modelVersion}. Validação humana obrigatória.
+            </p>
+          )}
         </>
       )}
     </section>

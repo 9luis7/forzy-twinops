@@ -1,12 +1,14 @@
 const EMPTY_LOADING = Object.freeze({
   overview: false,
   page: false,
+  assessments: false,
   context: false,
 });
 
 const EMPTY_ERRORS = Object.freeze({
   overview: null,
   page: null,
+  assessments: null,
   context: null,
 });
 
@@ -14,6 +16,7 @@ export const initialTimelineNavigationState = Object.freeze({
   viewMode: "now",
   timelineOverview: null,
   timelinePage: null,
+  timelineAssessmentOverview: null,
   pendingSelection: null,
   historicalContext: null,
   loading: EMPTY_LOADING,
@@ -72,6 +75,20 @@ export function timelineNavigationReducer(state, action) {
       };
     case "PAGE_FAILED":
       return withRequestState(state, "page", false, action.error);
+    case "ASSESSMENTS_REQUESTED":
+      return withRequestState(state, "assessments", true, null);
+    case "ASSESSMENTS_RESOLVED":
+      if (action.assessmentOverview === null
+        || typeof action.assessmentOverview !== "object"
+        || Array.isArray(action.assessmentOverview)) {
+        throw new TypeError("ASSESSMENTS_RESOLVED assessmentOverview must be an object");
+      }
+      return {
+        ...withRequestState(state, "assessments", false, null),
+        timelineAssessmentOverview: action.assessmentOverview,
+      };
+    case "ASSESSMENTS_FAILED":
+      return withRequestState(state, "assessments", false, action.error);
     case "CONTEXT_REQUESTED":
       return {
         ...withRequestState(state, "context", true, null),

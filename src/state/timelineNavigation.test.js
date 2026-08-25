@@ -103,8 +103,8 @@ describe("timelineNavigationReducer", () => {
 
     expect(state.timelineOverview).toBeNull();
     expect(state.timelinePage).toBe(page);
-    expect(state.loading).toEqual({ overview: false, page: false, context: false });
-    expect(state.errors).toEqual({ overview: overviewError, page: null, context: null });
+    expect(state.loading).toEqual({ overview: false, page: false, assessments: false, context: false });
+    expect(state.errors).toEqual({ overview: overviewError, page: null, assessments: null, context: null });
   });
 
   it("rejects unknown actions", () => {
@@ -123,5 +123,34 @@ describe("timelineNavigationReducer", () => {
     const reset = timelineNavigationReducer(historical, { type: "RESET" });
 
     expect(reset).toBe(initialTimelineNavigationState);
+  });
+});
+
+describe("assessment overview navigation state", () => {
+  it("tracks assessment loading and errors independently while preserving evidence", () => {
+    const first = Object.freeze({ marker: "assessment-overview-1" });
+    const failure = new Error("assessment overview unavailable");
+    const committed = reduce(
+      { type: "ASSESSMENTS_REQUESTED" },
+      { type: "ASSESSMENTS_RESOLVED", assessmentOverview: first },
+      { type: "ASSESSMENTS_REQUESTED" },
+      { type: "ASSESSMENTS_FAILED", error: failure },
+    );
+
+    expect(committed.timelineAssessmentOverview).toBe(first);
+    expect(committed.loading.assessments).toBe(false);
+    expect(committed.errors.assessments).toBe(failure);
+    expect(committed.viewMode).toBe("now");
+  });
+
+  it("resets assessment evidence with the other source-owned timeline state", () => {
+    const populated = reduce({
+      type: "ASSESSMENTS_RESOLVED",
+      assessmentOverview: { marker: "assessment-overview" },
+    });
+
+    expect(timelineNavigationReducer(populated, { type: "RESET" }))
+      .toBe(initialTimelineNavigationState);
+    expect(initialTimelineNavigationState.timelineAssessmentOverview).toBeNull();
   });
 });

@@ -12,6 +12,7 @@ import {
   assertTimelineEventCandidateV1,
   assertTimelineInvariantsV1,
   assertTimelineOverviewV1,
+  assertTimelinePayloadV1,
   assertTimelinePageV1,
   assertTimelinePointV1,
   publicMillisecondSuccessorV1,
@@ -125,6 +126,9 @@ const validCases = [
 ];
 
 const reject = (validator, payload) => expect(() => validator(payload)).toThrow();
+const assertTimelineAssessmentOverviewV1 = (value) => (
+  assertTimelinePayloadV1("timeline-assessment-overview", value)
+);
 
 const policyHash = (payload) => {
   const selected = Object.fromEntries([
@@ -189,7 +193,7 @@ const operatingCycles = (count = 204) => {
       previousOperatingCycleId: index === 0 ? null : cycles.at(-1).operatingCycleId,
       assumptions: [],
     });
-  }
+}
   return cycles;
 };
 
@@ -828,5 +832,117 @@ describe("Timeline v1 composed runtime contract", () => {
     cases.valid.forEach((entry) => expect(publicMillisecondSuccessorV1(entry.input)).toBe(entry.expected));
     expect(() => publicMillisecondSuccessorV1(cases.invalid[0].input)).toThrow("timeline_invalid_public_millisecond");
     expect(() => publicMillisecondSuccessorV1(cases.invalid[1].input)).toThrow("timeline_range_overflow");
+  });
+});
+
+describe("timeline assessment overview contract", () => {
+  it.each([
+    "assessment-overview-empty.valid.json",
+    "assessment-overview-materialized.valid.json",
+  ])("accepts the closed shared fixture %s", (name) => {
+    const payload = fixture(name);
+    expect(assertTimelineAssessmentOverviewV1(payload)).toBe(payload);
+  });
+
+  it.each([
+    ["root", (payload) => { payload.unexpected = true; }],
+    ["materialization", (payload) => { payload.materialization.unexpected = true; }],
+    ["aggregation summary", (payload) => { payload.aggregationSummary.unexpected = true; }],
+    ["series", (payload) => { payload.series[0].unexpected = true; }],
+    ["series aggregation", (payload) => { payload.series[0].aggregation.unexpected = true; }],
+    ["point", (payload) => { payload.series[0].points[0].unexpected = true; }],
+  ])("rejects an extra key in %s", (_, mutate) => {
+    const payload = fixture("assessment-overview-materialized.valid.json");
+    mutate(payload);
+    reject(assertTimelineAssessmentOverviewV1, payload);
+  });
+
+  it.each([
+    ["negative anomaly", (point) => { point.anomalyScore = -0.01; }],
+    ["anomaly above model scale", (point) => { point.anomalyScore = 100.01; }],
+    ["negative deterioration", (point) => { point.deteriorationScore = -0.01; }],
+    ["deterioration above model scale", (point) => { point.deteriorationScore = 100.01; }],
+    ["non-finite anomaly", (point) => { point.anomalyScore = Number.POSITIVE_INFINITY; }],
+  ])("rejects %s", (_, mutate) => {
+    const payload = fixture("assessment-overview-materialized.valid.json");
+    mutate(payload.series[0].points[0]);
+    reject(assertTimelineAssessmentOverviewV1, payload);
+  });
+
+  it("rejects null scores outside insufficient data", () => {
+    const payload = fixture("assessment-overview-materialized.valid.json");
+    payload.series[0].points[0].anomalyScore = null;
+    reject(assertTimelineAssessmentOverviewV1, payload);
+  });
+
+  it("rejects scores on insufficient data", () => {
+    const payload = fixture("assessment-overview-materialized.valid.json");
+    payload.series[0].points[2].anomalyScore = 0;
+    payload.series[0].points[2].deteriorationScore = 0;
+    reject(assertTimelineAssessmentOverviewV1, payload);
+  });
+
+  it.each([
+    ["normal candidate", 0, 0, "candidate_not_ground_truth"],
+    ["watch without candidate", 0, 1, null],
+    ["alert without candidate", 1, 0, null],
+  ])("rejects %s", (_, seriesIndex, pointIndex, candidateState) => {
+    const payload = fixture("assessment-overview-materialized.valid.json");
+    payload.series[seriesIndex].points[pointIndex].candidateState = candidateState;
+    reject(assertTimelineAssessmentOverviewV1, payload);
+  });
+
+  it("rejects one series identity reused across different grouping facts", () => {
+    const payload = fixture("assessment-overview-materialized.valid.json");
+    payload.series[1].seriesId = payload.series[0].seriesId;
+    reject(assertTimelineAssessmentOverviewV1, payload);
+  });
+
+  it("rejects duplicate exact grouping facts split across series", () => {
+    const payload = fixture("assessment-overview-materialized.valid.json");
+    const second = payload.series[1];
+    const first = payload.series[0];
+    Object.assign(second, {
+      segmentId: first.segmentId,
+      sensorId: first.sensorId,
+      modelFamily: first.modelFamily,
+      modelVersion: first.modelVersion,
+      modelHash: first.modelHash,
+      foldId: first.foldId,
+      foldHash: first.foldHash,
+      reportHash: first.reportHash,
+      scoreSemantics: first.scoreSemantics,
+      trainingWindow: structuredClone(first.trainingWindow),
+    });
+    reject(assertTimelineAssessmentOverviewV1, payload);
+  });
+
+  it("requires candidate_not_ground_truth in a series containing a candidate point", () => {
+    const payload = fixture("assessment-overview-materialized.valid.json");
+    payload.series[0].limitations = payload.series[0].limitations.filter(
+      (limitation) => limitation !== "candidate_not_ground_truth",
+    );
+
+    reject(assertTimelineAssessmentOverviewV1, payload);
+  });
+
+  it("forbids candidate_not_ground_truth in a series without candidate points", () => {
+    const payload = fixture("assessment-overview-materialized.valid.json");
+    const series = payload.series[0];
+    series.points[1].status = "normal";
+    series.points[1].candidateState = null;
+
+    reject(assertTimelineAssessmentOverviewV1, payload);
+  });
+
+  it.each([
+    ["materialization count", (payload) => { payload.materialization.assessmentCount += 1; }],
+    ["returned count", (payload) => { payload.aggregationSummary.returnedAssessmentCount -= 1; }],
+    ["omitted count", (payload) => { payload.series[0].aggregation.omittedAssessmentCount = 1; }],
+    ["reduced series count", (payload) => { payload.aggregationSummary.reducedSeriesCount = 1; }],
+  ])("rejects crossed %s", (_, mutate) => {
+    const payload = fixture("assessment-overview-materialized.valid.json");
+    mutate(payload);
+    reject(assertTimelineAssessmentOverviewV1, payload);
   });
 });

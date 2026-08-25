@@ -1,6 +1,7 @@
 import { assertDigitalTwinSnapshotV2 } from "../contracts/twinV2.js";
 import {
   assertTimelineContextV1,
+  assertTimelineAssessmentOverviewV1,
   assertTimelineOverviewV1,
   assertTimelinePageV1,
 } from "../contracts/timelineV1.js";
@@ -167,6 +168,23 @@ const samplesQuery = ({ from, to, sensorId, metric, limit, cursor }) => {
   return query;
 };
 
+const assessmentsQuery = ({ from, to, sensorId, maxPoints }) => {
+  assertTimelineRange(from, to);
+  if (sensorId !== undefined && !["s1", "s2", "all"].includes(sensorId)) {
+    throw new TypeError("TwinOps timeline assessment sensorId must be s1, s2, or all");
+  }
+  if (maxPoints !== undefined && (!Number.isInteger(maxPoints) || maxPoints < 40 || maxPoints > 4000)) {
+    throw new TypeError("TwinOps timeline assessment maxPoints must be an integer from 40 to 4000");
+  }
+
+  const query = new URLSearchParams();
+  if (from !== undefined) query.set("from", from);
+  if (to !== undefined) query.set("to", to);
+  if (sensorId !== undefined && sensorId !== "all") query.set("sensorId", sensorId);
+  if (maxPoints !== undefined) query.set("maxPoints", String(maxPoints));
+  return query;
+};
+
 const contextQuery = ({ pointId, at, segmentId }) => {
   const pointForm = pointId !== undefined;
   const atForm = at !== undefined || segmentId !== undefined;
@@ -238,6 +256,23 @@ export function createGatewayTwinDataSourceV2({ baseUrl = "", fetchImpl = fetch 
         signal: options.signal,
       });
       return assertTimelinePageV1(value);
+    },
+
+    async getTimelineAssessments(assetId, queryOptions = {}, requestOptions = {}) {
+      assertTimelineAssetId(assetId);
+      assertTimelineOptions(
+        queryOptions,
+        ["from", "to", "sensorId", "maxPoints"],
+        "assessment query",
+      );
+      assertTimelineOptions(requestOptions, ["signal"], "assessment options");
+      const query = assessmentsQuery(queryOptions);
+      const suffix = query.size > 0 ? `?${query}` : "";
+      const value = await requestJson(`${assetPath(assetId, "timeline/assessments")}${suffix}`, {
+        method: "GET",
+        signal: requestOptions.signal,
+      });
+      return assertTimelineAssessmentOverviewV1(value);
     },
 
     async getTimelineContext(assetId, options = {}) {

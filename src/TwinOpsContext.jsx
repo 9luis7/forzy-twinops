@@ -9,6 +9,7 @@ import React, {
   useState,
 } from "react";
 import {
+  assertTimelineAssessmentOverviewV1,
   assertTimelineContextV1,
   assertTimelineOverviewV1,
   assertTimelinePageV1,
@@ -77,6 +78,7 @@ export function TwinOpsProvider({
   const refreshingOwnerRef = useRef(null);
   const overviewRequestRef = useRef(null);
   const pageRequestRef = useRef(null);
+  const assessmentsRequestRef = useRef(null);
   const contextRequestRef = useRef(null);
   const timelineDataSourceRef = useRef(dataSource);
 
@@ -119,6 +121,7 @@ export function TwinOpsProvider({
   const abortAllTimelineRequests = useCallback(() => {
     abortTimelineRequest(overviewRequestRef);
     abortTimelineRequest(pageRequestRef);
+    abortTimelineRequest(assessmentsRequestRef);
     abortTimelineRequest(contextRequestRef);
   }, [abortTimelineRequest]);
 
@@ -205,12 +208,48 @@ export function TwinOpsProvider({
       });
   }, [beginTimelineRequest, dataSource]);
 
+  const loadTimelineAssessments = useCallback(() => {
+    const owner = beginTimelineRequest(assessmentsRequestRef);
+    dispatchTimeline({ type: "ASSESSMENTS_REQUESTED" });
+    let operation;
+    try {
+      if (typeof dataSource.getTimelineAssessments !== "function") {
+        throw new TypeError("TwinOpsProvider dataSource must implement getTimelineAssessments");
+      }
+      operation = dataSource.getTimelineAssessments(ASSET_ID, {
+        sensorId: "all",
+        maxPoints: 1200,
+      }, {
+        signal: owner.controller.signal,
+      });
+    } catch (requestError) {
+      operation = Promise.reject(requestError);
+    }
+    return Promise.resolve(operation)
+      .then((value) => assertTimelineAssessmentOverviewV1(value))
+      .then((value) => {
+        if (assessmentsRequestRef.current !== owner || owner.controller.signal.aborted) return null;
+        dispatchTimeline({ type: "ASSESSMENTS_RESOLVED", assessmentOverview: value });
+        return value;
+      })
+      .catch((requestError) => {
+        if (assessmentsRequestRef.current === owner && !owner.controller.signal.aborted) {
+          dispatchTimeline({ type: "ASSESSMENTS_FAILED", error: requestError });
+        }
+        return null;
+      })
+      .finally(() => {
+        if (assessmentsRequestRef.current === owner) assessmentsRequestRef.current = null;
+      });
+  }, [beginTimelineRequest, dataSource]);
+
   const showHistory = useCallback(() => {
     dispatchTimeline({ type: "SHOW_HISTORY" });
     const overviewPromise = loadTimelineOverview();
     const pagePromise = loadTimelinePage();
-    return Promise.all([overviewPromise, pagePromise]);
-  }, [loadTimelineOverview, loadTimelinePage]);
+    const assessmentsPromise = loadTimelineAssessments();
+    return Promise.all([overviewPromise, pagePromise, assessmentsPromise]);
+  }, [loadTimelineAssessments, loadTimelineOverview, loadTimelinePage]);
 
   const selectTimelinePoint = useCallback((pointId) => {
     if (typeof pointId !== "string" || !TIMELINE_POINT_ID_RE.test(pointId)) {
@@ -419,6 +458,7 @@ export function TwinOpsProvider({
     viewMode: timelineState.viewMode,
     timelineOverview: timelineState.timelineOverview,
     timelinePage: timelineState.timelinePage,
+    timelineAssessmentOverview: timelineState.timelineAssessmentOverview,
     pendingSelection: timelineState.pendingSelection,
     historicalContext: timelineState.historicalContext,
     displayContext,
@@ -448,4 +488,8 @@ export function useTwinOps() {
   const value = useContext(TwinOpsContext);
   if (!value) throw new Error("useTwinOps must be used within TwinOpsProvider");
   return value;
+}
+
+export function useOptionalTwinOps() {
+  return useContext(TwinOpsContext);
 }

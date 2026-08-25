@@ -810,6 +810,85 @@ circle.timeline-lane__series {
   font-size: 0.82rem;
 }
 
+.assessment-trend {
+  margin-top: 2rem;
+  padding-top: 1.5rem;
+  border-top: 1px solid #263c57;
+}
+
+.assessment-trend__chart {
+  display: block;
+  width: 100%;
+  min-height: 13rem;
+  margin-top: 1rem;
+  overflow: visible;
+  background: #081421;
+  border: 1px solid #263c57;
+}
+
+.assessment-trend__grid line {
+  stroke: #263c57;
+  stroke-width: 1;
+}
+
+.assessment-trend__grid text {
+  fill: #9fb0c4;
+  font-size: 0.7rem;
+  text-anchor: end;
+}
+
+.assessment-trend__chart [data-score-kind="anomaly"] {
+  fill: #5eead4;
+  stroke: #5eead4;
+}
+
+.assessment-trend__chart [data-score-kind="deterioration"] {
+  fill: #fbbf24;
+  stroke: #fbbf24;
+}
+
+.assessment-trend__chart polyline {
+  fill: none;
+  stroke-width: 2;
+}
+
+.assessment-trend__legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem 1.25rem;
+  margin-top: 0.75rem;
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
+.assessment-trend__legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.assessment-trend__legend i {
+  width: 1.75rem;
+  height: 0.15rem;
+}
+
+.assessment-trend__legend [data-score-kind="anomaly"] {
+  background: #5eead4;
+}
+
+.assessment-trend__legend [data-score-kind="deterioration"] {
+  background: #fbbf24;
+}
+
+.assessment-trend__models {
+  display: grid;
+  gap: 0.35rem;
+  margin: 0.75rem 0;
+  padding-left: 1.25rem;
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
 .timeline-samples {
   margin-top: 2rem;
   padding-top: 1.5rem;

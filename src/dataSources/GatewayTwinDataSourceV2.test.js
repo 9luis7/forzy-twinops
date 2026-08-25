@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import { expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { createGatewayTwinDataSourceV2 } from "./GatewayTwinDataSourceV2.js";
 
 const snapshot = JSON.parse(
@@ -24,6 +24,15 @@ const timelineContext = JSON.parse(
   readFileSync(
     new URL(
       "../../contracts/timeline/v1/fixtures/context-historical-candidate.valid.json",
+      import.meta.url
+    ),
+    "utf8"
+  )
+);
+const assessmentOverview = JSON.parse(
+  readFileSync(
+    new URL(
+      "../../contracts/timeline/v1/fixtures/assessment-overview-materialized.valid.json",
       import.meta.url
     ),
     "utf8"
@@ -358,6 +367,51 @@ it("reports a non-ok response without substituting data", async () => {
   const source = createGatewayTwinDataSourceV2({ fetchImpl });
 
   await expect(source.getSnapshot("forzy-motor-01", {})).rejects.toThrow(/503/);
+});
+
+describe("assessment overview client", () => {
+  it("requests validated assessment evidence through the fixed GET route", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue({ ok: true, json: async () => assessmentOverview });
+    const source = createGatewayTwinDataSourceV2({ fetchImpl });
+    const controller = new AbortController();
+
+    await expect(source.getTimelineAssessments("forzy-motor-01", {
+      from: "2026-08-22T12:00:00.000Z",
+      to: "2026-08-22T13:00:00.001Z",
+      sensorId: "s1",
+      maxPoints: 1200,
+    }, { signal: controller.signal })).resolves.toBe(assessmentOverview);
+
+    expect(fetchImpl).toHaveBeenCalledWith(
+      "/api/v2/assets/forzy-motor-01/timeline/assessments?from=2026-08-22T12%3A00%3A00.000Z&to=2026-08-22T13%3A00%3A00.001Z&sensorId=s1&maxPoints=1200",
+      { method: "GET", signal: controller.signal },
+    );
+  });
+
+  it.each([
+    ["unknown query key", { target: "https://other.example" }, {}, /query/],
+    ["invalid sensor", { sensorId: "s3" }, {}, /sensorId/],
+    ["invalid max points", { maxPoints: 39 }, {}, /maxPoints/],
+    ["unknown request option", {}, { target: "/elsewhere" }, /options/],
+    ["invalid signal", {}, { signal: null }, /signal/],
+  ])("rejects %s before fetch", async (_, query, options, expected) => {
+    const fetchImpl = vi.fn();
+    const source = createGatewayTwinDataSourceV2({ fetchImpl });
+
+    await expect(
+      source.getTimelineAssessments("forzy-motor-01", query, options),
+    ).rejects.toThrow(expected);
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it("rejects an invalid assessment response before returning", async () => {
+    const invalid = structuredClone(assessmentOverview);
+    invalid.series[0].points[0].anomalyScore = 101;
+    const fetchImpl = vi.fn().mockResolvedValue({ ok: true, json: async () => invalid });
+    const source = createGatewayTwinDataSourceV2({ fetchImpl });
+
+    await expect(source.getTimelineAssessments("forzy-motor-01", {}, {})).rejects.toThrow();
+  });
 });
 
 it("passes the caller AbortSignal to every request", async () => {

@@ -1,10 +1,13 @@
 import React, { useMemo } from "react";
+import { useOptionalTwinOps } from "../../TwinOpsContext.jsx";
+import AssessmentTrend from "./AssessmentTrend.jsx";
 import OriginalSamplesTable from "./OriginalSamplesTable.jsx";
 import TimelineOverview from "./TimelineOverview.jsx";
 import { buildTimelineViewModel } from "./timelineViewModel.js";
 
 export default function TimelineWorkspace({
   overview,
+  assessmentOverview = undefined,
   page,
   context,
   loading,
@@ -14,6 +17,16 @@ export default function TimelineWorkspace({
   commitAnnouncement = null,
   children,
 }) {
+  const twinOps = useOptionalTwinOps();
+  const resolvedAssessmentOverview = assessmentOverview === undefined
+    ? twinOps?.timelineAssessmentOverview ?? null
+    : assessmentOverview;
+  const assessmentsLoading = loading?.assessments
+    ?? twinOps?.timelineLoading?.assessments
+    ?? false;
+  const assessmentsError = errors?.assessments
+    ?? twinOps?.timelineErrors?.assessments
+    ?? null;
   const model = useMemo(
     () => overview === null ? null : buildTimelineViewModel(overview),
     [overview],
@@ -51,6 +64,24 @@ export default function TimelineWorkspace({
         <p className="timeline-empty">Cobertura histórica indisponível para esta consulta.</p>
       ) : null}
       {model === null ? null : <TimelineOverview model={model} />}
+
+      {assessmentsLoading ? (
+        <p className="timeline-inline-status" role="status">
+          {resolvedAssessmentOverview === null
+            ? "Carregando avalia\u00e7\u00f5es causais\u2026"
+            : "Atualizando as avalia\u00e7\u00f5es; a \u00faltima s\u00e9rie v\u00e1lida continua vis\u00edvel."}
+        </p>
+      ) : null}
+      {assessmentsError ? (
+        <p className="timeline-inline-warning" role="alert">
+          {resolvedAssessmentOverview === null
+            ? "As avalia\u00e7\u00f5es causais est\u00e3o indispon\u00edveis para esta consulta."
+            : "As avalia\u00e7\u00f5es n\u00e3o puderam ser atualizadas. A \u00faltima s\u00e9rie v\u00e1lida continua vis\u00edvel."}
+        </p>
+      ) : null}
+      {resolvedAssessmentOverview === null ? null : (
+        <AssessmentTrend overview={resolvedAssessmentOverview} />
+      )}
 
       {errors.context ? (
         <p className="timeline-inline-warning" role="alert">

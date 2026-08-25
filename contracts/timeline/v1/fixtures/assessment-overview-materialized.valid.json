@@ -1,0 +1,128 @@
+{
+  "schemaVersion": "1.0",
+  "assetId": "forzy-motor-01",
+  "activeHistoricalBatchId": "sha256:215623e388951c5587bf655b5ce4d39ece4f6755623c534161d5859844682697",
+  "requestedRange": { "from": null, "to": null },
+  "effectiveRange": {
+    "from": "2026-08-22T12:00:00.000Z",
+    "to": "2026-08-22T13:00:00.001Z"
+  },
+  "materialization": {
+    "state": "materialized",
+    "assessmentCount": 4,
+    "assessmentManifestSha256": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+  },
+  "aggregationSummary": {
+    "requestedMaxPoints": 1200,
+    "originalAssessmentCount": 4,
+    "returnedAssessmentCount": 4,
+    "omittedAssessmentCount": 0,
+    "reducedSeriesCount": 0
+  },
+  "series": [
+    {
+      "seriesId": "00000000-0000-5000-8000-000000000020",
+      "segmentId": "00000000-0000-5000-8000-000000000010",
+      "sensorId": "s1",
+      "modelFamily": "robust-baseline",
+      "modelVersion": "1.0.1",
+      "modelHash": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "foldId": "fold-1",
+      "foldHash": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      "reportHash": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "scoreSemantics": "relative_to_walk_forward_historical_baseline_not_failure_probability",
+      "trainingWindow": {
+        "start": "2026-08-22T11:00:00.000Z",
+        "end": "2026-08-22T11:30:00.000Z"
+      },
+      "humanValidationRequired": true,
+      "groundTruthLabelsAvailable": false,
+      "limitations": [
+        "candidate_not_ground_truth",
+        "no_confirmed_failure_labels",
+        "relative_score_not_failure_probability"
+      ],
+      "aggregation": {
+        "method": "none",
+        "requestedMaxPoints": 1200,
+        "originalAssessmentCount": 3,
+        "returnedAssessmentCount": 3,
+        "omittedAssessmentCount": 0
+      },
+      "points": [
+        {
+          "assessmentId": "00000000-0000-5000-8000-000000000021",
+          "anchorPointId": "00000000-0000-5000-8000-000000000004",
+          "eventAt": "2026-08-22T12:00:00.000Z",
+          "anomalyScore": 12.5,
+          "deteriorationScore": 8.25,
+          "status": "normal",
+          "qualityStatus": "ok",
+          "candidateState": null
+        },
+        {
+          "assessmentId": "00000000-0000-5000-8000-000000000022",
+          "anchorPointId": "00000000-0000-5000-8000-000000000014",
+          "eventAt": "2026-08-22T12:10:00.000Z",
+          "anomalyScore": 74.5,
+          "deteriorationScore": 63,
+          "status": "watch",
+          "qualityStatus": "degraded",
+          "candidateState": "candidate_not_ground_truth"
+        },
+        {
+          "assessmentId": "00000000-0000-5000-8000-000000000023",
+          "anchorPointId": "00000000-0000-5000-8000-000000000015",
+          "eventAt": "2026-08-22T12:20:00.000Z",
+          "anomalyScore": null,
+          "deteriorationScore": null,
+          "status": "insufficient_data",
+          "qualityStatus": "insufficient_data",
+          "candidateState": null
+        }
+      ]
+    },
+    {
+      "seriesId": "00000000-0000-5000-8000-000000000030",
+      "segmentId": "00000000-0000-5000-8000-000000000011",
+      "sensorId": "s2",
+      "modelFamily": "robust-baseline",
+      "modelVersion": "1.0.1",
+      "modelHash": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "foldId": "fold-2",
+      "foldHash": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "reportHash": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "scoreSemantics": "relative_to_walk_forward_historical_baseline_not_failure_probability",
+      "trainingWindow": {
+        "start": "2026-08-22T12:00:00.000Z",
+        "end": "2026-08-22T12:30:00.000Z"
+      },
+      "humanValidationRequired": true,
+      "groundTruthLabelsAvailable": false,
+      "limitations": [
+        "candidate_not_ground_truth",
+        "no_confirmed_failure_labels",
+        "relative_score_not_failure_probability"
+      ],
+      "aggregation": {
+        "method": "none",
+        "requestedMaxPoints": 1200,
+        "originalAssessmentCount": 1,
+        "returnedAssessmentCount": 1,
+        "omittedAssessmentCount": 0
+      },
+      "points": [
+        {
+          "assessmentId": "00000000-0000-5000-8000-000000000031",
+          "anchorPointId": "00000000-0000-5000-8000-000000000017",
+          "eventAt": "2026-08-22T13:00:00.000Z",
+          "anomalyScore": 88,
+          "deteriorationScore": 79.5,
+          "status": "alert",
+          "qualityStatus": "ok",
+          "candidateState": "candidate_not_ground_truth"
+        }
+      ]
+    }
+  ]
+}

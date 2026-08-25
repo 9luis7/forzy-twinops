@@ -5,6 +5,7 @@ import overviewFixture from "../contracts/timeline/v1/fixtures/overview-unified.
 import pageFixture from "../contracts/timeline/v1/fixtures/page.valid.json";
 import historicalContextFixture from "../contracts/timeline/v1/fixtures/context-historical-candidate.valid.json";
 import missingChannelContextFixture from "../contracts/timeline/v1/fixtures/context-missing-channel.valid.json";
+import assessmentOverviewFixture from "../contracts/timeline/v1/fixtures/assessment-overview-materialized.valid.json";
 import { TwinOpsProvider, isForzyWindowOpen, useTwinOps } from "./TwinOpsContext.jsx";
 
 const snapshot = {
@@ -19,6 +20,7 @@ const overview = structuredClone(overviewFixture);
 const timelinePage = structuredClone(pageFixture);
 const historicalContext = structuredClone(historicalContextFixture);
 const missingChannelContext = structuredClone(missingChannelContextFixture);
+const assessmentOverview = structuredClone(assessmentOverviewFixture);
 
 const flush = async () => {
   await act(async () => {
@@ -46,6 +48,7 @@ const sourceStub = () => ({
   refresh: vi.fn().mockResolvedValue({ refreshAttempted: true, snapshot }),
   getTimelineOverview: vi.fn().mockResolvedValue(overview),
   getTimelineSamples: vi.fn().mockResolvedValue(timelinePage),
+  getTimelineAssessments: vi.fn().mockResolvedValue(assessmentOverview),
   getTimelineContext: vi.fn().mockResolvedValue(historicalContext),
 });
 
@@ -394,6 +397,7 @@ describe("historical navigation", () => {
     expect(result.current.timelineLoading).toEqual({
       overview: true,
       page: true,
+      assessments: false,
       context: false,
     });
 
@@ -408,6 +412,7 @@ describe("historical navigation", () => {
     expect(result.current.timelineLoading).toEqual({
       overview: false,
       page: false,
+      assessments: false,
       context: false,
     });
     expect(Object.keys(source.getTimelineOverview.mock.calls[0][1]).sort()).toEqual([
@@ -573,6 +578,7 @@ describe("historical navigation", () => {
     expect(result.current.timelineErrors).toEqual({
       overview: overviewFailure,
       page: null,
+      assessments: null,
       context: null,
     });
     expect(result.current.displayContext).toBe(snapshot);
@@ -811,11 +817,13 @@ describe("historical navigation", () => {
     expect(result.current.timelineErrors).toEqual({
       overview: null,
       page: null,
+      assessments: null,
       context: null,
     });
     expect(result.current.timelineLoading).toEqual({
       overview: false,
       page: false,
+      assessments: false,
       context: false,
     });
     expect(result.current.viewMode).toBe("now");
@@ -951,6 +959,9 @@ describe("historical navigation", () => {
     };
     source.getTimelineOverview.mockImplementation(untilAbort);
     source.getTimelineSamples.mockImplementation(untilAbort);
+    source.getTimelineAssessments.mockImplementation((_, __, { signal }) => (
+      untilAbort(null, { signal })
+    ));
     source.getTimelineContext.mockImplementation(untilAbort);
     const doc = visibleDocument();
     const { result, unmount } = renderHook(() => useTwinOps(), {
@@ -967,11 +978,113 @@ describe("historical navigation", () => {
       void result.current.selectTimelinePoint(historicalContext.anchor.pointId);
     });
     await flush();
-    expect(signals).toHaveLength(3);
+    expect(signals).toHaveLength(4);
 
     unmount();
     await flush();
 
     expect(signals.every((signal) => signal.aborted)).toBe(true);
+  });
+});
+
+describe("historical assessment overview ownership", () => {
+  const outsideWindowClock = () => new Date("2026-08-13T15:30:00.000Z");
+
+  it("starts assessment evidence with overview and samples under an independent owner", async () => {
+    const source = sourceStub();
+    const overviewRequest = deferred();
+    const pageRequest = deferred();
+    const assessmentsRequest = deferred();
+    source.getTimelineOverview.mockReturnValue(overviewRequest.promise);
+    source.getTimelineSamples.mockReturnValue(pageRequest.promise);
+    source.getTimelineAssessments.mockReturnValue(assessmentsRequest.promise);
+    const doc = visibleDocument();
+    const { result } = renderHook(() => useTwinOps(), {
+      wrapper: wrapperFor({ dataSource: source, clock: outsideWindowClock, documentRef: doc.target }),
+    });
+    await flush();
+
+    let historyPromise;
+    act(() => { historyPromise = result.current.showHistory(); });
+    await flush();
+
+    expect(source.getTimelineOverview).toHaveBeenCalledTimes(1);
+    expect(source.getTimelineSamples).toHaveBeenCalledTimes(1);
+    expect(source.getTimelineAssessments).toHaveBeenCalledTimes(1);
+    expect(result.current.timelineLoading).toMatchObject({
+      overview: true,
+      page: true,
+      assessments: true,
+      context: false,
+    });
+    const assessmentCall = source.getTimelineAssessments.mock.calls[0];
+    expect(assessmentCall[0]).toBe("forzy-motor-01");
+    expect(assessmentCall[1]).toEqual({ sensorId: "all", maxPoints: 1200 });
+    expect(assessmentCall[2].signal).toBeInstanceOf(AbortSignal);
+
+    await act(async () => {
+      overviewRequest.resolve(overview);
+      pageRequest.resolve(timelinePage);
+      assessmentsRequest.resolve(assessmentOverview);
+      await historyPromise;
+    });
+
+    expect(result.current.timelineAssessmentOverview).toBe(assessmentOverview);
+    expect(result.current.viewMode).toBe("historical");
+    expect(result.current.displayContext).toBe(snapshot);
+  });
+
+  it("preserves the last valid assessment evidence after an active failure", async () => {
+    const source = sourceStub();
+    const failure = new Error("assessment evidence unavailable");
+    source.getTimelineAssessments
+      .mockResolvedValueOnce(assessmentOverview)
+      .mockRejectedValueOnce(failure);
+    const doc = visibleDocument();
+    const { result } = renderHook(() => useTwinOps(), {
+      wrapper: wrapperFor({ dataSource: source, clock: outsideWindowClock, documentRef: doc.target }),
+    });
+    await flush();
+
+    await act(async () => { await result.current.showHistory(); });
+    const committed = result.current.timelineAssessmentOverview;
+    act(() => result.current.showNow());
+    await act(async () => { await result.current.showHistory(); });
+
+    expect(result.current.timelineAssessmentOverview).toBe(committed);
+    expect(result.current.timelineErrors.assessments).toBe(failure);
+    expect(result.current.snapshot).toBe(snapshot);
+    expect(result.current.displayContext).toBe(snapshot);
+  });
+
+  it("lets only the latest validated assessment request commit", async () => {
+    const source = sourceStub();
+    const obsolete = deferred();
+    let obsoleteSignal;
+    source.getTimelineAssessments
+      .mockImplementationOnce((_, __, { signal }) => {
+        obsoleteSignal = signal;
+        return obsolete.promise;
+      })
+      .mockResolvedValueOnce(assessmentOverview);
+    const doc = visibleDocument();
+    const { result } = renderHook(() => useTwinOps(), {
+      wrapper: wrapperFor({ dataSource: source, clock: outsideWindowClock, documentRef: doc.target }),
+    });
+    await flush();
+
+    let obsoleteHistory;
+    act(() => { obsoleteHistory = result.current.showHistory(); });
+    await flush();
+    await act(async () => { await result.current.showHistory(); });
+    expect(obsoleteSignal.aborted).toBe(true);
+
+    const committed = result.current.timelineAssessmentOverview;
+    await act(async () => {
+      obsolete.resolve({ ...assessmentOverview, schemaVersion: "2.0" });
+      await obsoleteHistory;
+    });
+    expect(result.current.timelineAssessmentOverview).toBe(committed);
+    expect(result.current.timelineErrors.assessments).toBeNull();
   });
 });
