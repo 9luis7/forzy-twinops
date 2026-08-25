@@ -1,6 +1,10 @@
 import React from "react";
 import { act, cleanup, render, renderHook, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import overviewFixture from "../contracts/timeline/v1/fixtures/overview-unified.valid.json";
+import pageFixture from "../contracts/timeline/v1/fixtures/page.valid.json";
+import historicalContextFixture from "../contracts/timeline/v1/fixtures/context-historical-candidate.valid.json";
+import missingChannelContextFixture from "../contracts/timeline/v1/fixtures/context-missing-channel.valid.json";
 import { TwinOpsProvider, isForzyWindowOpen, useTwinOps } from "./TwinOpsContext.jsx";
 
 const snapshot = {
@@ -11,6 +15,10 @@ const snapshot = {
     officialTag: null,
   },
 };
+const overview = structuredClone(overviewFixture);
+const timelinePage = structuredClone(pageFixture);
+const historicalContext = structuredClone(historicalContextFixture);
+const missingChannelContext = structuredClone(missingChannelContextFixture);
 
 const flush = async () => {
   await act(async () => {
@@ -36,7 +44,20 @@ const visibleDocument = () => {
 const sourceStub = () => ({
   getSnapshot: vi.fn().mockResolvedValue(snapshot),
   refresh: vi.fn().mockResolvedValue({ refreshAttempted: true, snapshot }),
+  getTimelineOverview: vi.fn().mockResolvedValue(overview),
+  getTimelineSamples: vi.fn().mockResolvedValue(timelinePage),
+  getTimelineContext: vi.fn().mockResolvedValue(historicalContext),
 });
+
+const deferred = () => {
+  let resolve;
+  let reject;
+  const promise = new Promise((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+};
 
 const wrapperFor = (props) =>
   function Wrapper({ children }) {
@@ -339,4 +360,374 @@ it("aborts the active request on unmount", async () => {
   unmount();
 
   expect(requestSignal.aborted).toBe(true);
+});
+
+describe("historical navigation", () => {
+  const outsideWindowClock = () => new Date("2026-08-13T15:30:00.000Z");
+
+  it("starts overview and first original page in parallel without refresh", async () => {
+    const source = sourceStub();
+    const overviewRequest = deferred();
+    const pageRequest = deferred();
+    source.getTimelineOverview.mockReturnValue(overviewRequest.promise);
+    source.getTimelineSamples.mockReturnValue(pageRequest.promise);
+    const doc = visibleDocument();
+    const { result } = renderHook(() => useTwinOps(), {
+      wrapper: wrapperFor({
+        dataSource: source,
+        clock: outsideWindowClock,
+        documentRef: doc.target,
+      }),
+    });
+    await flush();
+
+    let historyPromise;
+    act(() => {
+      historyPromise = result.current.showHistory();
+    });
+    await flush();
+
+    expect(source.getTimelineOverview).toHaveBeenCalledTimes(1);
+    expect(source.getTimelineSamples).toHaveBeenCalledTimes(1);
+    expect(source.refresh).not.toHaveBeenCalled();
+    expect(result.current.viewMode).toBe("historical");
+    expect(result.current.timelineLoading).toEqual({
+      overview: true,
+      page: true,
+      context: false,
+    });
+
+    await act(async () => {
+      overviewRequest.resolve(overview);
+      pageRequest.resolve(timelinePage);
+      await historyPromise;
+    });
+
+    expect(result.current.timelineOverview).toBe(overview);
+    expect(result.current.timelinePage).toBe(timelinePage);
+    expect(result.current.timelineLoading).toEqual({
+      overview: false,
+      page: false,
+      context: false,
+    });
+    expect(Object.keys(source.getTimelineOverview.mock.calls[0][1]).sort()).toEqual([
+      "maxPoints",
+      "metric",
+      "sensorId",
+      "signal",
+    ]);
+    expect(Object.keys(source.getTimelineSamples.mock.calls[0][1]).sort()).toEqual([
+      "limit",
+      "metric",
+      "sensorId",
+      "signal",
+    ]);
+  });
+
+  it("keeps the current display until a selected point validates and commits", async () => {
+    const source = sourceStub();
+    const contextRequest = deferred();
+    source.getTimelineContext.mockReturnValue(contextRequest.promise);
+    const doc = visibleDocument();
+    const { result } = renderHook(() => useTwinOps(), {
+      wrapper: wrapperFor({
+        dataSource: source,
+        clock: outsideWindowClock,
+        documentRef: doc.target,
+      }),
+    });
+    await flush();
+
+    let selectionPromise;
+    act(() => {
+      selectionPromise = result.current.selectTimelinePoint(historicalContext.anchor.pointId);
+    });
+    await flush();
+
+    expect(result.current.pendingSelection).toEqual({
+      pointId: historicalContext.anchor.pointId,
+    });
+    expect(result.current.historicalContext).toBeNull();
+    expect(result.current.displayContext).toBe(snapshot);
+    expect(result.current.timelineLoading.context).toBe(true);
+    expect(source.refresh).not.toHaveBeenCalled();
+    expect(Object.keys(source.getTimelineContext.mock.calls[0][1]).sort()).toEqual([
+      "pointId",
+      "signal",
+    ]);
+
+    await act(async () => {
+      contextRequest.resolve(historicalContext);
+      await selectionPromise;
+    });
+
+    expect(result.current.viewMode).toBe("historical");
+    expect(result.current.historicalContext).toBe(historicalContext);
+    expect(result.current.displayContext).toBe(historicalContext);
+    expect(result.current.pendingSelection).toBeNull();
+    expect(result.current.timelineLoading.context).toBe(false);
+  });
+
+  it("lets only the latest validated selection token commit", async () => {
+    const source = sourceStub();
+    const first = deferred();
+    const second = deferred();
+    const signals = [];
+    source.getTimelineContext
+      .mockImplementationOnce((_, { signal }) => {
+        signals.push(signal);
+        return first.promise;
+      })
+      .mockImplementationOnce((_, { signal }) => {
+        signals.push(signal);
+        return second.promise;
+      });
+    const doc = visibleDocument();
+    const { result } = renderHook(() => useTwinOps(), {
+      wrapper: wrapperFor({
+        dataSource: source,
+        clock: outsideWindowClock,
+        documentRef: doc.target,
+      }),
+    });
+    await flush();
+
+    let firstPromise;
+    act(() => {
+      firstPromise = result.current.selectTimelinePoint(historicalContext.anchor.pointId);
+    });
+    await flush();
+    let secondPromise;
+    act(() => {
+      secondPromise = result.current.selectTimelinePoint(historicalContext.anchor.pointId);
+    });
+    await flush();
+
+    expect(signals[0].aborted).toBe(true);
+    expect(signals[1].aborted).toBe(false);
+
+    await act(async () => {
+      second.resolve(missingChannelContext);
+      await secondPromise;
+    });
+    expect(result.current.historicalContext).toBe(missingChannelContext);
+
+    await act(async () => {
+      first.resolve(historicalContext);
+      await firstPromise;
+    });
+    expect(result.current.historicalContext).toBe(missingChannelContext);
+  });
+
+  it("preserves the committed context and exposes a retryable selection error", async () => {
+    const source = sourceStub();
+    const failure = new Error("timeline context unavailable");
+    source.getTimelineContext
+      .mockResolvedValueOnce(historicalContext)
+      .mockRejectedValueOnce(failure);
+    const doc = visibleDocument();
+    const { result } = renderHook(() => useTwinOps(), {
+      wrapper: wrapperFor({
+        dataSource: source,
+        clock: outsideWindowClock,
+        documentRef: doc.target,
+      }),
+    });
+    await flush();
+
+    await act(async () => {
+      await result.current.selectTimelinePoint(historicalContext.anchor.pointId);
+    });
+    const committed = result.current.displayContext;
+
+    await act(async () => {
+      await result.current.selectTimelinePoint(historicalContext.anchor.pointId);
+    });
+
+    expect(result.current.displayContext).toBe(committed);
+    expect(result.current.historicalContext).toBe(committed);
+    expect(result.current.timelineErrors.context).toBe(failure);
+    expect(result.current.timelineLoading.context).toBe(false);
+  });
+
+  it("keeps overview and page outcomes independent", async () => {
+    const source = sourceStub();
+    const overviewFailure = new Error("overview unavailable");
+    source.getTimelineOverview.mockRejectedValue(overviewFailure);
+    const doc = visibleDocument();
+    const { result } = renderHook(() => useTwinOps(), {
+      wrapper: wrapperFor({
+        dataSource: source,
+        clock: outsideWindowClock,
+        documentRef: doc.target,
+      }),
+    });
+    await flush();
+
+    await act(async () => {
+      await result.current.showHistory();
+    });
+
+    expect(result.current.timelineOverview).toBeNull();
+    expect(result.current.timelinePage).toBe(timelinePage);
+    expect(result.current.timelineErrors).toEqual({
+      overview: overviewFailure,
+      page: null,
+      context: null,
+    });
+    expect(result.current.displayContext).toBe(snapshot);
+  });
+
+  it("rejects an invalid context response without replacing the prior commit", async () => {
+    const source = sourceStub();
+    const invalidContext = {
+      ...historicalContext,
+      selectedAt: "2026-08-22T12:00:00Z",
+    };
+    source.getTimelineContext
+      .mockResolvedValueOnce(historicalContext)
+      .mockResolvedValueOnce(invalidContext);
+    const doc = visibleDocument();
+    const { result } = renderHook(() => useTwinOps(), {
+      wrapper: wrapperFor({
+        dataSource: source,
+        clock: outsideWindowClock,
+        documentRef: doc.target,
+      }),
+    });
+    await flush();
+
+    await act(async () => {
+      await result.current.selectTimelinePoint(historicalContext.anchor.pointId);
+    });
+    const committed = result.current.historicalContext;
+
+    await act(async () => {
+      await result.current.selectTimelinePoint(historicalContext.anchor.pointId);
+    });
+
+    expect(result.current.historicalContext).toBe(committed);
+    expect(result.current.displayContext).toBe(committed);
+    expect(result.current.timelineErrors.context).toBeInstanceOf(TypeError);
+  });
+
+  it("showNow aborts a pending selection and ignores its late response", async () => {
+    const source = sourceStub();
+    const pending = deferred();
+    let pendingSignal;
+    source.getTimelineContext
+      .mockResolvedValueOnce(historicalContext)
+      .mockImplementationOnce((_, { signal }) => {
+        pendingSignal = signal;
+        return pending.promise;
+      });
+    const doc = visibleDocument();
+    const { result } = renderHook(() => useTwinOps(), {
+      wrapper: wrapperFor({
+        dataSource: source,
+        clock: outsideWindowClock,
+        documentRef: doc.target,
+      }),
+    });
+    await flush();
+
+    await act(async () => {
+      await result.current.selectTimelinePoint(historicalContext.anchor.pointId);
+    });
+    let pendingPromise;
+    act(() => {
+      pendingPromise = result.current.selectTimelinePoint(historicalContext.anchor.pointId);
+    });
+    await flush();
+
+    act(() => result.current.showNow());
+
+    expect(pendingSignal.aborted).toBe(true);
+    expect(result.current.viewMode).toBe("now");
+    expect(result.current.displayContext).toBe(snapshot);
+    expect(result.current.timelineLoading.context).toBe(false);
+
+    await act(async () => {
+      pending.resolve(missingChannelContext);
+      await pendingPromise;
+    });
+
+    expect(result.current.viewMode).toBe("now");
+    expect(result.current.historicalContext).toBe(historicalContext);
+    expect(result.current.displayContext).toBe(snapshot);
+  });
+
+  it("updates stored now independently and reveals it only on showNow", async () => {
+    const newerSnapshot = Object.freeze({ ...snapshot, marker: "newer-now" });
+    const source = sourceStub();
+    source.getSnapshot
+      .mockResolvedValueOnce(snapshot)
+      .mockResolvedValueOnce(newerSnapshot);
+    const doc = visibleDocument();
+    const { result } = renderHook(() => useTwinOps(), {
+      wrapper: wrapperFor({
+        dataSource: source,
+        clock: outsideWindowClock,
+        documentRef: doc.target,
+      }),
+    });
+    await flush();
+
+    await act(async () => {
+      await result.current.selectTimelinePoint(historicalContext.anchor.pointId);
+    });
+    expect(result.current.displayContext).toBe(historicalContext);
+
+    await act(async () => {
+      await result.current.refreshNow();
+    });
+
+    expect(result.current.snapshot).toBe(newerSnapshot);
+    expect(result.current.viewMode).toBe("historical");
+    expect(result.current.displayContext).toBe(historicalContext);
+    expect(result.current.historicalContext).toBe(historicalContext);
+
+    act(() => result.current.showNow());
+
+    expect(result.current.viewMode).toBe("now");
+    expect(result.current.displayContext).toBe(newerSnapshot);
+    expect(result.current.historicalContext).toBe(historicalContext);
+  });
+
+  it("aborts all timeline request classes on unmount", async () => {
+    const source = sourceStub();
+    const signals = [];
+    const untilAbort = (_, { signal }) => {
+      signals.push(signal);
+      return new Promise((_, reject) => {
+        signal.addEventListener("abort", () => {
+          reject(new DOMException("aborted", "AbortError"));
+        });
+      });
+    };
+    source.getTimelineOverview.mockImplementation(untilAbort);
+    source.getTimelineSamples.mockImplementation(untilAbort);
+    source.getTimelineContext.mockImplementation(untilAbort);
+    const doc = visibleDocument();
+    const { result, unmount } = renderHook(() => useTwinOps(), {
+      wrapper: wrapperFor({
+        dataSource: source,
+        clock: outsideWindowClock,
+        documentRef: doc.target,
+      }),
+    });
+    await flush();
+
+    act(() => {
+      void result.current.showHistory();
+      void result.current.selectTimelinePoint(historicalContext.anchor.pointId);
+    });
+    await flush();
+    expect(signals).toHaveLength(3);
+
+    unmount();
+    await flush();
+
+    expect(signals.every((signal) => signal.aborted)).toBe(true);
+  });
 });

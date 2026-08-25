@@ -1,0 +1,104 @@
+const EMPTY_LOADING = Object.freeze({
+  overview: false,
+  page: false,
+  context: false,
+});
+
+const EMPTY_ERRORS = Object.freeze({
+  overview: null,
+  page: null,
+  context: null,
+});
+
+export const initialTimelineNavigationState = Object.freeze({
+  viewMode: "now",
+  timelineOverview: null,
+  timelinePage: null,
+  pendingSelection: null,
+  historicalContext: null,
+  loading: EMPTY_LOADING,
+  errors: EMPTY_ERRORS,
+});
+
+const withRequestState = (state, key, loading, error) => ({
+  ...state,
+  loading: { ...state.loading, [key]: loading },
+  errors: { ...state.errors, [key]: error },
+});
+
+const copySelection = (selection) => {
+  if (selection === null || typeof selection !== "object" || Array.isArray(selection)) {
+    throw new TypeError("CONTEXT_REQUESTED selection must be an object");
+  }
+  const keys = Object.keys(selection);
+  if (keys.length === 1 && keys[0] === "pointId") {
+    return Object.freeze({ pointId: selection.pointId });
+  }
+  if (keys.length === 2 && keys.includes("at") && keys.includes("segmentId")) {
+    return Object.freeze({ at: selection.at, segmentId: selection.segmentId });
+  }
+  throw new TypeError("CONTEXT_REQUESTED selection must be pointId or at with segmentId");
+};
+
+export function timelineNavigationReducer(state, action) {
+  switch (action?.type) {
+    case "RESET":
+      return initialTimelineNavigationState;
+    case "SHOW_HISTORY":
+      return state.viewMode === "historical" ? state : { ...state, viewMode: "historical" };
+    case "SHOW_NOW":
+      return {
+        ...state,
+        viewMode: "now",
+        pendingSelection: null,
+        loading: EMPTY_LOADING,
+        errors: { ...state.errors, context: null },
+      };
+    case "OVERVIEW_REQUESTED":
+      return withRequestState(state, "overview", true, null);
+    case "OVERVIEW_RESOLVED":
+      return {
+        ...withRequestState(state, "overview", false, null),
+        timelineOverview: action.overview,
+      };
+    case "OVERVIEW_FAILED":
+      return withRequestState(state, "overview", false, action.error);
+    case "PAGE_REQUESTED":
+      return withRequestState(state, "page", true, null);
+    case "PAGE_RESOLVED":
+      return {
+        ...withRequestState(state, "page", false, null),
+        timelinePage: action.page,
+      };
+    case "PAGE_FAILED":
+      return withRequestState(state, "page", false, action.error);
+    case "CONTEXT_REQUESTED":
+      return {
+        ...withRequestState(state, "context", true, null),
+        pendingSelection: copySelection(action.selection),
+      };
+    case "CONTEXT_RESOLVED":
+      if (action.context === null || typeof action.context !== "object" || Array.isArray(action.context)) {
+        throw new TypeError("CONTEXT_RESOLVED context must be an object");
+      }
+      return {
+        ...withRequestState(state, "context", false, null),
+        viewMode: "historical",
+        pendingSelection: null,
+        historicalContext: action.context,
+      };
+    case "CONTEXT_FAILED":
+      return {
+        ...withRequestState(state, "context", false, action.error),
+        pendingSelection: null,
+      };
+    default:
+      throw new TypeError(`Unknown timeline navigation action: ${action?.type ?? "undefined"}`);
+  }
+}
+
+export function committedTimelineContext(state, nowSnapshot) {
+  return state.viewMode === "historical" && state.historicalContext !== null
+    ? state.historicalContext
+    : nowSnapshot;
+}

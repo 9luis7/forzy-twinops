@@ -4,15 +4,28 @@ import React, {
   useContext,
   useEffect,
   useMemo,
+  useReducer,
   useRef,
   useState,
 } from "react";
+import {
+  assertTimelineContextV1,
+  assertTimelineOverviewV1,
+  assertTimelinePageV1,
+} from "./contracts/timelineV1.js";
 import { createGatewayTwinDataSourceV2 } from "./dataSources/GatewayTwinDataSourceV2.js";
+import {
+  committedTimelineContext,
+  initialTimelineNavigationState,
+  timelineNavigationReducer,
+} from "./state/timelineNavigation.js";
 
 const ASSET_ID = "forzy-motor-01";
 const TwinOpsContext = createContext(null);
 const defaultDataSource = createGatewayTwinDataSourceV2();
 const defaultClock = () => new Date();
+const TIMELINE_POINT_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+const INITIAL_TIMELINE_METRIC = "vibrationVelocityRms";
 const forzyTime = new Intl.DateTimeFormat("en-US", {
   timeZone: "America/Sao_Paulo",
   weekday: "short",
@@ -53,11 +66,19 @@ export function TwinOpsProvider({
   const [error, setError] = useState(null);
   const [refreshing, setRefreshing] = useState(false);
   const [lastRefreshAttemptAt, setLastRefreshAttemptAt] = useState(null);
+  const [timelineState, dispatchTimeline] = useReducer(
+    timelineNavigationReducer,
+    initialTimelineNavigationState
+  );
   const mountedRef = useRef(false);
   const effectGenerationRef = useRef(0);
   const timerRef = useRef(null);
   const inFlightRef = useRef(null);
   const refreshingOwnerRef = useRef(null);
+  const overviewRequestRef = useRef(null);
+  const pageRequestRef = useRef(null);
+  const contextRequestRef = useRef(null);
+  const timelineDataSourceRef = useRef(dataSource);
 
   const isVisible = useCallback(
     () => documentRef?.visibilityState === "visible",
@@ -87,6 +108,167 @@ export function TwinOpsProvider({
       setRefreshing(false);
     }
   }, []);
+
+  const abortTimelineRequest = useCallback((requestRef) => {
+    const owner = requestRef.current;
+    if (owner === null) return;
+    requestRef.current = null;
+    owner.controller.abort();
+  }, []);
+
+  const abortAllTimelineRequests = useCallback(() => {
+    abortTimelineRequest(overviewRequestRef);
+    abortTimelineRequest(pageRequestRef);
+    abortTimelineRequest(contextRequestRef);
+  }, [abortTimelineRequest]);
+
+  const beginTimelineRequest = useCallback((requestRef) => {
+    abortTimelineRequest(requestRef);
+    const owner = { controller: new AbortController() };
+    requestRef.current = owner;
+    return owner;
+  }, [abortTimelineRequest]);
+
+  const loadTimelineOverview = useCallback(() => {
+    const owner = beginTimelineRequest(overviewRequestRef);
+    dispatchTimeline({ type: "OVERVIEW_REQUESTED" });
+    let operation;
+    try {
+      if (typeof dataSource.getTimelineOverview !== "function") {
+        throw new TypeError("TwinOpsProvider dataSource must implement getTimelineOverview");
+      }
+      operation = dataSource.getTimelineOverview(ASSET_ID, {
+        sensorId: "all",
+        metric: INITIAL_TIMELINE_METRIC,
+        maxPoints: 1200,
+        signal: owner.controller.signal,
+      });
+    } catch (requestError) {
+      operation = Promise.reject(requestError);
+    }
+    return Promise.resolve(operation)
+      .then((value) => assertTimelineOverviewV1(value))
+      .then((value) => {
+        if (overviewRequestRef.current !== owner || owner.controller.signal.aborted) return null;
+        dispatchTimeline({ type: "OVERVIEW_RESOLVED", overview: value });
+        return value;
+      })
+      .catch((requestError) => {
+        if (
+          overviewRequestRef.current === owner
+          && !owner.controller.signal.aborted
+          && !isAbortError(requestError)
+        ) {
+          dispatchTimeline({ type: "OVERVIEW_FAILED", error: requestError });
+        }
+        return null;
+      })
+      .finally(() => {
+        if (overviewRequestRef.current === owner) overviewRequestRef.current = null;
+      });
+  }, [beginTimelineRequest, dataSource]);
+
+  const loadTimelinePage = useCallback(() => {
+    const owner = beginTimelineRequest(pageRequestRef);
+    dispatchTimeline({ type: "PAGE_REQUESTED" });
+    let operation;
+    try {
+      if (typeof dataSource.getTimelineSamples !== "function") {
+        throw new TypeError("TwinOpsProvider dataSource must implement getTimelineSamples");
+      }
+      operation = dataSource.getTimelineSamples(ASSET_ID, {
+        sensorId: "all",
+        metric: INITIAL_TIMELINE_METRIC,
+        limit: 200,
+        signal: owner.controller.signal,
+      });
+    } catch (requestError) {
+      operation = Promise.reject(requestError);
+    }
+    return Promise.resolve(operation)
+      .then((value) => assertTimelinePageV1(value))
+      .then((value) => {
+        if (pageRequestRef.current !== owner || owner.controller.signal.aborted) return null;
+        dispatchTimeline({ type: "PAGE_RESOLVED", page: value });
+        return value;
+      })
+      .catch((requestError) => {
+        if (
+          pageRequestRef.current === owner
+          && !owner.controller.signal.aborted
+          && !isAbortError(requestError)
+        ) {
+          dispatchTimeline({ type: "PAGE_FAILED", error: requestError });
+        }
+        return null;
+      })
+      .finally(() => {
+        if (pageRequestRef.current === owner) pageRequestRef.current = null;
+      });
+  }, [beginTimelineRequest, dataSource]);
+
+  const showHistory = useCallback(() => {
+    dispatchTimeline({ type: "SHOW_HISTORY" });
+    const overviewPromise = loadTimelineOverview();
+    const pagePromise = loadTimelinePage();
+    return Promise.all([overviewPromise, pagePromise]);
+  }, [loadTimelineOverview, loadTimelinePage]);
+
+  const selectTimelinePoint = useCallback((pointId) => {
+    if (typeof pointId !== "string" || !TIMELINE_POINT_ID_RE.test(pointId)) {
+      throw new TypeError("TwinOps timeline pointId must be a canonical UUIDv5");
+    }
+    const owner = beginTimelineRequest(contextRequestRef);
+    dispatchTimeline({ type: "CONTEXT_REQUESTED", selection: { pointId } });
+    let operation;
+    try {
+      if (typeof dataSource.getTimelineContext !== "function") {
+        throw new TypeError("TwinOpsProvider dataSource must implement getTimelineContext");
+      }
+      operation = dataSource.getTimelineContext(ASSET_ID, {
+        pointId,
+        signal: owner.controller.signal,
+      });
+    } catch (requestError) {
+      operation = Promise.reject(requestError);
+    }
+    return Promise.resolve(operation)
+      .then((value) => assertTimelineContextV1(value))
+      .then((value) => {
+        if (value.anchor?.pointId !== pointId) {
+          throw new TypeError("TwinOps timeline context does not match the selected pointId");
+        }
+        if (contextRequestRef.current !== owner || owner.controller.signal.aborted) return null;
+        dispatchTimeline({ type: "CONTEXT_RESOLVED", context: value });
+        return value;
+      })
+      .catch((requestError) => {
+        if (
+          contextRequestRef.current === owner
+          && !owner.controller.signal.aborted
+          && !isAbortError(requestError)
+        ) {
+          dispatchTimeline({ type: "CONTEXT_FAILED", error: requestError });
+        }
+        return null;
+      })
+      .finally(() => {
+        if (contextRequestRef.current === owner) contextRequestRef.current = null;
+      });
+  }, [beginTimelineRequest, dataSource]);
+
+  const showNow = useCallback(() => {
+    abortAllTimelineRequests();
+    dispatchTimeline({ type: "SHOW_NOW" });
+  }, [abortAllTimelineRequests]);
+
+  useEffect(() => {
+    if (timelineDataSourceRef.current !== dataSource) {
+      timelineDataSourceRef.current = dataSource;
+      dispatchTimeline({ type: "RESET" });
+    }
+    return abortAllTimelineRequests;
+  }, [abortAllTimelineRequests, dataSource]);
 
   const request = useCallback((kind, generation = effectGenerationRef.current) => {
     if (!mountedRef.current || effectGenerationRef.current !== generation) {
@@ -229,6 +411,7 @@ export function TwinOpsProvider({
     };
   }, [abortActiveRequest, clearTimer, clock, documentRef, isVisible, request, runAutomaticRefresh]);
 
+  const displayContext = committedTimelineContext(timelineState, snapshot);
   const value = useMemo(() => ({
     assetId: ASSET_ID,
     snapshot,
@@ -236,7 +419,30 @@ export function TwinOpsProvider({
     refreshing,
     lastRefreshAttemptAt,
     refreshNow,
-  }), [error, lastRefreshAttemptAt, refreshNow, refreshing, snapshot]);
+    viewMode: timelineState.viewMode,
+    timelineOverview: timelineState.timelineOverview,
+    timelinePage: timelineState.timelinePage,
+    pendingSelection: timelineState.pendingSelection,
+    historicalContext: timelineState.historicalContext,
+    displayContext,
+    timelineLoading: timelineState.loading,
+    timelineErrors: timelineState.errors,
+    timelineState,
+    showNow,
+    showHistory,
+    selectTimelinePoint,
+  }), [
+    displayContext,
+    error,
+    lastRefreshAttemptAt,
+    refreshNow,
+    refreshing,
+    selectTimelinePoint,
+    showHistory,
+    showNow,
+    snapshot,
+    timelineState,
+  ]);
 
   return <TwinOpsContext.Provider value={value}>{children}</TwinOpsContext.Provider>;
 }
