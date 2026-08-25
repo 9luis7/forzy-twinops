@@ -651,6 +651,17 @@ describe("Timeline v1 composed runtime contract", () => {
     reject(assertTimelineContextV1, gap);
   });
 
+  it("requires a historical assessment to match the exact original anchor event", () => {
+    const context = fixture("context-historical-candidate.valid.json");
+    const staleAssessmentAt = "2026-08-22T11:59:59.000Z";
+    context.assessment.assessmentWindow.end = staleAssessmentAt;
+    context.assessment.assessmentAt = staleAssessmentAt;
+    context.assessment.persistence.persistenceSeconds = 899;
+    context.decisionFacts.conditionAsOf = staleAssessmentAt;
+
+    reject(assertTimelineContextV1, context);
+  });
+
   it("composes child invariants through every aggregate root", () => {
     const page = fixture("page.valid.json");
     const point = fixture("live-point.valid.json");

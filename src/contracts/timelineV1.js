@@ -975,7 +975,7 @@ const assertContext = (value) => {
       && !(value.anchor.pointId === assessment.anchorPointId
         && value.anchor.sensorId === assessment.sensorId
         && value.anchor.operatingCycleId === assessment.operatingCycleId
-        && milliseconds(assessment.assessmentAt) <= milliseconds(value.anchor.eventAt))) {
+        && assessment.assessmentAt === value.anchor.eventAt)) {
       fail("historical assessment anchor facts are crossed");
     }
   } else if (facts.conditionState !== assessment.assessment.status
