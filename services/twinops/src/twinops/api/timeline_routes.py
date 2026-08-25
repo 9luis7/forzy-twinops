@@ -37,6 +37,13 @@ _METRICS = frozenset(
         "temperature",
     }
 )
+_OVERVIEW_QUERY_ALIASES = frozenset(
+    {"from", "to", "sensorId", "metric", "maxPoints"}
+)
+_SAMPLES_QUERY_ALIASES = frozenset(
+    {"from", "to", "sensorId", "metric", "limit", "cursor"}
+)
+_CONTEXT_QUERY_ALIASES = frozenset({"pointId", "at", "segmentId"})
 _ModelT = TypeVar("_ModelT", bound=ContractModelTimelineV1)
 
 
@@ -47,6 +54,14 @@ def _require_asset(asset_id: str) -> None:
 
 def _invalid_query() -> HTTPException:
     return HTTPException(status_code=422, detail="timeline_invalid_query")
+
+
+def _reject_duplicate_query_aliases(
+    request: Request,
+    aliases: frozenset[str],
+) -> None:
+    if any(len(request.query_params.getlist(alias)) > 1 for alias in aliases):
+        raise _invalid_query()
 
 
 def _parse_timestamp(value: str | None):
@@ -109,6 +124,7 @@ def create_timeline_router() -> APIRouter:
         max_points_value: str = Query("1200", alias="maxPoints"),
     ):
         _require_asset(asset_id)
+        _reject_duplicate_query_aliases(request, _OVERVIEW_QUERY_ALIASES)
         sensor_id = _parse_sensor(sensor_value)
         try:
             query = TimelineOverviewQueryV1(
@@ -144,6 +160,7 @@ def create_timeline_router() -> APIRouter:
         cursor: str | None = Query(None, alias="cursor"),
     ):
         _require_asset(asset_id)
+        _reject_duplicate_query_aliases(request, _SAMPLES_QUERY_ALIASES)
         try:
             query = TimelineReadQueryV1(
                 asset_id=asset_id,
@@ -181,6 +198,7 @@ def create_timeline_router() -> APIRouter:
         segment_id: str | None = Query(None, alias="segmentId"),
     ):
         _require_asset(asset_id)
+        _reject_duplicate_query_aliases(request, _CONTEXT_QUERY_ALIASES)
         try:
             query = TimelineContextQueryV1(
                 asset_id=asset_id,

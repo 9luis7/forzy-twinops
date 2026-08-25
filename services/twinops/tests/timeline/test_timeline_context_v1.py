@@ -4,7 +4,10 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from twinops.contracts.timeline_v1_models import validate_timeline_public_v1
+from twinops.contracts.timeline_v1_models import (
+    TimelinePointV1,
+    validate_timeline_public_v1,
+)
 from twinops.timeline import service_v1
 from twinops.timeline.repository_v1 import timeline_order_key_v1
 
@@ -12,6 +15,10 @@ from overview_fixtures_v1 import FakeTimelineRepositoryV1, make_point, uuid5_tex
 
 
 BASE = datetime(2026, 8, 25, 15, 0, tzinfo=timezone.utc)
+LOW_PAIR_ID = "00000000-0000-5000-8000-000000000010"
+HIGH_PAIR_ID = "00000000-0000-5000-8000-000000000020"
+FUTURE_PAIR_ID = "00000000-0000-5000-8000-000000000030"
+EXPECTED_TIED_ANCHOR_ID = "00000000-0000-5000-8000-000000000002"
 
 
 def _context_api():
@@ -63,6 +70,91 @@ def _archive_points(*, include_second_segment: bool = True):
             )
         )
     return tuple(sorted(points, key=timeline_order_key_v1))
+
+
+def _point_with_adversarial_identity(
+    index: int,
+    *,
+    event_at: datetime,
+    sensor_id: str,
+    sample_pair_id: str,
+    point_id: str,
+) -> TimelinePointV1:
+    payload = make_point(
+        index,
+        event_at=event_at,
+        sensor_id=sensor_id,
+        pair_key=f"adversarial-{index}",
+    ).model_dump_public()
+    payload["samplePairId"] = sample_pair_id
+    payload["pointId"] = point_id
+    return TimelinePointV1.model_validate(payload)
+
+
+def _adversarial_order_points() -> tuple[TimelinePointV1, ...]:
+    tied = (
+        _point_with_adversarial_identity(
+            40,
+            event_at=BASE,
+            sensor_id="s1",
+            sample_pair_id=LOW_PAIR_ID,
+            point_id="00000000-0000-5000-8000-000000000090",
+        ),
+        _point_with_adversarial_identity(
+            41,
+            event_at=BASE,
+            sensor_id="s2",
+            sample_pair_id=LOW_PAIR_ID,
+            point_id="00000000-0000-5000-8000-000000000099",
+        ),
+        _point_with_adversarial_identity(
+            42,
+            event_at=BASE,
+            sensor_id="s1",
+            sample_pair_id=HIGH_PAIR_ID,
+            point_id="00000000-0000-5000-8000-000000000001",
+        ),
+        _point_with_adversarial_identity(
+            43,
+            event_at=BASE,
+            sensor_id="s2",
+            sample_pair_id=HIGH_PAIR_ID,
+            point_id=EXPECTED_TIED_ANCHOR_ID,
+        ),
+    )
+    future = (
+        _point_with_adversarial_identity(
+            44,
+            event_at=BASE + timedelta(milliseconds=2),
+            sensor_id="s1",
+            sample_pair_id=FUTURE_PAIR_ID,
+            point_id="00000000-0000-5000-8000-000000000003",
+        ),
+        _point_with_adversarial_identity(
+            45,
+            event_at=BASE + timedelta(milliseconds=2),
+            sensor_id="s2",
+            sample_pair_id=FUTURE_PAIR_ID,
+            point_id="00000000-0000-5000-8000-000000000004",
+        ),
+    )
+    return tuple(sorted((*tied, *future), key=timeline_order_key_v1))
+
+
+def _adversarial_service_and_segment():
+    service = service_v1.TimelineServiceV1(
+        FakeTimelineRepositoryV1(archive=_adversarial_order_points())
+    )
+    overview = service.overview(
+        service_v1.TimelineOverviewQueryV1(
+            asset_id="forzy-motor-01",
+            from_at=None,
+            to_at=None,
+            sensor_ids=("s1", "s2"),
+        )
+    )
+    assert len(overview.segments) == 1
+    return service, str(overview.segments[0].segment_id)
 
 
 def _query_for_point(point_id: str):
@@ -189,38 +281,27 @@ def test_context_keeps_an_exact_missing_channel_null_without_carry_forward() -> 
     assert payload["capabilities"]["pairedChannels"] is False
 
 
-def test_at_selection_uses_the_greatest_full_original_order_key() -> None:
-    points = _archive_points()
-    repository = FakeTimelineRepositoryV1(archive=points)
-    service = service_v1.TimelineServiceV1(repository)
-    overview = service.overview(
-        service_v1.TimelineOverviewQueryV1(
-            asset_id="forzy-motor-01",
-            from_at=None,
-            to_at=None,
-            sensor_ids=("s1", "s2"),
-        )
-    )
-    first_segment = overview.segments[0]
-    expected = max(
-        (
-            point
-            for point in points
-            if point.event_at <= BASE + timedelta(seconds=10)
-            and first_segment.start_at <= point.event_at <= first_segment.end_at
-        ),
-        key=timeline_order_key_v1,
-    )
+def test_at_selection_uses_sample_pair_and_sensor_before_opposed_point_id() -> None:
+    service, segment_id = _adversarial_service_and_segment()
 
-    context = service.context(
-        _query_for_at(
-            BASE + timedelta(seconds=10), str(first_segment.segment_id)
-        )
-    )
+    context = service.context(_query_for_at(BASE, segment_id))
 
     assert context.anchor is not None
-    assert context.anchor.point_id == expected.point_id
-    assert context.selected_at == BASE + timedelta(seconds=10)
+    assert str(context.anchor.point_id) == EXPECTED_TIED_ANCHOR_ID
+    assert str(context.anchor.sample_pair_id) == HIGH_PAIR_ID
+    assert context.anchor.sensor_id == "s2"
+
+
+def test_at_selection_between_instants_never_uses_the_nearest_future_pair() -> None:
+    service, segment_id = _adversarial_service_and_segment()
+    selected_at = BASE + timedelta(milliseconds=1)
+
+    context = service.context(_query_for_at(selected_at, segment_id))
+
+    assert context.anchor is not None
+    assert str(context.anchor.point_id) == EXPECTED_TIED_ANCHOR_ID
+    assert context.anchor.event_at == BASE
+    assert context.selected_at == selected_at
 
 
 def test_open_gap_is_empty_from_either_adjacent_segment_and_endpoints_are_owned() -> None:

@@ -25,6 +25,12 @@ from services.twinops.tests.timeline.overview_fixtures_v1 import (
 
 
 BASE = datetime(2026, 8, 25, 15, 0, tzinfo=timezone.utc)
+TIME_A = "2026-08-25T15:00:00.000Z"
+TIME_B = "2026-08-25T15:00:00.001Z"
+POINT_A = "00000000-0000-5000-8000-000000000001"
+POINT_B = "00000000-0000-5000-8000-000000000002"
+SEGMENT_A = "00000000-0000-5000-8000-000000000003"
+SEGMENT_B = "00000000-0000-5000-8000-000000000004"
 
 
 def _service_and_points():
@@ -170,6 +176,169 @@ def test_missing_active_archive_returns_live_only_without_side_effects() -> None
         "assessmentSource": "none",
     }
     assert context.json()["assessment"] is None
+    refresh.refresh.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("path", "service_method", "alias", "supporting", "first", "second"),
+    (
+        pytest.param(
+            "timeline", "overview", "from", (), TIME_A, TIME_B, id="overview-from"
+        ),
+        pytest.param(
+            "timeline", "overview", "to", (), TIME_A, TIME_B, id="overview-to"
+        ),
+        pytest.param(
+            "timeline",
+            "overview",
+            "sensorId",
+            (),
+            "s1",
+            "s2",
+            id="overview-sensor",
+        ),
+        pytest.param(
+            "timeline",
+            "overview",
+            "metric",
+            (),
+            "temperature",
+            "vibrationAcceleration",
+            id="overview-metric",
+        ),
+        pytest.param(
+            "timeline",
+            "overview",
+            "maxPoints",
+            (),
+            "40",
+            "41",
+            id="overview-max-points",
+        ),
+        pytest.param(
+            "timeline/samples",
+            "samples",
+            "from",
+            (),
+            TIME_A,
+            TIME_B,
+            id="samples-from",
+        ),
+        pytest.param(
+            "timeline/samples",
+            "samples",
+            "to",
+            (),
+            TIME_A,
+            TIME_B,
+            id="samples-to",
+        ),
+        pytest.param(
+            "timeline/samples",
+            "samples",
+            "sensorId",
+            (),
+            "s1",
+            "s2",
+            id="samples-sensor",
+        ),
+        pytest.param(
+            "timeline/samples",
+            "samples",
+            "metric",
+            (),
+            "temperature",
+            "vibrationAcceleration",
+            id="samples-metric",
+        ),
+        pytest.param(
+            "timeline/samples",
+            "samples",
+            "limit",
+            (),
+            "1",
+            "2",
+            id="samples-limit",
+        ),
+        pytest.param(
+            "timeline/samples",
+            "samples",
+            "cursor",
+            (),
+            "opaque-a",
+            "opaque-b",
+            id="samples-cursor",
+        ),
+        pytest.param(
+            "timeline/context",
+            "context",
+            "pointId",
+            (),
+            POINT_A,
+            POINT_B,
+            id="context-point",
+        ),
+        pytest.param(
+            "timeline/context",
+            "context",
+            "at",
+            (("segmentId", SEGMENT_A),),
+            TIME_A,
+            TIME_B,
+            id="context-at",
+        ),
+        pytest.param(
+            "timeline/context",
+            "context",
+            "segmentId",
+            (("at", TIME_A),),
+            SEGMENT_A,
+            SEGMENT_B,
+            id="context-segment",
+        ),
+    ),
+)
+@pytest.mark.parametrize("duplicate_kind", ("equal", "distinct"))
+def test_recognized_duplicate_query_aliases_are_rejected_before_service(
+    path: str,
+    service_method: str,
+    alias: str,
+    supporting: tuple[tuple[str, str], ...],
+    first: str,
+    second: str,
+    duplicate_kind: str,
+) -> None:
+    timeline_service = Mock()
+    client, refresh = _client(timeline_service)
+    duplicate = first if duplicate_kind == "equal" else second
+
+    response = client.get(
+        f"/api/v2/assets/forzy-motor-01/{path}",
+        params=[*supporting, (alias, first), (alias, duplicate)],
+    )
+
+    assert timeline_service.method_calls == []
+    getattr(timeline_service, service_method).assert_not_called()
+    assert response.status_code == 422
+    assert response.json() == {"detail": "timeline_invalid_query"}
+    refresh.refresh.assert_not_called()
+
+
+def test_duplicate_unknown_query_parameters_remain_ignored() -> None:
+    service, _, points = _service_and_points()
+    client, refresh = _client(service)
+    cases = (
+        ("timeline", []),
+        ("timeline/samples", []),
+        ("timeline/context", [("pointId", str(points[0].point_id))]),
+    )
+
+    for path, supporting in cases:
+        response = client.get(
+            f"/api/v2/assets/forzy-motor-01/{path}",
+            params=[*supporting, ("futureAlias", "one"), ("futureAlias", "two")],
+        )
+        assert response.status_code == 200
     refresh.refresh.assert_not_called()
 
 
