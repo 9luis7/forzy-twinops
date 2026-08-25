@@ -8,7 +8,7 @@ from hashlib import sha256
 import json
 from math import isfinite
 from pathlib import Path
-from typing import Sequence
+from typing import Mapping, Sequence
 from uuid import NAMESPACE_URL, uuid5
 
 import pandas as pd
@@ -19,6 +19,7 @@ from twinops.ingestion.history_profiles_v1 import (
     PreparedHistoricalBatchV1,
 )
 from twinops.ml.artifacts import compute_file_hash, load_artifact_bundle
+from twinops.ml.baseline import RobustBaseline
 from twinops.ml.backtest import (
     WalkForwardFold,
     WalkForwardRowAssessmentV1,
@@ -40,6 +41,17 @@ _CAUSAL_FEATURE_COLUMNS = (
     "velocity_change_point",
     "temperature_deviation",
 )
+_EPISODE_SOURCE_REQUIRED_COLUMNS = {
+    "reading_id",
+    "sensor_id",
+    "cycle_id",
+    "event_at",
+    "feature_valid",
+    "is_new_information",
+    "feature_window_start",
+    "feature_window_end",
+    *_CAUSAL_FEATURE_COLUMNS,
+}
 
 
 @dataclass(frozen=True)
@@ -94,7 +106,14 @@ def build_historical_assessments_v1(
     frame, cycle_ids = _prepared_feature_frame(prepared_batch, feature_config)
     folds = build_walk_forward_folds(frame, holdout_count=holdout_count)
     evaluation = evaluate_walk_forward_rows(frame, bundle.pipeline, folds)
-    validated_episode_count = _validate_causal_episode_rows(evaluation.rows, frame)
+    training_windows = _authoritative_fold_training_windows(
+        frame, bundle.pipeline, folds
+    )
+    validated_episode_count = _validate_causal_episode_rows(
+        evaluation.rows,
+        frame,
+        training_windows,
+    )
     _validate_report_folds(frame, folds, bundle.report)
 
     anchors_by_reading: dict[str, HistoricalStoredSampleV1] = {}
@@ -310,7 +329,20 @@ def _validate_report_folds(
 def _validate_causal_episode_rows(
     rows: Sequence[WalkForwardRowAssessmentV1],
     frame: pd.DataFrame,
+    authoritative_training_windows: Mapping[
+        str, tuple[datetime, datetime]
+    ] | None = None,
 ) -> int:
+    missing_columns = _EPISODE_SOURCE_REQUIRED_COLUMNS.difference(frame.columns)
+    if missing_columns:
+        raise ValueError(
+            "episode validation frame is missing eligibility columns: "
+            f"{sorted(missing_columns)}"
+        )
+    if authoritative_training_windows is None:
+        raise ValueError("episode validation requires authoritative training windows")
+    training_windows = _validated_training_windows(authoritative_training_windows)
+
     source_by_reading: dict[str, tuple[str, int, datetime]] = {}
     cycles_by_sensor_event: dict[tuple[str, datetime], set[int]] = {}
     for source_row in frame.itertuples():
@@ -330,6 +362,13 @@ def _validate_causal_episode_rows(
     ] = {}
     streams: set[tuple[str, str, int]] = set()
     for row in rows:
+        training_window = training_windows.get(row.fold_id)
+        if training_window is None:
+            raise ValueError("episode validation found no authoritative training window")
+        if (row.training_start, row.training_end) != training_window:
+            raise ValueError(
+                "episode validation row differs from authoritative training window"
+            )
         source = source_by_reading.get(row.reading_id)
         if source is None:
             raise ValueError("episode validation found no source reading")
@@ -345,6 +384,7 @@ def _validate_causal_episode_rows(
     consumed: set[tuple[str, str]] = set()
     validated_candidate_count = 0
     for fold_id, sensor_id, cycle_id in sorted(streams):
+        _, authoritative_training_end = training_windows[fold_id]
         source_rows = frame.loc[
             frame["sensor_id"].astype(str).eq(sensor_id)
             & frame["cycle_id"].astype(int).eq(cycle_id)
@@ -362,7 +402,9 @@ def _validate_causal_episode_rows(
             if row is None:
                 episode_state = None
                 continue
-            source_window = _eligible_source_window(source_row, row.training_end)
+            source_window = _eligible_source_window(
+                source_row, authoritative_training_end
+            )
             if source_window is None:
                 episode_state = None
                 raise ValueError(
@@ -409,7 +451,7 @@ def _validate_causal_episode_rows(
             if row.episode_started_at > row.anchor_event_at:
                 raise ValueError("episode start cannot be in the future")
             if not (
-                row.training_end
+                authoritative_training_end
                 < row.episode_started_at
                 <= row.window_end
                 == row.anchor_event_at
@@ -451,6 +493,47 @@ def _validate_causal_episode_rows(
     return validated_candidate_count
 
 
+def _authoritative_fold_training_windows(
+    frame: pd.DataFrame,
+    pipeline: RobustBaseline,
+    folds: Sequence[WalkForwardFold],
+) -> dict[str, tuple[datetime, datetime]]:
+    windows: dict[str, tuple[datetime, datetime]] = {}
+    for fold_index, fold in enumerate(folds):
+        training_rows = frame.loc[
+            frame["cycle_id"].isin(fold.train_cycle_ids)
+        ].copy()
+        model = RobustBaseline(pipeline.config).fit(training_rows)
+        trained_until = model.trained_until_
+        if trained_until is None:
+            raise ValueError("authoritative fold model has no training end")
+        training_start = pd.to_datetime(
+            training_rows["event_at"], utc=True
+        ).min()
+        if pd.isna(training_start):
+            raise ValueError("authoritative fold has no training start")
+        windows[f"fold-v1-{fold_index:04d}"] = (
+            _utc(training_start),
+            _utc(trained_until),
+        )
+    return windows
+
+
+def _validated_training_windows(
+    windows: Mapping[str, tuple[datetime, datetime]],
+) -> dict[str, tuple[datetime, datetime]]:
+    validated: dict[str, tuple[datetime, datetime]] = {}
+    for fold_id, window in windows.items():
+        if len(window) != 2:
+            raise ValueError("authoritative training window must contain start and end")
+        training_start = _utc(window[0])
+        training_end = _utc(window[1])
+        if training_start > training_end:
+            raise ValueError("authoritative training window is reversed")
+        validated[str(fold_id)] = (training_start, training_end)
+    return validated
+
+
 def _eligible_source_window(
     source_row: object,
     training_end: datetime,
@@ -464,7 +547,7 @@ def _eligible_source_window(
         return None
     if not _is_true(getattr(source_row, "feature_valid", False)):
         return None
-    if not _is_true(getattr(source_row, "is_new_information", True)):
+    if not _is_true(getattr(source_row, "is_new_information", False)):
         return None
     for feature in _CAUSAL_FEATURE_COLUMNS:
         try:

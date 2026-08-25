@@ -18,6 +18,10 @@ from twinops.ml.artifacts import compute_file_hash, save_artifact_bundle
 from twinops.ml.baseline import BaselineConfig, RobustBaseline
 
 
+_TEST_TRAINING_START = datetime(2026, 5, 19, 14, 0, tzinfo=timezone.utc)
+_TEST_TRAINING_END = datetime(2026, 5, 19, 15, 1, tzinfo=timezone.utc)
+
+
 try:
     from twinops.ml.backtest import WalkForwardRowAssessmentV1
     from twinops.ml.historical_assessments_v1 import (
@@ -182,8 +186,8 @@ def test_episode_validator_rejects_future_and_cross_cycle_starts():
         sensor_id="s1",
         reading_id="reading-cycle-2",
         anchor_event_at=anchor_at,
-        training_start=anchor_at - timedelta(minutes=2),
-        training_end=anchor_at - timedelta(seconds=90),
+        training_start=_TEST_TRAINING_START,
+        training_end=_TEST_TRAINING_END,
         window_start=anchor_at - timedelta(seconds=2),
         window_end=anchor_at,
         status="watch",
@@ -202,16 +206,18 @@ def test_episode_validator_rejects_future_and_cross_cycle_starts():
     )
     frame = _episode_frame(anchor_at)
 
-    _validate_causal_episode_rows((valid,), frame)
+    _validate_causal_episode_rows((valid,), frame, _test_training_windows())
     with pytest.raises(ValueError, match="future"):
         _validate_causal_episode_rows(
             (replace(valid, episode_started_at=anchor_at + timedelta(seconds=1)),),
             frame,
+            _test_training_windows(),
         )
     with pytest.raises(ValueError, match="cycle"):
         _validate_causal_episode_rows(
             (replace(valid, episode_started_at=anchor_at - timedelta(minutes=1)),),
             frame,
+            _test_training_windows(),
         )
 
 
@@ -280,7 +286,9 @@ def test_episode_validator_reconstructs_every_available_causal_boundary(
         rows[-1] = replace(last, model_version="1.0.2")
 
     with pytest.raises(ValueError, match="boundary"):
-        _validate_causal_episode_rows(tuple(rows), frame)
+        _validate_causal_episode_rows(
+            tuple(rows), frame, _test_training_windows()
+        )
 
 
 @pytest.mark.parametrize(
@@ -354,7 +362,9 @@ def test_episode_validator_rejects_assessment_emitted_for_ineligible_source_row(
         )
 
     with pytest.raises(ValueError, match="ineligible"):
-        _validate_causal_episode_rows(tuple(rows), frame)
+        _validate_causal_episode_rows(
+            tuple(rows), frame, _test_training_windows()
+        )
 
 
 @pytest.mark.parametrize(
@@ -383,7 +393,78 @@ def test_episode_validator_rejects_emitted_window_that_differs_from_source(
     frame = _three_row_episode_frame(anchor_at).iloc[[0]].copy()
 
     with pytest.raises(ValueError, match="source window"):
-        _validate_causal_episode_rows((forged,), frame)
+        _validate_causal_episode_rows(
+            (forged,), frame, _test_training_windows()
+        )
+
+
+def test_episode_validator_rejects_shifted_training_end_that_rehabilitates_window():
+    from twinops.ml.historical_assessments_v1 import _validate_causal_episode_rows
+
+    start = datetime(2026, 5, 19, 15, 2, tzinfo=timezone.utc)
+    training_start = _TEST_TRAINING_START
+    training_end = _TEST_TRAINING_END
+    rows = [
+        replace(
+            _episode_assessment(
+                reading_id=f"reading-{offset}",
+                anchor_at=start + timedelta(seconds=offset),
+                episode_id="forged-continuation",
+                episode_started_at=start,
+                persistence_count=offset + 1,
+            ),
+            training_start=training_start,
+            training_end=training_end,
+        )
+        for offset in range(3)
+    ]
+    frame = _three_row_episode_frame(start)
+    frame.loc[1, "feature_window_start"] = training_end
+    rows[1] = replace(
+        rows[1],
+        training_end=training_end - timedelta(seconds=1),
+        window_start=training_end,
+    )
+
+    with pytest.raises(ValueError, match="authoritative training window"):
+        _validate_causal_episode_rows(
+            tuple(rows),
+            frame,
+            _test_training_windows(),
+        )
+
+
+def test_episode_validator_fails_closed_without_is_new_information_column():
+    from twinops.ml.historical_assessments_v1 import _validate_causal_episode_rows
+
+    anchor_at = datetime(2026, 5, 19, 15, 2, tzinfo=timezone.utc)
+    training_start = _TEST_TRAINING_START
+    training_end = _TEST_TRAINING_END
+    row = replace(
+        _episode_assessment(
+            reading_id="reading-0",
+            anchor_at=anchor_at,
+            status="normal",
+        ),
+        training_start=training_start,
+        training_end=training_end,
+    )
+    frame = _three_row_episode_frame(anchor_at).iloc[[0]].drop(
+        columns="is_new_information"
+    )
+
+    with pytest.raises(ValueError, match="missing eligibility columns"):
+        _validate_causal_episode_rows(
+            (row,),
+            frame,
+            _test_training_windows(),
+        )
+
+
+def _test_training_windows():
+    return {
+        "fold-v1-0000": (_TEST_TRAINING_START, _TEST_TRAINING_END),
+    }
 
 
 def _episode_assessment(
@@ -405,8 +486,8 @@ def _episode_assessment(
         sensor_id="s1",
         reading_id=reading_id,
         anchor_event_at=anchor_at,
-        training_start=anchor_at - timedelta(minutes=2),
-        training_end=anchor_at - timedelta(minutes=1),
+        training_start=_TEST_TRAINING_START,
+        training_end=_TEST_TRAINING_END,
         window_start=anchor_at - timedelta(seconds=1),
         window_end=anchor_at,
         status=status,
