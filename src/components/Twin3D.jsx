@@ -59,10 +59,22 @@ class Twin3DErrorBoundary extends Component {
 export function createTwin3DComponent(loadCanvas) {
   const LazyTwin3DCanvas = lazy(loadCanvas);
 
-  return function Twin3D({ snapshot, fallback }) {
+  return function Twin3D({ snapshot, fallback, viewMode = "now", displayContext = null }) {
     const fallbackView = fallback ?? <Twin3DStaticFallback />;
+    const resolvedDisplayContext = displayContext ?? snapshot;
+    const contextAt = resolvedDisplayContext?.selectedAt ?? resolvedDisplayContext?.generatedAt ?? null;
+    const withPresentationMarker = (content) => (
+      <div
+        className="twin3d-presentation"
+        data-context-at={contextAt}
+        data-view-mode={viewMode}
+      >
+        {content}
+      </div>
+    );
+
     if (!snapshot || snapshot.capabilities?.twin3d !== true || !canUseWebGL()) {
-      return fallbackView;
+      return withPresentationMarker(fallbackView);
     }
 
     const loadingView = (
@@ -73,12 +85,16 @@ export function createTwin3DComponent(loadCanvas) {
       />
     );
 
-    return (
+    return withPresentationMarker(
       <Twin3DErrorBoundary fallback={fallbackView} resetSignal={snapshot}>
         <Suspense fallback={loadingView}>
-          <LazyTwin3DCanvas snapshot={snapshot} />
+          <LazyTwin3DCanvas
+            snapshot={snapshot}
+            viewMode={viewMode}
+            displayContext={resolvedDisplayContext}
+          />
         </Suspense>
-      </Twin3DErrorBoundary>
+      </Twin3DErrorBoundary>,
     );
   };
 }

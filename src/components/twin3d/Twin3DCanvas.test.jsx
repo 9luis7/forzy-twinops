@@ -70,12 +70,19 @@ it("renders the supplied GLB without sensor markers", async () => {
   render(
     <Twin3DCanvas
       snapshot={normalSnapshot}
+      viewMode="historical"
+      displayContext={{ selectedAt: "2026-08-22T12:00:00.000Z" }}
       loadManifest={() => Promise.resolve(realManifestFixture)}
       Model={ModelStub}
     />,
   );
 
   expect(await screen.findByLabelText("Modelo 3D do conjunto motor-bomba")).toBeInTheDocument();
+  expect(screen.getByTestId("twin3d-canvas")).toHaveAttribute("data-view-mode", "historical");
+  expect(screen.getByTestId("twin3d-canvas")).toHaveAttribute(
+    "data-context-at",
+    "2026-08-22T12:00:00.000Z",
+  );
   expect(screen.getByTestId("loaded-model")).toHaveAttribute(
     "data-model-url",
     "/models/conjunto-motor-bomba.glb",

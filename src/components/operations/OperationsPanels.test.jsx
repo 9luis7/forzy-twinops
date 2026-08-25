@@ -1,6 +1,6 @@
 import "@testing-library/jest-dom/vitest";
 import React from "react";
-import { cleanup, render, screen, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterAll, afterEach, beforeAll, expect, it, vi } from "vitest";
 import snapshotFixture from "../../../contracts/v2/fixtures/snapshot-received-now.valid.json";
 import AssetHeader from "./AssetHeader.jsx";
@@ -42,6 +42,39 @@ it("presents last-known state without calling it current", () => {
 
   expect(screen.getByText("Último dado real conhecido")).toBeInTheDocument();
   expect(screen.queryByText(/tempo real/i)).not.toBeInTheDocument();
+});
+
+it("exposes the Agora and Histórico switch as one keyboard-focusable radio group", () => {
+  const onShowHistory = vi.fn();
+  const onShowNow = vi.fn();
+  const { rerender } = render(
+    <AssetHeader
+      asset={snapshot.asset}
+      onShowHistory={onShowHistory}
+      onShowNow={onShowNow}
+      operationalState={snapshot.operationalState}
+      viewMode="now"
+    />,
+  );
+
+  expect(screen.getByRole("group", { name: "Contexto temporal" })).toBeInTheDocument();
+  expect(screen.getByRole("radio", { name: "Agora" })).toBeChecked();
+  const history = screen.getByRole("radio", { name: "Histórico" });
+  history.focus();
+  expect(history).toHaveFocus();
+  fireEvent.click(history);
+  expect(onShowHistory).toHaveBeenCalledTimes(1);
+
+  rerender(
+    <AssetHeader
+      asset={snapshot.asset}
+      onShowHistory={onShowHistory}
+      onShowNow={onShowNow}
+      operationalState="historical_context"
+      viewMode="historical"
+    />,
+  );
+  expect(screen.getByRole("radio", { name: "Histórico" })).toBeChecked();
 });
 
 it("labels assumed retrieval time honestly", () => {
@@ -127,6 +160,28 @@ it("renders contract assessment scores without turning them into percentages", (
   expect(screen.getByText("Atenção")).toBeInTheDocument();
   expect(screen.getByText("0,00")).toBeInTheDocument();
   expect(screen.queryByText(/%/)).not.toBeInTheDocument();
+});
+
+it("does not turn nullable historical scores into zero", () => {
+  const assessment = {
+    schemaVersion: "1.0",
+    status: "insufficient_data",
+    anomalyScore: null,
+    deteriorationScore: null,
+    persistence: { persistenceSeconds: 0 },
+    evidence: [],
+    modelFamily: "robust-baseline",
+    modelVersion: "1.0",
+  };
+
+  render(<AssessmentPanel assessment={assessment} historical />);
+
+  expect(screen.getByText("Score de anomalia relativo").nextElementSibling).toHaveTextContent(
+    "Indisponível",
+  );
+  expect(screen.getByText("Score de deterioração relativo").nextElementSibling).toHaveTextContent(
+    "Indisponível",
+  );
 });
 
 it("sanitizes integration errors instead of exposing arbitrary detail", () => {

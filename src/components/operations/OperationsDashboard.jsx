@@ -1,6 +1,9 @@
 import React from "react";
 import { useTwinOps } from "../../TwinOpsContext.jsx";
 import LoadingState from "../LoadingState.jsx";
+import TimelineWorkspace from "../timeline/TimelineWorkspace.jsx";
+import HistoricalContextEvidence from "../timeline/HistoricalContextEvidence.jsx";
+import { resolveOperationsDisplay } from "../timeline/timelineViewModel.js";
 import AssessmentPanel from "./AssessmentPanel.jsx";
 import AssetHeader from "./AssetHeader.jsx";
 import IntegrationHealth from "./IntegrationHealth.jsx";
@@ -29,7 +32,23 @@ export function TwinFallback() {
 }
 
 export default function OperationsDashboard({ Twin3DComponent = null }) {
-  const { snapshot, error, refreshing, refreshNow } = useTwinOps();
+  const {
+    snapshot,
+    error,
+    refreshing,
+    refreshNow,
+    viewMode,
+    timelineOverview,
+    timelinePage,
+    pendingSelection,
+    historicalContext,
+    displayContext,
+    timelineLoading,
+    timelineErrors,
+    showNow,
+    showHistory,
+    selectTimelinePoint,
+  } = useTwinOps();
 
   if (!snapshot && !error) {
     return (
@@ -58,11 +77,27 @@ export default function OperationsDashboard({ Twin3DComponent = null }) {
     );
   }
 
+  const {
+    committedHistoricalContext,
+    displayViewMode,
+    channels: displayedChannels,
+    assessment: displayedAssessment,
+    operationalState: displayedOperationalState,
+  } = resolveOperationsDisplay({ snapshot, viewMode, historicalContext, displayContext });
   const fallback = <TwinFallback />;
 
   return (
     <main className="operations-shell">
-      <AssetHeader asset={snapshot.asset} operationalState={snapshot.operationalState} />
+      <AssetHeader
+        asset={snapshot.asset}
+        onShowHistory={showHistory}
+        onShowNow={showNow}
+        operationalState={displayedOperationalState}
+        displayViewMode={displayViewMode}
+        selectedAt={committedHistoricalContext?.selectedAt ?? null}
+        timelineLoading={timelineLoading.overview || timelineLoading.page || timelineLoading.context}
+        viewMode={viewMode}
+      />
 
       <div className="dashboard-actions">
         <p>Atualização automática apenas seg/ter/qua, das 12h às 14h (America/Sao_Paulo).</p>
@@ -80,6 +115,48 @@ export default function OperationsDashboard({ Twin3DComponent = null }) {
         <p className="warning-banner">Nenhuma leitura real foi persistida ainda.</p>
       )}
 
+      {viewMode === "historical" ? (
+        <TimelineWorkspace
+          context={committedHistoricalContext}
+          errors={timelineErrors}
+          loading={timelineLoading}
+          overview={timelineOverview}
+          page={timelinePage}
+          pendingSelection={pendingSelection}
+          selectTimelinePoint={selectTimelinePoint}
+        />
+      ) : null}
+
+      {committedHistoricalContext === null ? null : (
+        <HistoricalContextEvidence context={committedHistoricalContext} />
+      )}
+
+      <section className="sensor-grid" aria-label="Sensores no contexto exibido">
+        {displayedChannels.map((channel, index) => {
+          const sensorId = index === 0 ? "s1" : "s2";
+          return (
+            <SensorCard
+              channel={channel}
+              historical={displayViewMode === "historical"}
+              key={sensorId}
+              sensorId={sensorId}
+            />
+          );
+        })}
+      </section>
+
+      {displayViewMode === "now" ? (
+        <TelemetryTrend history={snapshot.history} />
+      ) : null}
+
+      <section className={`details-grid${displayViewMode === "historical" ? " details-grid--historical" : ""}`}>
+        <AssessmentPanel
+          assessment={displayedAssessment}
+          historical={displayViewMode === "historical"}
+        />
+        {displayViewMode === "now" ? <IntegrationHealth integration={snapshot.integration} /> : null}
+      </section>
+
       <section className="panel twin-panel" aria-labelledby="twin-title">
         <div className="panel-heading">
           <div>
@@ -91,21 +168,10 @@ export default function OperationsDashboard({ Twin3DComponent = null }) {
           <Twin3DComponent
             snapshot={snapshot}
             fallback={fallback}
+            viewMode={displayViewMode}
+            displayContext={committedHistoricalContext ?? snapshot}
           />
         ) : fallback}
-      </section>
-
-      <section className="sensor-grid" aria-label="Valores atuais dos sensores">
-        {snapshot.channels.map((channel) => (
-          <SensorCard channel={channel} key={channel.sensorId} />
-        ))}
-      </section>
-
-      <TelemetryTrend history={snapshot.history} />
-
-      <section className="details-grid">
-        <AssessmentPanel assessment={snapshot.assessment} />
-        <IntegrationHealth integration={snapshot.integration} />
       </section>
 
       <footer className="operations-footer">

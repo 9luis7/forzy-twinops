@@ -102,6 +102,8 @@ function ModelReadySignal({ children, onReady }) {
 
 export default function Twin3DCanvas({
   snapshot,
+  viewMode = "now",
+  displayContext = snapshot,
   loadManifest = loadModelManifest,
   Model = TwinModel,
 }) {
@@ -137,9 +139,11 @@ export default function Twin3DCanvas({
   return (
     <section
       className="card"
+      data-context-at={displayContext?.selectedAt ?? displayContext?.generatedAt ?? null}
       data-model-ready={String(modelReady)}
       data-testid="twin3d-canvas"
       data-status={viewModel.status}
+      data-view-mode={viewMode}
       aria-label="Modelo 3D do conjunto motor-bomba"
     >
       <div style={{ height: "min(60vh, 32rem)", minHeight: "22rem" }}>

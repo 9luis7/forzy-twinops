@@ -71,15 +71,31 @@ it("shows a dedicated loading state while the lazy 3D chunk is pending", async (
   });
 });
 
-it("passes only the canonical snapshot to the lazy canvas", async () => {
+it("passes only the canonical snapshot and committed presentation marker to the lazy canvas", async () => {
   HTMLCanvasElement.prototype.getContext.mockReturnValue({});
   const CanvasStub = vi.fn(() => <section aria-label="Modelo 3D do conjunto motor-bomba" />);
   const TestTwin3D = createTwin3DComponent(() => Promise.resolve({ default: CanvasStub }));
+  const displayContext = { selectedAt: "2026-08-22T12:00:00.000Z" };
 
-  render(<TestTwin3D snapshot={normalSnapshot} fallback={fallback} />);
+  render(
+    <TestTwin3D
+      snapshot={normalSnapshot}
+      fallback={fallback}
+      viewMode="historical"
+      displayContext={displayContext}
+    />,
+  );
 
   expect(await screen.findByLabelText("Modelo 3D do conjunto motor-bomba")).toBeVisible();
-  expect(Object.keys(CanvasStub.mock.calls.at(-1)[0])).toEqual(["snapshot"]);
+  expect(Object.keys(CanvasStub.mock.calls.at(-1)[0])).toEqual([
+    "snapshot",
+    "viewMode",
+    "displayContext",
+  ]);
+  expect(CanvasStub.mock.calls.at(-1)[0]).toMatchObject({
+    viewMode: "historical",
+    displayContext,
+  });
 });
 
 it("falls back and warns exactly once when the lazy chunk rejects", async () => {
