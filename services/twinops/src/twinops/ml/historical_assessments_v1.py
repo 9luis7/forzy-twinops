@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from hashlib import sha256
 import json
+from math import isfinite
 from pathlib import Path
 from typing import Sequence
 from uuid import NAMESPACE_URL, uuid5
@@ -32,6 +33,12 @@ _BASE_LIMITATIONS = (
     "historical_source_participated_in_baseline_construction_and_evaluation",
     "relative_score_not_failure_probability_confidence_rul_or_diagnosis",
     "no_confirmed_failure_labels_available",
+)
+_CAUSAL_FEATURE_COLUMNS = (
+    "velocity_ewma",
+    "velocity_slope",
+    "velocity_change_point",
+    "temperature_deviation",
 )
 
 
@@ -355,6 +362,18 @@ def _validate_causal_episode_rows(
             if row is None:
                 episode_state = None
                 continue
+            source_window = _eligible_source_window(source_row, row.training_end)
+            if source_window is None:
+                episode_state = None
+                raise ValueError(
+                    "episode validation found assessment for an ineligible source row"
+                )
+            source_window_start, source_window_end = source_window
+            if (
+                row.window_start != source_window_start
+                or row.window_end != source_window_end
+            ):
+                raise ValueError("episode validation found crossed source window facts")
             consumed.add(key)
             boundary = (
                 str(getattr(source_row, "source", "unknown")),
@@ -430,6 +449,60 @@ def _validate_causal_episode_rows(
     if consumed != set(rows_by_fold_reading):
         raise ValueError("episode validation did not consume every assessment row")
     return validated_candidate_count
+
+
+def _eligible_source_window(
+    source_row: object,
+    training_end: datetime,
+) -> tuple[datetime, datetime] | None:
+    reading_id = getattr(source_row, "reading_id", None)
+    if (
+        reading_id is None
+        or _is_missing(reading_id)
+        or not str(reading_id).strip()
+    ):
+        return None
+    if not _is_true(getattr(source_row, "feature_valid", False)):
+        return None
+    if not _is_true(getattr(source_row, "is_new_information", True)):
+        return None
+    for feature in _CAUSAL_FEATURE_COLUMNS:
+        try:
+            if not isfinite(float(getattr(source_row, feature))):
+                return None
+        except (AttributeError, TypeError, ValueError):
+            return None
+
+    event_at = _optional_utc(getattr(source_row, "event_at", None))
+    window_start = _optional_utc(
+        getattr(source_row, "feature_window_start", None)
+    )
+    window_end = _optional_utc(getattr(source_row, "feature_window_end", None))
+    if event_at is None or window_start is None or window_end is None:
+        return None
+    if not (_utc(training_end) < window_start <= window_end == event_at):
+        return None
+    return window_start, window_end
+
+
+def _is_true(value: object) -> bool:
+    return not _is_missing(value) and bool(value)
+
+
+def _is_missing(value: object) -> bool:
+    try:
+        return bool(pd.isna(value))
+    except (TypeError, ValueError):
+        return False
+
+
+def _optional_utc(value: object) -> datetime | None:
+    if value is None or _is_missing(value):
+        return None
+    try:
+        return _utc(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _quality_flags(value: object) -> tuple[str, ...]:

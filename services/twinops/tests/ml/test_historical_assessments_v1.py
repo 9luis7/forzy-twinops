@@ -283,6 +283,109 @@ def test_episode_validator_reconstructs_every_available_causal_boundary(
         _validate_causal_episode_rows(tuple(rows), frame)
 
 
+@pytest.mark.parametrize(
+    "ineligible_fact",
+    (
+        "feature_valid_false",
+        "non_new_information",
+        "velocity_ewma_nan",
+        "velocity_ewma_inf",
+        "velocity_slope_nan",
+        "velocity_slope_inf",
+        "velocity_change_point_nan",
+        "velocity_change_point_inf",
+        "temperature_deviation_nan",
+        "temperature_deviation_inf",
+        "blank_reading_id",
+        "missing_reading_id",
+        "missing_window_start",
+        "missing_window_end",
+        "window_starts_at_training_end",
+        "window_start_after_end",
+        "window_end_before_anchor",
+    ),
+)
+def test_episode_validator_rejects_assessment_emitted_for_ineligible_source_row(
+    ineligible_fact,
+):
+    from twinops.ml.historical_assessments_v1 import _validate_causal_episode_rows
+
+    start = datetime(2026, 5, 19, 15, 2, tzinfo=timezone.utc)
+    rows = [
+        _episode_assessment(
+            reading_id=f"reading-{offset}",
+            anchor_at=start + timedelta(seconds=offset),
+            episode_id="forged-continuation",
+            episode_started_at=start,
+            persistence_count=offset + 1,
+        )
+        for offset in range(3)
+    ]
+    frame = _three_row_episode_frame(start)
+
+    if ineligible_fact == "feature_valid_false":
+        frame.loc[1, "feature_valid"] = False
+    elif ineligible_fact == "non_new_information":
+        frame.loc[1, "is_new_information"] = False
+    elif ineligible_fact == "blank_reading_id":
+        frame.loc[1, "reading_id"] = " "
+        rows[1] = replace(rows[1], reading_id=" ")
+    elif ineligible_fact == "missing_reading_id":
+        frame.loc[1, "reading_id"] = None
+        rows[1] = replace(rows[1], reading_id="None")
+    elif ineligible_fact == "missing_window_start":
+        frame.loc[1, "feature_window_start"] = None
+    elif ineligible_fact == "missing_window_end":
+        frame.loc[1, "feature_window_end"] = None
+    elif ineligible_fact == "window_starts_at_training_end":
+        frame.loc[1, "feature_window_start"] = rows[1].training_end
+    elif ineligible_fact == "window_start_after_end":
+        frame.loc[1, "feature_window_start"] = rows[1].anchor_event_at + timedelta(
+            seconds=1
+        )
+    elif ineligible_fact == "window_end_before_anchor":
+        frame.loc[1, "feature_window_end"] = rows[1].anchor_event_at - timedelta(
+            seconds=1
+        )
+    else:
+        feature, non_finite = ineligible_fact.rsplit("_", maxsplit=1)
+        frame.loc[1, feature] = (
+            float("nan") if non_finite == "nan" else float("inf")
+        )
+
+    with pytest.raises(ValueError, match="ineligible"):
+        _validate_causal_episode_rows(tuple(rows), frame)
+
+
+@pytest.mark.parametrize(
+    ("window_field", "offset_seconds"),
+    (
+        ("window_start", -2),
+        ("window_end", -1),
+    ),
+)
+def test_episode_validator_rejects_emitted_window_that_differs_from_source(
+    window_field,
+    offset_seconds,
+):
+    from twinops.ml.historical_assessments_v1 import _validate_causal_episode_rows
+
+    anchor_at = datetime(2026, 5, 19, 15, 2, tzinfo=timezone.utc)
+    valid = _episode_assessment(
+        reading_id="reading-0",
+        anchor_at=anchor_at,
+        status="normal",
+    )
+    forged = replace(
+        valid,
+        **{window_field: anchor_at + timedelta(seconds=offset_seconds)},
+    )
+    frame = _three_row_episode_frame(anchor_at).iloc[[0]].copy()
+
+    with pytest.raises(ValueError, match="source window"):
+        _validate_causal_episode_rows((forged,), frame)
+
+
 def _episode_assessment(
     *,
     reading_id: str,
@@ -339,6 +442,8 @@ def _three_row_episode_frame(start: datetime):
                 "quality_flags": (),
                 "feature_valid": True,
                 "is_new_information": True,
+                "feature_window_start": event_at - timedelta(seconds=1),
+                "feature_window_end": event_at,
                 "velocity_ewma": 0.1,
                 "velocity_slope": 0.0,
                 "velocity_change_point": 0.0,
@@ -358,12 +463,34 @@ def _episode_frame(anchor_at: datetime):
                 "sensor_id": "s1",
                 "cycle_id": 1,
                 "event_at": anchor_at - timedelta(minutes=1),
+                "source": "forzy-csv",
+                "collection_policy_id": "policy-a",
+                "quality_flags": (),
+                "feature_valid": True,
+                "is_new_information": True,
+                "feature_window_start": anchor_at - timedelta(minutes=1, seconds=1),
+                "feature_window_end": anchor_at - timedelta(minutes=1),
+                "velocity_ewma": 0.1,
+                "velocity_slope": 0.0,
+                "velocity_change_point": 0.0,
+                "temperature_deviation": 0.0,
             },
             {
                 "reading_id": "reading-cycle-2",
                 "sensor_id": "s1",
                 "cycle_id": 2,
                 "event_at": anchor_at,
+                "source": "forzy-csv",
+                "collection_policy_id": "policy-a",
+                "quality_flags": (),
+                "feature_valid": True,
+                "is_new_information": True,
+                "feature_window_start": anchor_at - timedelta(seconds=2),
+                "feature_window_end": anchor_at,
+                "velocity_ewma": 0.1,
+                "velocity_slope": 0.0,
+                "velocity_change_point": 0.0,
+                "temperature_deviation": 0.0,
             },
         ]
     )
