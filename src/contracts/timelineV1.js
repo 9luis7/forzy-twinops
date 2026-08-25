@@ -813,7 +813,12 @@ const assertPage = (value) => {
       fail("archive page item must use the active historical batch");
     }
   });
-  const keys = value.items.map((item) => `${item.eventAt}|${item.pointId}`);
+  const keys = value.items.map((item) => [
+    item.eventAt,
+    item.samplePairId,
+    item.sensorId,
+    item.pointId,
+  ].join("|"));
   if (JSON.stringify(keys) !== JSON.stringify([...keys].sort())
     || new Set(value.items.map((item) => item.pointId)).size !== value.items.length) {
     fail("timeline page items must be unique and totally ordered");

@@ -14,8 +14,10 @@ from twinops.contracts.timeline_v1_models import (
     CollectionPolicyV1,
     HistoricalAssessmentV1,
     HistoricalSensorReadingV1,
+    TimelinePointV1,
     serialize_public_utc_millis_v1,
 )
+from twinops.contracts.v2_models import CanonicalSensorReadingV2
 from twinops.ingestion.history_profiles_v1 import (
     HistoricalRawRowV1,
     HistoricalStoredSampleV1,
@@ -55,6 +57,15 @@ from twinops.storage.sqlite_historical_repository_v1 import (
     _require_sha256,
     _utc_millis,
     _validate_prepared_batch,
+)
+from twinops.timeline.repository_v1 import (
+    TimelineReadQueryV1,
+    TimelineSliceV1,
+    historical_timeline_point_v1,
+    live_point_id_v1,
+    live_sample_pair_id_v1,
+    live_timeline_point_v1,
+    public_live_millisecond_v1,
 )
 
 
@@ -618,6 +629,338 @@ class PostgresHistoricalRepositoryV1:
             if not rows:
                 return None
             return self._stored_batch(connection, rows[0]["batch_id"]).summary
+
+    def read_archive_points(self, query: TimelineReadQueryV1) -> TimelineSliceV1:
+        clauses = [
+            "s.asset_id=%s",
+            "b.status='active'",
+            "b.asset_id=s.asset_id",
+        ]
+        parameters: list[object] = [query.asset_id]
+        if query.from_at is not None:
+            clauses.append("s.observed_at>=%s")
+            parameters.append(query.from_at)
+        if query.to_at is not None:
+            clauses.append("s.observed_at<%s")
+            parameters.append(query.to_at)
+        if query.sensor_id is not None:
+            clauses.append("s.sensor_id=%s")
+            parameters.append(query.sensor_id)
+        if query.after is not None:
+            after = query.after
+            clauses.append(
+                "(s.observed_at>%s OR (s.observed_at=%s AND "
+                "(s.sample_pair_id>%s OR (s.sample_pair_id=%s AND "
+                "(s.sensor_id>%s OR (s.sensor_id=%s AND s.reading_id>%s))))))"
+            )
+            parameters.extend(
+                (
+                    after.event_at,
+                    after.event_at,
+                    after.sample_pair_id,
+                    after.sample_pair_id,
+                    after.sensor_id,
+                    after.sensor_id,
+                    after.point_id,
+                )
+            )
+        parameters.append(query.limit + 1)
+        with self._connection() as connection:
+            rows = connection.execute(
+                "SELECT s.canonical_json FROM historical_samples_v1 AS s "
+                "JOIN historical_import_batches_v1 AS b ON b.batch_id=s.batch_id "
+                f"WHERE {' AND '.join(clauses)} "
+                "ORDER BY s.observed_at,s.sample_pair_id,s.sensor_id,s.reading_id "
+                "LIMIT %s",
+                parameters,
+            ).fetchall()
+        points: list[TimelinePointV1] = []
+        for row in rows:
+            canonical = _decode_canonical_json(
+                row["canonical_json"], "stored historical sample"
+            )
+            if not isinstance(canonical, dict):
+                raise HistoricalBatchConflict(
+                    "stored historical sample is not an object"
+                )
+            try:
+                points.append(
+                    historical_timeline_point_v1(
+                        HistoricalSensorReadingV1.model_validate(canonical)
+                    )
+                )
+            except Exception as exc:
+                raise HistoricalBatchConflict(
+                    "stored historical sample failed closed validation"
+                ) from exc
+        return TimelineSliceV1(points=tuple(points), has_more=len(points) > query.limit)
+
+    def point_by_id(self, asset_id: str, point_id: str) -> TimelinePointV1 | None:
+        if asset_id != _ASSET_ID:
+            raise ValueError("unknown timeline asset")
+        with self._connection() as connection:
+            archive_row = connection.execute(
+                "SELECT s.canonical_json FROM historical_samples_v1 AS s "
+                "JOIN historical_import_batches_v1 AS b ON b.batch_id=s.batch_id "
+                "WHERE s.asset_id=%s AND s.reading_id=%s AND b.status='active' "
+                "AND b.asset_id=s.asset_id",
+                (asset_id, point_id),
+            ).fetchone()
+            live_rows = connection.execute(
+                "SELECT reading_id,asset_id,sensor_id,observed_at,received_at,"
+                "payload_hash,canonical_json FROM telemetry_samples_v2 "
+                "WHERE asset_id=%s ORDER BY reading_id",
+                (asset_id,),
+            ).fetchall()
+            matching_live_rows = [
+                row for row in live_rows if live_point_id_v1(row["reading_id"]) == point_id
+            ]
+            if archive_row is not None and matching_live_rows:
+                raise HistoricalBatchConflict("timeline point identity collision")
+            if archive_row is not None:
+                canonical = _decode_canonical_json(
+                    archive_row["canonical_json"], "stored historical sample"
+                )
+                if not isinstance(canonical, dict):
+                    raise HistoricalBatchConflict(
+                        "stored historical sample is not an object"
+                    )
+                try:
+                    return historical_timeline_point_v1(
+                        HistoricalSensorReadingV1.model_validate(canonical)
+                    )
+                except Exception as exc:
+                    raise HistoricalBatchConflict(
+                        "stored historical sample failed closed validation"
+                    ) from exc
+            if not matching_live_rows:
+                return None
+            if len(matching_live_rows) != 1:
+                raise HistoricalBatchConflict("duplicate live timeline point identity")
+            reading, scheduled = self._live_reading_from_row(matching_live_rows[0])
+            policies = self._live_policy_map(connection, asset_id, {scheduled})
+        try:
+            return live_timeline_point_v1(
+                reading,
+                collection_policy_id=policies.get(scheduled),
+            )
+        except Exception as exc:
+            raise HistoricalBatchConflict(
+                "stored live sample timeline projection failed"
+            ) from exc
+
+    def points_for_pair(
+        self, asset_id: str, sample_pair_id: str
+    ) -> tuple[TimelinePointV1, ...]:
+        if asset_id != _ASSET_ID:
+            raise ValueError("unknown timeline asset")
+        with self._connection() as connection:
+            archive_rows = connection.execute(
+                "SELECT s.canonical_json FROM historical_samples_v1 AS s "
+                "JOIN historical_import_batches_v1 AS b ON b.batch_id=s.batch_id "
+                "WHERE s.asset_id=%s AND s.sample_pair_id=%s AND b.status='active' "
+                "AND b.asset_id=s.asset_id ORDER BY s.sensor_id,s.reading_id",
+                (asset_id, sample_pair_id),
+            ).fetchall()
+            live_rows = connection.execute(
+                "SELECT reading_id,asset_id,sensor_id,observed_at,received_at,"
+                "payload_hash,canonical_json FROM telemetry_samples_v2 "
+                "WHERE asset_id=%s ORDER BY reading_id",
+                (asset_id,),
+            ).fetchall()
+            live_readings: list[tuple[CanonicalSensorReadingV2, datetime]] = []
+            for row in live_rows:
+                reading, scheduled = self._live_reading_from_row(row)
+                if (
+                    live_sample_pair_id_v1(reading.asset_id, reading.scheduled_at)
+                    == sample_pair_id
+                ):
+                    live_readings.append((reading, scheduled))
+            policies = self._live_policy_map(
+                connection,
+                asset_id,
+                {scheduled for _, scheduled in live_readings},
+            )
+        points: list[TimelinePointV1] = []
+        for row in archive_rows:
+            canonical = _decode_canonical_json(
+                row["canonical_json"], "stored historical sample"
+            )
+            if not isinstance(canonical, dict):
+                raise HistoricalBatchConflict(
+                    "stored historical sample is not an object"
+                )
+            try:
+                points.append(
+                    historical_timeline_point_v1(
+                        HistoricalSensorReadingV1.model_validate(canonical)
+                    )
+                )
+            except Exception as exc:
+                raise HistoricalBatchConflict(
+                    "stored historical sample failed closed validation"
+                ) from exc
+        for reading, scheduled in live_readings:
+            try:
+                points.append(
+                    live_timeline_point_v1(
+                        reading,
+                        collection_policy_id=policies.get(scheduled),
+                    )
+                )
+            except Exception as exc:
+                raise HistoricalBatchConflict(
+                    "stored live sample timeline projection failed"
+                ) from exc
+        points.sort(
+            key=lambda point: (
+                point.event_at,
+                str(point.sample_pair_id),
+                point.sensor_id,
+                str(point.point_id),
+            )
+        )
+        return tuple(points)
+
+    @staticmethod
+    def _live_datetime(value: object) -> datetime:
+        if isinstance(value, str):
+            try:
+                value = datetime.fromisoformat(value.replace("Z", "+00:00"))
+            except ValueError as exc:
+                raise HistoricalBatchConflict("stored live timestamp is invalid") from exc
+        if not isinstance(value, datetime) or value.utcoffset() is None:
+            raise HistoricalBatchConflict("stored live timestamp is timezone-naive")
+        return value.astimezone(timezone.utc)
+
+    @classmethod
+    def _live_reading_from_row(
+        cls, row: dict[str, object]
+    ) -> tuple[CanonicalSensorReadingV2, datetime]:
+        canonical = _decode_canonical_json(row["canonical_json"], "stored live sample")
+        if not isinstance(canonical, dict):
+            raise HistoricalBatchConflict("stored live sample is not an object")
+        try:
+            reading = CanonicalSensorReadingV2.model_validate(canonical)
+            observed = cls._live_datetime(reading.observed_at)
+            received = cls._live_datetime(reading.received_at)
+            scheduled = cls._live_datetime(reading.scheduled_at)
+        except Exception as exc:
+            if isinstance(exc, HistoricalBatchConflict):
+                raise
+            raise HistoricalBatchConflict(
+                "stored live sample failed closed validation"
+            ) from exc
+        if (
+            reading.reading_id != row["reading_id"]
+            or reading.asset_id != row["asset_id"]
+            or reading.sensor_id != row["sensor_id"]
+            or reading.payload_hash != row["payload_hash"]
+            or observed != cls._live_datetime(row["observed_at"])
+            or received != cls._live_datetime(row["received_at"])
+        ):
+            raise HistoricalBatchConflict("stored live sample projection mismatch")
+        return reading, scheduled
+
+    @staticmethod
+    def _live_policy_map(
+        connection,
+        asset_id: str,
+        scheduled_values: set[datetime],
+    ) -> dict[datetime, str]:
+        if not scheduled_values:
+            return {}
+        rows = connection.execute(
+            "SELECT scheduled_at,policy_id FROM refresh_cycle_policies_v1 "
+            "WHERE asset_id=%s AND scheduled_at = ANY(%s) ORDER BY scheduled_at",
+            (asset_id, sorted(scheduled_values)),
+        ).fetchall()
+        return {
+            PostgresHistoricalRepositoryV1._live_datetime(row["scheduled_at"]): row[
+                "policy_id"
+            ]
+            for row in rows
+        }
+
+    def read_live_points(self, query: TimelineReadQueryV1) -> TimelineSliceV1:
+        event_sql = "date_trunc('milliseconds',s.observed_at)"
+        clauses = ["s.asset_id=%s"]
+        parameters: list[object] = [query.asset_id]
+        if query.from_at is not None:
+            clauses.append(f"{event_sql}>=%s")
+            parameters.append(query.from_at)
+        if query.to_at is not None:
+            clauses.append(f"{event_sql}<%s")
+            parameters.append(query.to_at)
+        if query.sensor_id is not None:
+            clauses.append("s.sensor_id=%s")
+            parameters.append(query.sensor_id)
+        if query.after is not None:
+            clauses.append(f"{event_sql}>=%s")
+            parameters.append(query.after.event_at)
+        event_limit = query.limit + (2 if query.after is not None else 1)
+        with self._connection() as connection:
+            event_rows = connection.execute(
+                f"SELECT DISTINCT {event_sql} AS event_at "
+                "FROM telemetry_samples_v2 AS s "
+                f"WHERE {' AND '.join(clauses)} ORDER BY event_at LIMIT %s",
+                [*parameters, event_limit],
+            ).fetchall()
+            if not event_rows:
+                return TimelineSliceV1(points=(), has_more=False)
+            event_values = [self._live_datetime(row["event_at"]) for row in event_rows]
+            rows = connection.execute(
+                "SELECT s.reading_id,s.asset_id,s.sensor_id,s.observed_at,"
+                "s.received_at,s.payload_hash,s.canonical_json "
+                "FROM telemetry_samples_v2 AS s WHERE s.asset_id=%s "
+                + ("AND s.sensor_id=%s " if query.sensor_id is not None else "")
+                + f"AND {event_sql} = ANY(%s) ORDER BY {event_sql},s.reading_id",
+                (
+                    query.asset_id,
+                    *([query.sensor_id] if query.sensor_id is not None else []),
+                    event_values,
+                ),
+            ).fetchall()
+            keyed_readings: list[
+                tuple[object, CanonicalSensorReadingV2, datetime]
+            ] = []
+            for row in rows:
+                reading, scheduled = self._live_reading_from_row(row)
+                public_event, _ = public_live_millisecond_v1(reading.received_at)
+                key = (
+                    public_event,
+                    live_sample_pair_id_v1(reading.asset_id, reading.scheduled_at),
+                    reading.sensor_id,
+                    live_point_id_v1(reading.reading_id),
+                )
+                if query.after is None or key > (
+                    query.after.event_at,
+                    query.after.sample_pair_id,
+                    query.after.sensor_id,
+                    query.after.point_id,
+                ):
+                    keyed_readings.append((key, reading, scheduled))
+            keyed_readings.sort(key=lambda item: item[0])
+            keyed_readings = keyed_readings[: query.limit + 1]
+            policies = self._live_policy_map(
+                connection,
+                query.asset_id,
+                {scheduled for _, _, scheduled in keyed_readings},
+            )
+        points: list[TimelinePointV1] = []
+        for _, reading, scheduled in keyed_readings:
+            try:
+                points.append(
+                    live_timeline_point_v1(
+                        reading,
+                        collection_policy_id=policies.get(scheduled),
+                    )
+                )
+            except Exception as exc:
+                raise HistoricalBatchConflict(
+                    "stored live sample timeline projection failed"
+                ) from exc
+        return TimelineSliceV1(points=tuple(points), has_more=len(points) > query.limit)
 
     def reconstruct_source(self, batch_id: str) -> bytes:
         _require_sha256(batch_id, "batch ID")

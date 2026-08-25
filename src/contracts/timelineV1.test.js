@@ -237,6 +237,15 @@ describe("Timeline v1 composed runtime contract", () => {
     expect(JSON.stringify(reparsed)).toBe(first);
   });
 
+  it("accepts a real persisted UUIDv4 in live provenance only", () => {
+    const payload = fixture("live-point.valid.json");
+    payload.provenance.readingId = "11111111-1111-4111-8111-111111111111";
+
+    expect(assertTimelinePointV1(payload)).toBe(payload);
+    expect(payload.pointId).toMatch(/^[0-9a-f-]+-5[0-9a-f]{3}-/);
+    expect(payload.samplePairId).toMatch(/^[0-9a-f-]+-5[0-9a-f]{3}-/);
+  });
+
   it.each([
     ["pointId", 123],
     ["pointId", "AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA"],
@@ -779,12 +788,13 @@ describe("Timeline v1 composed runtime contract", () => {
 
   it("enforces page total order and duplicate rejection", () => {
     const point = fixture("live-point.valid.json");
+    point.pointId = "00000000-0000-5000-8000-000000000005";
+    point.samplePairId = "00000000-0000-5000-8000-000000000001";
+    point.provenance.readingId = point.pointId;
     const later = structuredClone(point);
-    later.pointId = "00000000-0000-5000-8000-000000000005";
-    later.eventAt = "2026-08-22T12:00:00.124Z";
+    later.pointId = "00000000-0000-5000-8000-000000000004";
+    later.samplePairId = "00000000-0000-5000-8000-000000000002";
     later.provenance.readingId = later.pointId;
-    later.provenance.scheduledAt = later.eventAt;
-    later.provenance.receivedAt = later.eventAt;
     const page = fixture("page.valid.json");
     page.items = [point, later];
     expect(() => assertTimelinePageV1(page)).not.toThrow();

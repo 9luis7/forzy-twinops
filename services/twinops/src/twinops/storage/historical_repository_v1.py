@@ -17,6 +17,7 @@ from twinops.storage.schema_migrations import (
     DeploymentIdentityV1,
     SchemaVerification,
 )
+from twinops.timeline.repository_v1 import TimelineReadRepositoryV1
 
 
 BatchStatusV1 = Literal["staged", "active", "superseded"]
@@ -77,7 +78,7 @@ class ActivateHistoryResultV1:
     writes_performed: int
 
 
-class HistoricalRepositoryV1(Protocol):
+class HistoricalRepositoryV1(TimelineReadRepositoryV1, Protocol):
     def verify_schema(self, expected_version: str) -> SchemaVerification: ...
 
     def target_identity(self) -> DeploymentIdentityV1 | None: ...

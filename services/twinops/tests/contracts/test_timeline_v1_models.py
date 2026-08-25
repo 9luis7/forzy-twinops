@@ -198,6 +198,17 @@ def test_strict_public_json_accepts_aliases_and_emits_canonical_wire_values() ->
     assert TimelinePointV1.model_validate(wire) == point
 
 
+def test_live_provenance_preserves_a_real_persisted_uuid4_reading_id() -> None:
+    payload = _fixture("live-point.valid.json")
+    persisted_reading_id = "11111111-1111-4111-8111-111111111111"
+    payload["provenance"]["readingId"] = persisted_reading_id
+
+    parsed = TimelinePointV1.model_validate(payload)
+
+    assert str(parsed.provenance.reading_id) == persisted_reading_id
+    validate_timeline_public_v1("timeline-point", payload)
+
+
 def test_nested_measurements_accept_only_public_alias_keys() -> None:
     for snake_key, public_key in (
         ("vibration_velocity_rms", "vibrationVelocityRms"),
@@ -974,12 +985,13 @@ def test_decision_facts_reject_historical_and_unavailable_crossings() -> None:
 
 def test_page_items_use_total_order_without_duplicate_points() -> None:
     point = _fixture("live-point.valid.json")
+    point["pointId"] = "00000000-0000-5000-8000-000000000005"
+    point["samplePairId"] = "00000000-0000-5000-8000-000000000001"
+    point["provenance"]["readingId"] = point["pointId"]
     later = copy.deepcopy(point)
-    later["pointId"] = "00000000-0000-5000-8000-000000000005"
-    later["eventAt"] = "2026-08-22T12:00:00.124Z"
+    later["pointId"] = "00000000-0000-5000-8000-000000000004"
+    later["samplePairId"] = "00000000-0000-5000-8000-000000000002"
     later["provenance"]["readingId"] = later["pointId"]
-    later["provenance"]["scheduledAt"] = later["eventAt"]
-    later["provenance"]["receivedAt"] = later["eventAt"]
 
     page = _fixture("page.valid.json")
     page["items"] = [point, later]

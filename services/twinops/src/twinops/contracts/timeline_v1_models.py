@@ -33,6 +33,9 @@ PUBLIC_UTC_MILLIS_RE = re.compile(
 _UUID_V5_RE = re.compile(
     r"^[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
 )
+_UUID_RE = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+)
 _SHA256_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 _ROOT = Path(__file__).resolve().parents[5]
 _SCHEMA_DIR = _ROOT / "contracts" / "timeline" / "v1"
@@ -78,6 +81,13 @@ def _parse_uuid5_json_v1(value: object) -> UUID:
     return parsed
 
 
+def _parse_uuid_json_general_v1(value: object) -> UUID:
+    parsed = parse_uuid_json_v1(value)
+    if not _UUID_RE.fullmatch(str(parsed)):
+        raise ValueError("expected a canonical UUID version 1 through 8 string")
+    return parsed
+
+
 def parse_public_utc_millis_v1(value: object) -> datetime:
     if isinstance(value, datetime):
         parsed = value
@@ -110,7 +120,7 @@ def _parse_sha256_v1(value: object) -> str:
 Sha256V1 = Annotated[str, BeforeValidator(_parse_sha256_v1)]
 UuidV1 = Annotated[
     UUID,
-    BeforeValidator(parse_uuid_json_v1),
+    BeforeValidator(_parse_uuid_json_general_v1),
     PlainSerializer(lambda value: str(value), return_type=str, when_used="json"),
 ]
 Uuid5V1 = Annotated[
@@ -188,7 +198,7 @@ class HistoricalProvenanceV1(ContractModelTimelineV1):
 
 class LiveTimelineProvenanceV1(ContractModelTimelineV1):
     source_system: Literal["forzy-api"] = Field(alias="sourceSystem")
-    reading_id: Uuid5V1 = Field(alias="readingId")
+    reading_id: UuidV1 = Field(alias="readingId")
     scheduled_at: UtcTimestampV1 = Field(alias="scheduledAt")
     received_at: UtcTimestampV1 = Field(alias="receivedAt")
     collection_policy_id: NonEmptyStringV1 | None = Field(alias="collectionPolicyId")
@@ -1158,8 +1168,16 @@ def _assert_page(value: dict[str, object]) -> None:
             "batchId"
         ] != value["activeHistoricalBatchId"]:
             raise ValueError("archive page item must use the active historical batch")
-    keys = [(_timestamp(item["eventAt"]), item["pointId"]) for item in value["items"]]
-    if keys != sorted(keys) or len({key[1] for key in keys}) != len(keys):
+    keys = [
+        (
+            _timestamp(item["eventAt"]),
+            item["samplePairId"],
+            item["sensorId"],
+            item["pointId"],
+        )
+        for item in value["items"]
+    ]
+    if keys != sorted(keys) or len({key[3] for key in keys}) != len(keys):
         raise ValueError("timeline page items must be unique and totally ordered")
     if value["hasMore"] != (value["nextCursor"] is not None):
         raise ValueError("nextCursor and hasMore must agree")
