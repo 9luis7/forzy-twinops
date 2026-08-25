@@ -48,12 +48,13 @@ button {
   transition: transform 160ms ease;
 }
 
-button:hover:not(:disabled) {
+button:hover:not(:disabled):not([aria-disabled="true"]) {
   background: #99f6e4;
   transform: translateY(-1px);
 }
 
-button:disabled {
+button:disabled,
+button[aria-disabled="true"] {
   cursor: wait;
   opacity: 0.65;
 }
@@ -863,7 +864,7 @@ circle.timeline-lane__series {
   background: #18283a;
 }
 
-.timeline-point-action:hover:not(:disabled) {
+.timeline-point-action:hover:not(:disabled):not([aria-disabled="true"]) {
   background: #22374d;
 }
 

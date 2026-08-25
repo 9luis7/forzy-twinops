@@ -306,6 +306,90 @@ it("switches both channels and assessment only after one historical context comm
   );
 });
 
+it("announces only transitions to a new committed historical context", async () => {
+  const source = sourceWithTimeline();
+  const firstCommit = deferred();
+  const failedCommit = deferred();
+  const secondCommit = deferred();
+  const secondContext = structuredClone(missingChannelContextFixture);
+  const secondSelectedAt = "2026-08-22T12:01:00.123Z";
+  const secondScheduledAt = "2026-08-22T12:01:00.000Z";
+  secondContext.selectedAt = secondSelectedAt;
+  for (const point of [secondContext.anchor, secondContext.channels.s1]) {
+    point.eventAt = secondSelectedAt;
+    point.provenance.scheduledAt = secondScheduledAt;
+    point.provenance.receivedAt = secondSelectedAt;
+  }
+  source.getTimelineContext
+    .mockReturnValueOnce(firstCommit.promise)
+    .mockReturnValueOnce(failedCommit.promise)
+    .mockReturnValueOnce(secondCommit.promise);
+  const commitAnnouncement = () => screen.queryByText(
+    /Contexto hist\u00f3rico confirmado para/i,
+  );
+
+  render(<App dataSource={source} />);
+  await flush();
+  fireEvent.click(screen.getByRole("radio", { name: "Hist\u00f3rico" }));
+  await flush();
+
+  expect(commitAnnouncement()).not.toBeInTheDocument();
+  const originalAction = screen.getAllByRole("button", {
+    name: /inspecionar ponto/i,
+  })[0];
+  fireEvent.click(originalAction);
+  await flush();
+  expect(commitAnnouncement()).not.toBeInTheDocument();
+
+  await act(async () => {
+    firstCommit.resolve(structuredClone(historicalContextFixture));
+    await firstCommit.promise;
+  });
+  await flush();
+  const firstAnnouncement = commitAnnouncement();
+  expect(firstAnnouncement).toHaveAttribute("role", "status");
+  const firstAnnouncementText = firstAnnouncement.textContent;
+
+  fireEvent.click(screen.getByRole("radio", { name: "Agora" }));
+  await flush();
+  expect(commitAnnouncement()).not.toBeInTheDocument();
+
+  fireEvent.click(screen.getByRole("radio", { name: "Hist\u00f3rico" }));
+  await flush();
+  expect(commitAnnouncement()).not.toBeInTheDocument();
+  expect(within(screen.getByTestId("sensor-card-s1")).getByText("30,00")).toBeVisible();
+
+  fireEvent.click(screen.getAllByRole("button", { name: /inspecionar ponto/i })[0]);
+  await flush();
+  expect(commitAnnouncement()).not.toBeInTheDocument();
+  expect(within(screen.getByTestId("sensor-card-s1")).getByText("30,00")).toBeVisible();
+
+  await act(async () => {
+    failedCommit.reject(new Error("context unavailable"));
+    await failedCommit.promise.catch(() => null);
+  });
+  await flush();
+  expect(commitAnnouncement()).not.toBeInTheDocument();
+  expect(screen.getByText(
+    /O ponto n\u00e3o p\u00f4de ser sincronizado.*\u00faltimo contexto hist\u00f3rico v\u00e1lido/i,
+  )).toBeInTheDocument();
+  expect(within(screen.getByTestId("sensor-card-s1")).getByText("30,00")).toBeVisible();
+
+  fireEvent.click(screen.getAllByRole("button", { name: /inspecionar ponto/i })[0]);
+  await flush();
+  expect(commitAnnouncement()).not.toBeInTheDocument();
+
+  await act(async () => {
+    secondCommit.resolve(secondContext);
+    await secondCommit.promise;
+  });
+  await flush();
+  const secondAnnouncement = commitAnnouncement();
+  expect(secondAnnouncement).toHaveAttribute("role", "status");
+  expect(secondAnnouncement.textContent).not.toBe(firstAnnouncementText);
+  expect(screen.getAllByText(/Contexto hist\u00f3rico confirmado para/i)).toHaveLength(1);
+});
+
 it("never carries a missing historical channel or absent assessment forward", async () => {
   const source = sourceWithTimeline();
   source.getTimelineContext.mockResolvedValue(structuredClone(missingChannelContextFixture));

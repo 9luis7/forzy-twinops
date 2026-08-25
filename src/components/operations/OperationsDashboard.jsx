@@ -1,4 +1,4 @@
-import React from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { useTwinOps } from "../../TwinOpsContext.jsx";
 import LoadingState from "../LoadingState.jsx";
 import TimelineWorkspace from "../timeline/TimelineWorkspace.jsx";
@@ -16,6 +16,45 @@ const SNAPSHOT_LOADING_MESSAGES = [
   "Preparando o painel operacional…",
   "Sincronizando o gêmeo digital…",
 ];
+
+const historicalDateTimeFormatter = new Intl.DateTimeFormat("pt-BR", {
+  timeZone: "America/Sao_Paulo",
+  dateStyle: "short",
+  timeStyle: "medium",
+});
+
+const historicalContextIdentity = (context) => context === null
+  ? null
+  : [
+      context.decisionFacts.collectionState,
+      context.anchor?.pointId ?? "gap",
+      context.segmentId ?? "without-segment",
+      context.selectedAt,
+    ].join("|");
+
+function useHistoricalCommitAnnouncement({ context, error, loading }) {
+  const identity = historicalContextIdentity(context);
+  const lastSeenIdentityRef = useRef(identity);
+  const [announcement, setAnnouncement] = useState(null);
+
+  useEffect(() => {
+    if (context === null || loading || error !== null) {
+      setAnnouncement(null);
+      return;
+    }
+    if (identity === lastSeenIdentityRef.current) {
+      setAnnouncement(null);
+      return;
+    }
+
+    lastSeenIdentityRef.current = identity;
+    setAnnouncement(
+      `Contexto hist\u00f3rico confirmado para ${historicalDateTimeFormatter.format(new Date(context.selectedAt))}. Todos os pain\u00e9is exibem a mesma evid\u00eancia.`,
+    );
+  }, [context, error, identity, loading]);
+
+  return announcement;
+}
 
 export function TwinFallback() {
   return (
@@ -49,6 +88,16 @@ export default function OperationsDashboard({ Twin3DComponent = null }) {
     showHistory,
     selectTimelinePoint,
   } = useTwinOps();
+  const announcementContext = viewMode === "historical"
+    && historicalContext !== null
+    && displayContext === historicalContext
+    ? historicalContext
+    : null;
+  const historicalCommitAnnouncement = useHistoricalCommitAnnouncement({
+    context: announcementContext,
+    error: timelineErrors.context,
+    loading: timelineLoading.context,
+  });
 
   if (!snapshot && !error) {
     return (
@@ -155,6 +204,7 @@ export default function OperationsDashboard({ Twin3DComponent = null }) {
 
       {viewMode === "historical" ? (
         <TimelineWorkspace
+          commitAnnouncement={historicalCommitAnnouncement}
           context={committedHistoricalContext}
           errors={timelineErrors}
           loading={timelineLoading}

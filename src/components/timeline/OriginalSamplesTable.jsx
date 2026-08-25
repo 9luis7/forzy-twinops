@@ -30,6 +30,7 @@ export default function OriginalSamplesTable({
   selectTimelinePoint,
 }) {
   const handleSelect = useCallback((event) => {
+    if (event.currentTarget.getAttribute("aria-disabled") === "true") return;
     void selectTimelinePoint(event.currentTarget.dataset.pointId);
   }, [selectTimelinePoint]);
 
@@ -91,10 +92,11 @@ export default function OriginalSamplesTable({
                   <td data-label="Origem">{sourceLabels[point.sourceKind] ?? "Indisponível"}</td>
                   <td data-label="Ação">
                     <button
+                      aria-busy={pending}
+                      aria-disabled={pending}
                       aria-pressed={selected}
                       className="timeline-point-action"
                       data-point-id={point.pointId}
-                      disabled={pending}
                       onClick={handleSelect}
                       type="button"
                     >

@@ -80,6 +80,54 @@ describe("TimelineWorkspace", () => {
     expect(screen.getAllByRole("button", { name: /inspecionar ponto/i })).toHaveLength(2);
   });
 
+  it("keeps the original action focused and inert while its context is pending", async () => {
+    const { default: TimelineWorkspace } = await import("./TimelineWorkspace.jsx");
+    const timelinePage = {
+      ...structuredClone(pageFixture),
+      items: [
+        structuredClone(contextFixture.channels.s1),
+        structuredClone(contextFixture.channels.s2),
+      ],
+      limit: 200,
+    };
+    const selectTimelinePoint = vi.fn();
+    const props = {
+      context: null,
+      errors: { overview: null, page: null, context: null },
+      loading: { overview: false, page: false, context: false },
+      overview: structuredClone(overviewFixture),
+      page: timelinePage,
+      selectTimelinePoint,
+    };
+
+    const { rerender } = render(
+      <TimelineWorkspace {...props} pendingSelection={null} />,
+    );
+    const originalAction = screen.getAllByRole("button", {
+      name: /inspecionar ponto/i,
+    })[0];
+    originalAction.focus();
+    fireEvent.click(originalAction);
+
+    expect(selectTimelinePoint).toHaveBeenCalledTimes(1);
+    expect(selectTimelinePoint).toHaveBeenCalledWith(timelinePage.items[0].pointId);
+
+    rerender(
+      <TimelineWorkspace
+        {...props}
+        pendingSelection={{ pointId: timelinePage.items[0].pointId }}
+      />,
+    );
+    const pendingAction = screen.getByRole("button", { name: /sincronizando/i });
+    expect(pendingAction).not.toBeDisabled();
+    expect(pendingAction).toHaveAttribute("aria-disabled", "true");
+    expect(pendingAction).toHaveAttribute("aria-busy", "true");
+    expect(pendingAction).toHaveFocus();
+
+    fireEvent.click(pendingAction);
+    expect(selectTimelinePoint).toHaveBeenCalledTimes(1);
+  });
+
   it("places committed context before a 200-point page and announces only the commit", async () => {
     const { default: TimelineWorkspace } = await import("./TimelineWorkspace.jsx");
     const basePoints = [contextFixture.channels.s1, contextFixture.channels.s2];
@@ -106,7 +154,7 @@ describe("TimelineWorkspace", () => {
     );
 
     const { rerender } = render(
-      <TimelineWorkspace {...props} context={null}>
+      <TimelineWorkspace {...props} commitAnnouncement={null} context={null}>
         {contextualPanels}
       </TimelineWorkspace>,
     );
@@ -124,7 +172,11 @@ describe("TimelineWorkspace", () => {
     const preservedControl = screen.getByRole("button", { name: "Controle contextual preservado" });
     preservedControl.focus();
     rerender(
-      <TimelineWorkspace {...props} context={structuredClone(contextFixture)}>
+      <TimelineWorkspace
+        {...props}
+        commitAnnouncement={"Contexto hist\u00f3rico confirmado para a evid\u00eancia selecionada."}
+        context={structuredClone(contextFixture)}
+      >
         {contextualPanels}
       </TimelineWorkspace>,
     );
