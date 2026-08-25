@@ -215,7 +215,7 @@ def test_vercel_function_excludes_local_secrets_and_nonruntime_files():
         ".env*",
         ".superpowers/**",
         "**/{.agents,test,tests}/**",
-        "{contracts,docs,evals,notebooks,scripts,src,tools}/**",
+        "{docs,evals,notebooks,scripts,src,tools}/**",
         "dist/**",
         "real-forzy/source-summary.json",
     ):
@@ -233,6 +233,15 @@ def test_vercel_function_bundles_every_schema_migration_used_by_startup():
         "003_unified_history_timeline_sqlite.sql",
     ):
         assert f"migrations/{migration}" in include_files
+
+
+def test_vercel_function_bundles_runtime_loaded_public_contracts():
+    repository_root = Path(__file__).parents[4]
+    config = json.loads((repository_root / "vercel.json").read_text(encoding="utf-8"))
+    function_config = config["functions"]["api/index.py"]
+
+    assert "contracts/**" in function_config["includeFiles"]
+    assert "{contracts," not in function_config["excludeFiles"]
 
 
 def test_vercel_upload_context_ignores_agent_metadata():

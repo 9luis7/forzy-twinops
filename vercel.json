@@ -6,8 +6,8 @@
   "outputDirectory": "dist",
   "functions": {
     "api/index.py": {
-      "includeFiles": "{services/twinops/{src/twinops/**,migrations/002_real_twin_v2.sql,migrations/003_unified_history_timeline_postgres.sql,migrations/003_unified_history_timeline_sqlite.sql},artifacts/ml/real-forzy/{pipeline.joblib,pipeline-config.json,backtest-report.json,model-card.md,feature-manifest.json}}",
-      "excludeFiles": "{**/{.agents,test,tests}/**,.env*,.superpowers/**,dist/**,artifacts/{ml/{*.json,*.joblib,*.md,real-forzy/source-summary.json},ml-public/**,twin3d/**},{contracts,docs,evals,notebooks,scripts,src,tools}/**,skills-lock.json}"
+      "includeFiles": "{services/twinops/{src/twinops/**,migrations/002_real_twin_v2.sql,migrations/003_unified_history_timeline_postgres.sql,migrations/003_unified_history_timeline_sqlite.sql},contracts/**,artifacts/ml/real-forzy/{pipeline.joblib,pipeline-config.json,backtest-report.json,model-card.md,feature-manifest.json}}",
+      "excludeFiles": "{**/{.agents,test,tests}/**,.env*,.superpowers/**,dist/**,artifacts/{ml/{*.json,*.joblib,*.md,real-forzy/source-summary.json},ml-public/**,twin3d/**},{docs,evals,notebooks,scripts,src,tools}/**,skills-lock.json}"
     }
   },
   "rewrites": [
