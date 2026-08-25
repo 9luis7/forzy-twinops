@@ -52,6 +52,57 @@ describe("AssessmentTrend", () => {
     expect(container).not.toHaveTextContent("Diagn\u00f3stico confirmado");
   });
 
+  it("does not bridge either score trace across a multi-point insufficient-data run", async () => {
+    const modulePath = "./AssessmentTrend.jsx";
+    const { default: AssessmentTrend } = await import(/* @vite-ignore */ modulePath);
+    const overview = structuredClone(materializedFixture);
+    const scoredStart = structuredClone(overview.series[0].points[0]);
+    const scoredBeforeGap = structuredClone(scoredStart);
+    const nullStart = structuredClone(overview.series[0].points[2]);
+    const nullEnd = structuredClone(nullStart);
+    const scoredAfterGap = structuredClone(overview.series[0].points[1]);
+    const scoredEnd = structuredClone(scoredAfterGap);
+    Object.assign(scoredBeforeGap, {
+      assessmentId: "00000000-0000-5000-8000-000000000024",
+      anchorPointId: "00000000-0000-5000-8000-000000000044",
+      eventAt: "2026-08-22T12:05:00.000Z",
+    });
+    Object.assign(nullStart, { eventAt: "2026-08-22T12:10:00.000Z" });
+    Object.assign(nullEnd, {
+      assessmentId: "00000000-0000-5000-8000-000000000025",
+      anchorPointId: "00000000-0000-5000-8000-000000000045",
+      eventAt: "2026-08-22T12:15:00.000Z",
+    });
+    Object.assign(scoredAfterGap, { eventAt: "2026-08-22T12:20:00.000Z" });
+    Object.assign(scoredEnd, {
+      assessmentId: "00000000-0000-5000-8000-000000000026",
+      anchorPointId: "00000000-0000-5000-8000-000000000046",
+      eventAt: "2026-08-22T12:25:00.000Z",
+    });
+    overview.series = [overview.series[0]];
+    overview.series[0].points = [
+      scoredStart,
+      scoredBeforeGap,
+      nullStart,
+      nullEnd,
+      scoredAfterGap,
+      scoredEnd,
+    ];
+    overview.series[0].aggregation.originalAssessmentCount = 6;
+    overview.series[0].aggregation.returnedAssessmentCount = 6;
+    overview.materialization.assessmentCount = 6;
+    overview.aggregationSummary.originalAssessmentCount = 6;
+    overview.aggregationSummary.returnedAssessmentCount = 6;
+
+    const { container } = render(<AssessmentTrend overview={overview} />);
+
+    for (const kind of ["anomaly", "deterioration"]) {
+      const trace = container.querySelector(`[data-score-kind="${kind}"]`);
+      expect(trace.querySelectorAll("polyline")).toHaveLength(2);
+      expect(trace.querySelectorAll("circle")).toHaveLength(0);
+    }
+  });
+
   it("publishes the exact model limits and candidate warning", async () => {
     const modulePath = "./AssessmentTrend.jsx";
     const { default: AssessmentTrend } = await import(/* @vite-ignore */ modulePath);
