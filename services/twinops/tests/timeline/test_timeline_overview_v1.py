@@ -1,5 +1,7 @@
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from importlib.util import find_spec
+from threading import Event
 
 import pytest
 
@@ -56,6 +58,140 @@ def test_overview_uses_only_metadata_active_batch_guards() -> None:
 
     assert overview.active_historical_batch_id == BATCH_A
     assert repository.active_batch_id_calls == 2
+
+
+def test_overview_reuses_one_archive_read_for_the_same_active_batch() -> None:
+    archive = (make_point(1, event_at=datetime(2026, 8, 22, tzinfo=timezone.utc)),)
+    repository = FakeTimelineRepositoryV1(archive=archive)
+    service = _service(repository)
+
+    first = service.overview(_query())
+    reads_after_first = len(repository.archive_reads)
+    second = service.overview(_query())
+
+    assert first.model_dump_public_json() == second.model_dump_public_json()
+    assert reads_after_first == 1
+    assert len(repository.archive_reads) == reads_after_first
+
+
+def test_overview_reloads_once_when_active_batch_changes_then_reuses_it() -> None:
+    first_batch = BATCH_A
+    second_batch = "sha256:" + "c" * 64
+    first_point = make_point(
+        2,
+        event_at=datetime(2026, 8, 22, 0, 0, 1, tzinfo=timezone.utc),
+    )
+    second_payload = first_point.model_dump_public()
+    second_payload["provenance"]["batchId"] = second_batch
+    second_point = TimelinePointV1.model_validate(second_payload)
+    repository = FakeTimelineRepositoryV1(
+        archive=(first_point,),
+        batch_id=first_batch,
+    )
+    service = _service(repository)
+
+    first = service.overview(_query())
+    reads_after_first = len(repository.archive_reads)
+    repository.archive = (second_point,)
+    repository.batch_id = second_batch
+    second = service.overview(_query())
+    reads_after_reload = len(repository.archive_reads)
+    third = service.overview(_query())
+
+    assert first.active_historical_batch_id == first_batch
+    assert second.active_historical_batch_id == second_batch
+    assert third.model_dump_public_json() == second.model_dump_public_json()
+    assert reads_after_reload == reads_after_first + 1
+    assert len(repository.archive_reads) == reads_after_reload
+
+
+def test_overview_keeps_live_reads_fresh_while_reusing_the_archive() -> None:
+    archive = (
+        make_point(
+            3,
+            event_at=datetime(2026, 8, 22, 14, tzinfo=timezone.utc),
+        ),
+    )
+    first_live = make_point(
+        4,
+        event_at=datetime(2026, 8, 22, 15, tzinfo=timezone.utc),
+        source_kind="live_collection",
+    )
+    second_live = make_point(
+        5,
+        event_at=datetime(2026, 8, 22, 15, 0, 5, tzinfo=timezone.utc),
+        source_kind="live_collection",
+    )
+    repository = FakeTimelineRepositoryV1(
+        archive=archive,
+        live=(first_live,),
+        policies=(make_policy(),),
+    )
+    service = _service(repository)
+
+    first = service.overview(_query())
+    reads_after_first = len(repository.archive_reads)
+    repository.live = (second_live,)
+    second = service.overview(_query())
+
+    first_ids = {
+        str(point.point_id)
+        for series in first.series
+        for point in series.points
+    }
+    second_ids = {
+        str(point.point_id)
+        for series in second.series
+        for point in series.points
+    }
+    assert str(first_live.point_id) in first_ids
+    assert str(first_live.point_id) not in second_ids
+    assert str(second_live.point_id) in second_ids
+    assert len(repository.archive_reads) == reads_after_first
+    assert len(repository.live_reads) == 2
+    assert len(repository.policy_reads) == 2
+
+
+def test_concurrent_overviews_load_one_deterministic_archive_tuple() -> None:
+    class BlockingArchiveRepository(FakeTimelineRepositoryV1):
+        def __init__(self, **kwargs) -> None:
+            super().__init__(**kwargs)
+            self.first_archive_started = Event()
+            self.release_first_archive = Event()
+
+        def read_archive_points(self, query):
+            page = super().read_archive_points(query)
+            if len(self.archive_reads) == 1:
+                self.first_archive_started.set()
+                assert self.release_first_archive.wait(2)
+            return page
+
+    archive = (
+        make_point(
+            6,
+            event_at=datetime(2026, 8, 22, 0, 0, 2, tzinfo=timezone.utc),
+        ),
+    )
+    repository = BlockingArchiveRepository(archive=archive)
+    service = _service(repository)
+    second_worker_started = Event()
+
+    def read_overview(*, second: bool = False):
+        if second:
+            second_worker_started.set()
+        return service.overview(_query()).model_dump_public_json()
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        first_future = executor.submit(read_overview)
+        assert repository.first_archive_started.wait(1)
+        second_future = executor.submit(read_overview, second=True)
+        assert second_worker_started.wait(1)
+        repository.release_first_archive.set()
+        first_payload = first_future.result(timeout=2)
+        second_payload = second_future.result(timeout=2)
+
+    assert first_payload == second_payload
+    assert len(repository.archive_reads) == 1
 
 
 @pytest.mark.parametrize(
@@ -975,6 +1111,74 @@ def test_active_batch_change_during_overview_fails_closed() -> None:
         match="active historical batch changed",
     ):
         _service(repository).overview(_query())
+
+
+def test_series_groups_membership_and_selected_ids_once_at_linear_scale() -> None:
+    from twinops.timeline import service_v1 as timeline_service_v1
+    from twinops.timeline.ranges_v1 import resolve_timeline_ranges_v1
+    from twinops.timeline.segments_v1 import build_timeline_coverage_v1
+
+    class CountingMembership(dict):
+        def __init__(self, values) -> None:
+            super().__init__(values)
+            self.lookups = 0
+
+        def __getitem__(self, key):
+            self.lookups += 1
+            return super().__getitem__(key)
+
+    class CountingBudget:
+        def __init__(self, budget) -> None:
+            self._budget = budget
+            self.point_reads = 0
+
+        @property
+        def points(self):
+            self.point_reads += 1
+            return self._budget.points
+
+        def __getattr__(self, name):
+            return getattr(self._budget, name)
+
+    start = datetime(2026, 8, 22, 12, tzinfo=timezone.utc)
+    originals = []
+    for segment_index in range(8):
+        for sensor_offset, sensor_id in enumerate(("s1", "s2")):
+            originals.append(
+                make_point(
+                    3100 + 2 * segment_index + sensor_offset,
+                    event_at=start + timedelta(minutes=segment_index),
+                    sensor_id=sensor_id,
+                    pair_key=f"linear|{segment_index}",
+                    cycle_id=uuid5_text(f"linear-cycle|{segment_index}"),
+                )
+            )
+    points = tuple(sorted(originals, key=timeline_order_key_v1))
+    query = _query(max_points=40)
+    ranges = resolve_timeline_ranges_v1(points, from_at=None, to_at=None)
+    coverage = build_timeline_coverage_v1(
+        points,
+        active_batch_id=BATCH_A,
+        policies={},
+    )
+    membership = CountingMembership(coverage.point_segment_ids)
+    object.__setattr__(coverage, "point_segment_ids", membership)
+    budgets = timeline_service_v1._budgets(points, query=query, ranges=ranges)
+    counting_budgets = {
+        key: CountingBudget(budget) for key, budget in budgets.items()
+    }
+
+    series = timeline_service_v1._series(
+        points,
+        coverage,
+        counting_budgets,
+        query=query,
+    )
+
+    assert len(coverage.segments) == 8
+    assert sum(row.aggregation.original_point_count for row in series) == len(points)
+    assert membership.lookups <= len(points)
+    assert all(budget.point_reads == 1 for budget in counting_budgets.values())
 
 
 def test_real_scale_shape_keeps_all_originals_and_builds_204_cycles() -> None:

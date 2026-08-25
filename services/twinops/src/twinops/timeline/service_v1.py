@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
 from hashlib import sha256
 from heapq import merge
 import json
+from threading import Lock
 from typing import Mapping
 from uuid import UUID
 
@@ -194,6 +196,12 @@ class _TimelineSnapshotV1:
     coverage: TimelineCoverageV1
 
 
+@dataclass(frozen=True)
+class _TimelineArchiveCacheV1:
+    active_batch_id: str | None
+    points: tuple[TimelinePointV1, ...]
+
+
 def _canonical_json_bytes(value: object) -> bytes:
     return json.dumps(
         value,
@@ -341,6 +349,10 @@ def _read_timeline_snapshot(
     *,
     asset_id: str,
     metric: TimelineMetricV1,
+    archive_reader: Callable[
+        [str | None, TimelineOverviewQueryV1],
+        tuple[TimelinePointV1, ...],
+    ],
 ) -> _TimelineSnapshotV1:
     read_query = TimelineOverviewQueryV1(
         asset_id=asset_id,
@@ -350,11 +362,7 @@ def _read_timeline_snapshot(
         metric=metric,
     )
     active_batch_id = repository.active_batch_id(asset_id)
-    archive = _read_all_source_points(
-        repository,
-        read_query,
-        source_kind="historical_archive",
-    )
+    archive = archive_reader(active_batch_id, read_query)
     live = _read_all_source_points(
         repository,
         read_query,
@@ -646,6 +654,20 @@ def _series(
     *,
     query: TimelineOverviewQueryV1,
 ) -> tuple[TimelineSeriesV1, ...]:
+    originals_by_segment_sensor: dict[
+        tuple[str, TimelineSensorIdV1],
+        list[TimelinePointV1],
+    ] = {}
+    for point in points:
+        segment_id = coverage.point_segment_ids[str(point.point_id)]
+        originals_by_segment_sensor.setdefault(
+            (segment_id, point.sensor_id),
+            [],
+        ).append(point)
+    selected_ids_by_budget = {
+        key: {str(point.point_id) for point in budget.points}
+        for key, budget in budgets.items()
+    }
     rows: list[TimelineSeriesV1] = []
     for segment in coverage.segments:
         segment_id = str(segment.segment_id)
@@ -653,13 +675,12 @@ def _series(
             if getattr(segment.sensor_counts, sensor_id) == 0:
                 continue
             originals = tuple(
-                point
-                for point in points
-                if point.sensor_id == sensor_id
-                and coverage.point_segment_ids[str(point.point_id)] == segment_id
+                originals_by_segment_sensor.get((segment_id, sensor_id), ())
             )
             budget = budgets[(sensor_id, segment.source_kind)]
-            selected_ids = {str(point.point_id) for point in budget.points}
+            selected_ids = selected_ids_by_budget[
+                (sensor_id, segment.source_kind)
+            ]
             selected = tuple(
                 point
                 for point in originals
@@ -702,10 +723,32 @@ class TimelineServiceV1:
 
     def __init__(self, repository: TimelineReadRepositoryV1) -> None:
         self._repository = repository
+        self._archive_cache_lock = Lock()
+        self._archive_cache: _TimelineArchiveCacheV1 | None = None
         self._paginator = TimelinePaginatorV1(
             repository,
             TimelineCursorCodecV1(),
         )
+
+    def _archive_points_for_batch(
+        self,
+        active_batch_id: str | None,
+        query: TimelineOverviewQueryV1,
+    ) -> tuple[TimelinePointV1, ...]:
+        with self._archive_cache_lock:
+            cache = self._archive_cache
+            if cache is not None and cache.active_batch_id == active_batch_id:
+                return cache.points
+            points = _read_all_source_points(
+                self._repository,
+                query,
+                source_kind="historical_archive",
+            )
+            self._archive_cache = _TimelineArchiveCacheV1(
+                active_batch_id=active_batch_id,
+                points=points,
+            )
+            return points
 
     def samples(
         self,
@@ -738,6 +781,7 @@ class TimelineServiceV1:
             self._repository,
             asset_id=query.asset_id,
             metric="vibrationVelocityRms",
+            archive_reader=self._archive_points_for_batch,
         )
 
         if query.point_id is not None:
@@ -837,6 +881,7 @@ class TimelineServiceV1:
             self._repository,
             asset_id=query.asset_id,
             metric=query.metric,
+            archive_reader=self._archive_points_for_batch,
         )
         active_batch_id = snapshot.active_batch_id
         archive_all = snapshot.archive_points

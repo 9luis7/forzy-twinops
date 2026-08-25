@@ -123,6 +123,18 @@ def historical_timeline_point_v1(
     return TimelinePointV1.model_validate(payload)
 
 
+def historical_timeline_point_from_canonical_v1(
+    canonical: dict[str, object],
+) -> TimelinePointV1:
+    source_timestamp_text = canonical.get("sourceTimestampText")
+    if type(source_timestamp_text) is not str or not source_timestamp_text:
+        raise ValueError("sourceTimestampText must be non-empty text")
+    payload = dict(canonical)
+    payload["pointId"] = payload.pop("readingId")
+    payload.pop("sourceTimestampText")
+    return TimelinePointV1.model_validate(payload)
+
+
 def public_live_millisecond_v1(value: str) -> tuple[datetime, str]:
     if not isinstance(value, str) or not value.endswith("Z"):
         raise ValueError("live timestamp must be persisted UTC text")

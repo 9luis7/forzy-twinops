@@ -8,6 +8,7 @@ from uuid import NAMESPACE_URL, uuid5
 from conftest import live_reading, prepared_batch, store_live_reading
 import pytest
 
+from twinops.contracts.timeline_v1_models import HistoricalSensorReadingV1
 from twinops.storage.historical_repository_v1 import HistoricalBatchConflict
 from twinops.storage.sqlite_historical_repository_v1 import (
     SQLiteHistoricalRepositoryV1,
@@ -149,6 +150,58 @@ def test_sqlite_reads_only_original_points_from_the_active_archive(
         )
     )
     assert after_first.points == result.points[1:]
+
+
+def test_sqlite_timeline_archive_reads_use_direct_point_projection(
+    sqlite_timeline_repository,
+    monkeypatch,
+) -> None:
+    active = prepared_batch(1)
+    sqlite_timeline_repository.stage_batch(active)
+    sqlite_timeline_repository.activate_batch(
+        asset_id=active.asset_id,
+        batch_id=active.batch_id,
+        expected_active_batch_id=None,
+    )
+
+    def fail_deep_revalidation(cls, *args, **kwargs):
+        raise AssertionError("timeline adapter must not revalidate deep readings")
+
+    monkeypatch.setattr(
+        HistoricalSensorReadingV1,
+        "model_validate",
+        classmethod(fail_deep_revalidation),
+    )
+    page = sqlite_timeline_repository.read_archive_points(
+        TimelineReadQueryV1(
+            asset_id=active.asset_id,
+            from_at=None,
+            to_at=None,
+            sensor_id=None,
+            metric=None,
+            limit=10,
+        )
+    )
+    point = sqlite_timeline_repository.point_by_id(
+        active.asset_id,
+        active.samples[0].point_id,
+    )
+    pair = sqlite_timeline_repository.points_for_pair(
+        active.asset_id,
+        str(active.samples[0].reading.sample_pair_id),
+    )
+
+    expected_pair_ids = {
+        sample.point_id
+        for sample in active.samples
+        if sample.reading.sample_pair_id
+        == active.samples[0].reading.sample_pair_id
+    }
+    assert {str(item.point_id) for item in page.points} == {
+        sample.point_id for sample in active.samples
+    }
+    assert str(point.point_id) == active.samples[0].point_id
+    assert {str(item.point_id) for item in pair} == expected_pair_ids
 
 
 def test_sqlite_reads_live_points_with_deterministic_ids_and_nullable_policy(

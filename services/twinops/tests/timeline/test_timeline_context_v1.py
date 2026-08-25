@@ -95,6 +95,28 @@ def test_point_context_uses_only_metadata_active_batch_guards() -> None:
     assert repository.active_batch_id_calls == 3
 
 
+def test_point_context_reuses_the_archive_warmed_by_overview() -> None:
+    points = _archive_points(include_second_segment=False)
+    repository = FakeTimelineRepositoryV1(archive=points)
+    service = service_v1.TimelineServiceV1(repository)
+    service.overview(
+        service_v1.TimelineOverviewQueryV1(
+            asset_id="forzy-motor-01",
+            from_at=None,
+            to_at=None,
+            sensor_ids=("s1", "s2"),
+            metric="temperature",
+            max_points=40,
+        )
+    )
+    archive_reads_after_warm = len(repository.archive_reads)
+
+    context = service.context(_query_for_point(str(points[0].point_id)))
+
+    assert str(context.anchor.point_id) == str(points[0].point_id)
+    assert len(repository.archive_reads) == archive_reads_after_warm
+
+
 def test_point_context_detects_active_batch_change_during_pair_read() -> None:
     points = _archive_points(include_second_segment=False)
     repository = _BatchChangingPairRepositoryV1(archive=points)
@@ -108,6 +130,30 @@ def test_point_context_detects_active_batch_change_during_pair_read() -> None:
     assert repository.pair_reads == [
         ("forzy-motor-01", str(points[0].sample_pair_id))
     ]
+
+
+def test_warm_archive_cache_preserves_the_pair_activation_race_guard() -> None:
+    points = _archive_points(include_second_segment=False)
+    repository = _BatchChangingPairRepositoryV1(archive=points)
+    service = service_v1.TimelineServiceV1(repository)
+    service.overview(
+        service_v1.TimelineOverviewQueryV1(
+            asset_id="forzy-motor-01",
+            from_at=None,
+            to_at=None,
+            sensor_ids=("s1", "s2"),
+            metric="temperature",
+            max_points=40,
+        )
+    )
+    archive_reads_after_warm = len(repository.archive_reads)
+
+    with pytest.raises(service_v1.TimelineOverviewSnapshotConflictV1):
+        service.context(_query_for_point(str(points[0].point_id)))
+
+    assert len(repository.archive_reads) == archive_reads_after_warm
+    assert repository.active_batch_id_calls_before_pair == 4
+    assert repository.active_batch_id_calls == 5
 
 
 def _point_with_adversarial_identity(

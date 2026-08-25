@@ -9,6 +9,7 @@ from psycopg.rows import dict_row
 import pytest
 
 from conftest import live_reading, prepared_batch
+from twinops.contracts.timeline_v1_models import HistoricalSensorReadingV1
 from twinops.storage.historical_repository_v1 import HistoricalBatchConflict
 from twinops.storage.postgres_historical_repository_v1 import (
     PostgresHistoricalRepositoryV1,
@@ -133,6 +134,57 @@ def test_postgres_archive_adapter_uses_active_predicate_and_limit_plus_one() -> 
         batch.samples[0].point_id
     ]
     assert connection.closed is True
+
+
+def test_postgres_timeline_archive_reads_use_direct_point_projection(
+    monkeypatch,
+) -> None:
+    batch = prepared_batch(1)
+    canonical_json = json.dumps(
+        batch.samples[0].reading.model_dump_public(),
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    row = {"canonical_json": canonical_json}
+    archive_repository = _repository(_Connection([[row]]))
+    point_repository = _repository(_Connection([[row], []]))
+    pair_repository = _repository(_Connection([[row], []]))
+
+    def fail_deep_revalidation(cls, *args, **kwargs):
+        raise AssertionError("timeline adapter must not revalidate deep readings")
+
+    monkeypatch.setattr(
+        HistoricalSensorReadingV1,
+        "model_validate",
+        classmethod(fail_deep_revalidation),
+    )
+    page = archive_repository.read_archive_points(
+        TimelineReadQueryV1(
+            asset_id=batch.asset_id,
+            from_at=None,
+            to_at=None,
+            sensor_id=None,
+            metric=None,
+            limit=1,
+        )
+    )
+    point = point_repository.point_by_id(
+        batch.asset_id,
+        batch.samples[0].point_id,
+    )
+    pair = pair_repository.points_for_pair(
+        batch.asset_id,
+        str(batch.samples[0].reading.sample_pair_id),
+    )
+
+    assert [str(item.point_id) for item in page.points] == [
+        batch.samples[0].point_id
+    ]
+    assert str(point.point_id) == batch.samples[0].point_id
+    assert [str(item.point_id) for item in pair] == [
+        batch.samples[0].point_id
+    ]
 
 
 def test_postgres_live_adapter_projects_and_bulk_loads_policy_associations() -> None:

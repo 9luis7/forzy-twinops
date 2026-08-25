@@ -61,7 +61,7 @@ from twinops.storage.sqlite_historical_repository_v1 import (
 from twinops.timeline.repository_v1 import (
     TimelineReadQueryV1,
     TimelineSliceV1,
-    historical_timeline_point_v1,
+    historical_timeline_point_from_canonical_v1,
     live_point_id_v1,
     live_sample_pair_id_v1,
     live_timeline_point_v1,
@@ -697,9 +697,7 @@ class PostgresHistoricalRepositoryV1:
                 )
             try:
                 points.append(
-                    historical_timeline_point_v1(
-                        HistoricalSensorReadingV1.model_validate(canonical)
-                    )
+                    historical_timeline_point_from_canonical_v1(canonical)
                 )
             except Exception as exc:
                 raise HistoricalBatchConflict(
@@ -738,8 +736,8 @@ class PostgresHistoricalRepositoryV1:
                         "stored historical sample is not an object"
                     )
                 try:
-                    return historical_timeline_point_v1(
-                        HistoricalSensorReadingV1.model_validate(canonical)
+                    return historical_timeline_point_from_canonical_v1(
+                        canonical
                     )
                 except Exception as exc:
                     raise HistoricalBatchConflict(
@@ -804,9 +802,7 @@ class PostgresHistoricalRepositoryV1:
                 )
             try:
                 points.append(
-                    historical_timeline_point_v1(
-                        HistoricalSensorReadingV1.model_validate(canonical)
-                    )
+                    historical_timeline_point_from_canonical_v1(canonical)
                 )
             except Exception as exc:
                 raise HistoricalBatchConflict(

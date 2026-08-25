@@ -4,6 +4,9 @@ from importlib.util import find_spec
 
 import pytest
 
+from conftest import prepared_batch
+from twinops.timeline import repository_v1 as timeline_repository_v1
+
 
 _TIMELINE_FOUNDATION_AVAILABLE = (
     find_spec("twinops.timeline") is not None
@@ -122,3 +125,46 @@ if _TIMELINE_FOUNDATION_AVAILABLE:
         for change in invalid_values:
             with pytest.raises(ValueError):
                 TimelineReadQueryV1(**(base | change))
+
+
+    def test_direct_historical_projector_matches_deep_public_projection() -> None:
+        reading = prepared_batch(1).samples[0].reading
+        canonical = reading.model_dump_public()
+        canonical_before = dict(canonical)
+        projector = getattr(
+            timeline_repository_v1,
+            "historical_timeline_point_from_canonical_v1",
+            None,
+        )
+
+        assert callable(projector), "RED:VS5C:direct-historical-projector-missing"
+        direct = projector(canonical)
+        deep = timeline_repository_v1.historical_timeline_point_v1(reading)
+
+        assert direct == deep
+        assert direct.model_dump_public_json() == deep.model_dump_public_json()
+        assert canonical == canonical_before
+
+
+    @pytest.mark.parametrize(
+        ("case", "source_timestamp_text"),
+        (
+            ("missing", None),
+            ("empty", ""),
+            ("non-string", 7),
+        ),
+    )
+    def test_direct_historical_projector_rejects_invalid_source_timestamp_text(
+        case: str,
+        source_timestamp_text: object,
+    ) -> None:
+        canonical = prepared_batch(1).samples[0].reading.model_dump_public()
+        if case == "missing":
+            canonical.pop("sourceTimestampText")
+        else:
+            canonical["sourceTimestampText"] = source_timestamp_text
+
+        with pytest.raises(ValueError, match="sourceTimestampText"):
+            timeline_repository_v1.historical_timeline_point_from_canonical_v1(
+                canonical
+            )
