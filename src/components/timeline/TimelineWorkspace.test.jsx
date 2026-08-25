@@ -1,5 +1,7 @@
 import "@testing-library/jest-dom/vitest";
 import React from "react";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import overviewFixture from "../../../contracts/timeline/v1/fixtures/overview-unified.valid.json";
@@ -76,6 +78,111 @@ describe("TimelineWorkspace", () => {
     )).toBeInTheDocument();
     expect(screen.getAllByTestId("timeline-segment")).toHaveLength(4);
     expect(screen.getAllByRole("button", { name: /inspecionar ponto/i })).toHaveLength(2);
+  });
+
+  it("places committed context before a 200-point page and announces only the commit", async () => {
+    const { default: TimelineWorkspace } = await import("./TimelineWorkspace.jsx");
+    const basePoints = [contextFixture.channels.s1, contextFixture.channels.s2];
+    const timelinePage = {
+      ...structuredClone(pageFixture),
+      items: Array.from({ length: 200 }, (_, index) => ({
+        ...structuredClone(basePoints[index % basePoints.length]),
+        pointId: `original-point-${index.toString().padStart(3, "0")}`,
+      })),
+      limit: 200,
+    };
+    const props = {
+      errors: { overview: null, page: null, context: null },
+      loading: { overview: false, page: false, context: false },
+      overview: structuredClone(overviewFixture),
+      page: timelinePage,
+      pendingSelection: null,
+      selectTimelinePoint: vi.fn(),
+    };
+    const contextualPanels = (
+      <section aria-label="Painéis do contexto exibido" data-testid="contextual-panels">
+        <button type="button">Controle contextual preservado</button>
+      </section>
+    );
+
+    const { rerender } = render(
+      <TimelineWorkspace {...props} context={null}>
+        {contextualPanels}
+      </TimelineWorkspace>,
+    );
+
+    expect(screen.queryByText(/Contexto histórico confirmado para/i)).not.toBeInTheDocument();
+    expect(screen.getAllByRole("button", { name: /inspecionar ponto/i })).toHaveLength(200);
+    const overview = screen.getByRole("img", { name: /cobertura temporal proporcional/i });
+    const panels = screen.getByTestId("contextual-panels");
+    const samples = screen.getByRole("table", {
+      name: "Pontos originais disponíveis para inspeção histórica",
+    });
+    expect(overview.compareDocumentPosition(panels) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+    expect(panels.compareDocumentPosition(samples) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+
+    const preservedControl = screen.getByRole("button", { name: "Controle contextual preservado" });
+    preservedControl.focus();
+    rerender(
+      <TimelineWorkspace {...props} context={structuredClone(contextFixture)}>
+        {contextualPanels}
+      </TimelineWorkspace>,
+    );
+
+    expect(screen.getByText(/Contexto histórico confirmado para/i)).toHaveAttribute(
+      "role",
+      "status",
+    );
+    expect(preservedControl).toHaveFocus();
+  });
+
+  it("keeps the 200-point mobile list bounded and scrollable", () => {
+    const styles = readFileSync(resolve(process.cwd(), "src/styles.css"), "utf8");
+    const mobileStyles = styles
+      .split("@media (max-width: 700px)")[1]
+      ?.split("@media (max-width: 600px)")[0] ?? "";
+    const scrollRule = mobileStyles.match(/\.timeline-table-scroll\s*\{([^}]*)\}/)?.[1] ?? "";
+
+    expect(scrollRule).not.toBe("");
+    expect(scrollRule).not.toMatch(/max-height\s*:\s*none/i);
+    expect(scrollRule).toMatch(/max-height\s*:\s*(?!none)[^;]+;/i);
+    expect(scrollRule).toMatch(/overflow-y\s*:\s*auto/i);
+  });
+
+  it("describes every coverage segment outside hover-only titles", async () => {
+    const { default: TimelineWorkspace } = await import("./TimelineWorkspace.jsx");
+    render(
+      <TimelineWorkspace
+        context={null}
+        errors={{ overview: null, page: null, context: null }}
+        loading={{ overview: false, page: false, context: false }}
+        overview={structuredClone(overviewFixture)}
+        page={null}
+        pendingSelection={null}
+        selectTimelinePoint={vi.fn()}
+      />,
+    );
+
+    const rail = screen.getByRole("img", { name: /cobertura temporal proporcional/i });
+    const descriptionIds = rail.getAttribute("aria-describedby")?.split(/\s+/) ?? [];
+    expect(descriptionIds).toHaveLength(overviewFixture.segments.length);
+    const segmentRegister = screen.getByRole("list", {
+      name: "Trechos com cobertura na linha temporal",
+    });
+    expect(segmentRegister).not.toHaveClass("visually-hidden");
+
+    const items = within(segmentRegister).getAllByRole("listitem");
+    expect(items).toHaveLength(overviewFixture.segments.length);
+    overviewFixture.segments.forEach((segment, index) => {
+      expect(document.getElementById(descriptionIds[index])).toBe(items[index]);
+      expect(items[index]).toHaveTextContent("Arquivo hist\u00f3rico");
+      expect(items[index]).toHaveTextContent(`${segment.totalPoints} pontos originais`);
+      const times = items[index].querySelectorAll("time");
+      expect(times).toHaveLength(2);
+      expect(times[0]).toHaveAttribute("dateTime", segment.startAt);
+      expect(times[1]).toHaveAttribute("dateTime", segment.endAt);
+    });
+    expect(rail).toHaveAccessibleDescription(/Arquivo hist\u00f3rico/i);
   });
 });
 

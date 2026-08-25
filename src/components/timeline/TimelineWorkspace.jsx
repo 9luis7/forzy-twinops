@@ -3,6 +3,12 @@ import OriginalSamplesTable from "./OriginalSamplesTable.jsx";
 import TimelineOverview from "./TimelineOverview.jsx";
 import { buildTimelineViewModel } from "./timelineViewModel.js";
 
+const dateTimeFormatter = new Intl.DateTimeFormat("pt-BR", {
+  timeZone: "America/Sao_Paulo",
+  dateStyle: "short",
+  timeStyle: "medium",
+});
+
 export default function TimelineWorkspace({
   overview,
   page,
@@ -11,6 +17,7 @@ export default function TimelineWorkspace({
   errors,
   pendingSelection,
   selectTimelinePoint,
+  children,
 }) {
   const model = useMemo(
     () => overview === null ? null : buildTimelineViewModel(overview),
@@ -57,6 +64,19 @@ export default function TimelineWorkspace({
             : "O ponto não pôde ser sincronizado. O último contexto histórico válido continua visível."}
         </p>
       ) : null}
+
+      {context === null ? null : (
+        <p
+          aria-atomic="true"
+          aria-live="polite"
+          className="visually-hidden timeline-context-commit-status"
+          role="status"
+        >
+          {`Contexto histórico confirmado para ${dateTimeFormatter.format(new Date(context.selectedAt))}. Todos os painéis exibem a mesma evidência.`}
+        </p>
+      )}
+
+      {children}
 
       <OriginalSamplesTable
         error={errors.page}

@@ -257,6 +257,10 @@ time,
   outline-offset: -3px;
 }
 
+.view-mode-switch input:checked:focus-visible + span {
+  outline: 2px solid #06211e;
+}
+
 .view-mode-switch label:hover span {
   transform: translateY(-1px);
 }
@@ -605,6 +609,43 @@ time,
   border-block: 1px solid #52657b;
   overflow: hidden;
   background: #050c15;
+}
+
+.timeline-segment-register {
+  padding: 0;
+  margin: 0.5rem 0 0;
+  border-top: 1px solid #263c57;
+  list-style: none;
+}
+
+.timeline-segment-register li {
+  display: grid;
+  grid-template-columns: minmax(8rem, 0.8fr) repeat(2, minmax(9rem, 1fr)) minmax(8rem, 0.7fr);
+  gap: 0.75rem;
+  padding-block: 0.55rem;
+  border-bottom: 1px solid #263c57;
+  color: #d6e1ed;
+  font-size: 0.76rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.timeline-segment-register span {
+  min-width: 0;
+}
+
+.timeline-segment-register small {
+  display: block;
+  margin-bottom: 0.15rem;
+  color: var(--muted);
+  font-size: 0.6rem;
+  font-weight: 750;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+}
+
+.timeline-segment-register strong {
+  color: #e8eef7;
+  font-weight: 700;
 }
 
 .timeline-segment,
@@ -1073,6 +1114,10 @@ circle.timeline-lane__series {
     grid-template-columns: 1fr;
   }
 
+  .timeline-segment-register li {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
   .timeline-lane__label {
     padding-bottom: 0.4rem;
   }
@@ -1083,9 +1128,12 @@ circle.timeline-lane__series {
   }
 
   .timeline-table-scroll {
-    max-height: none;
-    border: 0;
-    overflow: visible;
+    max-height: min(60vh, 22rem);
+    border-block: 1px solid #3a4d65;
+    overflow-x: hidden;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    scrollbar-gutter: stable;
   }
 
   .timeline-table-scroll table,

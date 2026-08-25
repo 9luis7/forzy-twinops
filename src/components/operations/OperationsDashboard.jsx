@@ -85,6 +85,44 @@ export default function OperationsDashboard({ Twin3DComponent = null }) {
     operationalState: displayedOperationalState,
   } = resolveOperationsDisplay({ snapshot, viewMode, historicalContext, displayContext });
   const fallback = <TwinFallback />;
+  const contextualPanels = (
+    <section
+      aria-label={displayViewMode === "historical"
+        ? "Contexto histórico sincronizado"
+        : "Contexto Agora preservado"}
+      className="contextual-panels"
+    >
+      {committedHistoricalContext === null ? null : (
+        <HistoricalContextEvidence context={committedHistoricalContext} />
+      )}
+
+      <section className="sensor-grid" aria-label="Sensores no contexto exibido">
+        {displayedChannels.map((channel, index) => {
+          const sensorId = index === 0 ? "s1" : "s2";
+          return (
+            <SensorCard
+              channel={channel}
+              historical={displayViewMode === "historical"}
+              key={sensorId}
+              sensorId={sensorId}
+            />
+          );
+        })}
+      </section>
+
+      <section className={`details-grid${displayViewMode === "historical" ? " details-grid--historical" : ""}`}>
+        <AssessmentPanel
+          assessment={displayedAssessment}
+          historical={displayViewMode === "historical"}
+        />
+        {displayViewMode === "now" ? <IntegrationHealth integration={snapshot.integration} /> : null}
+      </section>
+
+      {displayViewMode === "now" ? (
+        <TelemetryTrend history={snapshot.history} />
+      ) : null}
+    </section>
+  );
 
   return (
     <main className="operations-shell">
@@ -124,38 +162,12 @@ export default function OperationsDashboard({ Twin3DComponent = null }) {
           page={timelinePage}
           pendingSelection={pendingSelection}
           selectTimelinePoint={selectTimelinePoint}
-        />
-      ) : null}
-
-      {committedHistoricalContext === null ? null : (
-        <HistoricalContextEvidence context={committedHistoricalContext} />
+        >
+          {contextualPanels}
+        </TimelineWorkspace>
+      ) : (
+        contextualPanels
       )}
-
-      <section className="sensor-grid" aria-label="Sensores no contexto exibido">
-        {displayedChannels.map((channel, index) => {
-          const sensorId = index === 0 ? "s1" : "s2";
-          return (
-            <SensorCard
-              channel={channel}
-              historical={displayViewMode === "historical"}
-              key={sensorId}
-              sensorId={sensorId}
-            />
-          );
-        })}
-      </section>
-
-      {displayViewMode === "now" ? (
-        <TelemetryTrend history={snapshot.history} />
-      ) : null}
-
-      <section className={`details-grid${displayViewMode === "historical" ? " details-grid--historical" : ""}`}>
-        <AssessmentPanel
-          assessment={displayedAssessment}
-          historical={displayViewMode === "historical"}
-        />
-        {displayViewMode === "now" ? <IntegrationHealth integration={snapshot.integration} /> : null}
-      </section>
 
       <section className="panel twin-panel" aria-labelledby="twin-title">
         <div className="panel-heading">

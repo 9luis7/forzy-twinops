@@ -1,4 +1,4 @@
-import React from "react";
+import React, { useId } from "react";
 
 const dateTimeFormatter = new Intl.DateTimeFormat("pt-BR", {
   timeZone: "America/Sao_Paulo",
@@ -14,6 +14,9 @@ const sourceLabels = {
 const sensorIds = ["s1", "s2"];
 
 const formatTimestamp = (value) => dateTimeFormatter.format(new Date(value));
+const originalPointLabel = (count) => (
+  `${count} ${count === 1 ? "ponto original" : "pontos originais"}`
+);
 
 function TimelineLane({ gaps, sensorId, series }) {
   const sensorSeries = series.filter((entry) => entry.sensorId === sensorId);
@@ -82,12 +85,17 @@ function TimelineLane({ gaps, sensorId, series }) {
 }
 
 export default function TimelineOverview({ model }) {
+  const segmentDescriptionId = useId();
+
   if (model.domain === null) {
     return <p className="timeline-empty">Não há cobertura no período solicitado.</p>;
   }
 
   const [from, to] = model.domain;
   const label = `Cobertura temporal proporcional com ${model.segments.length} trechos e ${model.gaps.length} lacunas`;
+  const segmentDescriptionIds = model.segments.map(
+    (_segment, index) => `${segmentDescriptionId}-segment-${index}`,
+  );
 
   return (
     <figure className="timeline-overview" aria-labelledby="timeline-evidence-title">
@@ -103,7 +111,12 @@ export default function TimelineOverview({ model }) {
         </p>
       </figcaption>
 
-      <div aria-label={label} className="timeline-overview__rail" role="img">
+      <div
+        aria-describedby={segmentDescriptionIds.length > 0 ? segmentDescriptionIds.join(" ") : undefined}
+        aria-label={label}
+        className="timeline-overview__rail"
+        role="img"
+      >
         {model.segments.map((segment) => (
           <span
             aria-hidden="true"
@@ -127,6 +140,35 @@ export default function TimelineOverview({ model }) {
           />
         ))}
       </div>
+      <ul
+        aria-label="Trechos com cobertura na linha temporal"
+        className="timeline-segment-register"
+      >
+        {model.segments.map((segment, index) => (
+          <li id={segmentDescriptionIds[index]} key={segment.segmentId}>
+            <span>
+              <small>Origem</small>
+              {sourceLabels[segment.sourceKind] ?? "Origem indispon\u00edvel"}
+            </span>
+            <span>
+              <small>{"In\u00edcio"}</small>
+              <time dateTime={new Date(segment.startMs).toISOString()}>
+                {formatTimestamp(segment.startMs)}
+              </time>
+            </span>
+            <span>
+              <small>Fim</small>
+              <time dateTime={new Date(segment.endMs).toISOString()}>
+                {formatTimestamp(segment.endMs)}
+              </time>
+            </span>
+            <span>
+              <small>Amostras</small>
+              <strong>{originalPointLabel(segment.totalPoints)}</strong>
+            </span>
+          </li>
+        ))}
+      </ul>
       <ul className="visually-hidden" aria-label="Lacunas sem cobertura na linha temporal">
         {model.gaps.map((gap) => (
           <li key={gap.gapId}>
