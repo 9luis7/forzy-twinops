@@ -1,12 +1,15 @@
 import math
+from importlib.util import find_spec
 
 import pandas as pd
+import pytest
 
 from twinops.ml.curation import curate_samples
 from twinops.ml.features import FeatureConfig, compute_trailing_features
 
 
 CONFIG = FeatureConfig(short_window_seconds=4, long_window_seconds=10, min_points=2)
+EXPORTER_AVAILABLE = find_spec("twinops.ml.historical_assessments_v1") is not None
 
 
 def _curated(sample_factory, values, *, seconds=None, temperatures=None):
@@ -90,3 +93,45 @@ def test_duplicate_payload_does_not_enter_trailing_feature_history(sample_factor
     assert features.iloc[2].feature_valid
     assert features.iloc[2].velocity_median == 0.1
     assert features.iloc[2].velocity_ewma == 0.1
+
+
+@pytest.mark.skipif(not EXPORTER_AVAILABLE, reason="covered by the VS6A RED tracer")
+def test_valid_feature_rows_record_exact_actual_trailing_window_bounds(sample_factory):
+    curated = _curated(
+        sample_factory,
+        [0.10, 0.11, 0.12, 0.13],
+        seconds=[0, 4, 10, 14],
+    )
+
+    features = compute_trailing_features(curated, CONFIG)
+
+    assert pd.isna(features.iloc[0].feature_window_start)
+    assert pd.isna(features.iloc[0].feature_window_end)
+    assert features.iloc[2].feature_window_start == features.iloc[0].event_at
+    assert features.iloc[2].feature_window_end == features.iloc[2].event_at
+    assert features.iloc[3].feature_window_start == features.iloc[1].event_at
+    assert features.iloc[3].feature_window_end == features.iloc[3].event_at
+    assert (
+        features.loc[features.feature_valid, "feature_window_start"]
+        <= features.loc[features.feature_valid, "feature_window_end"]
+    ).all()
+
+
+@pytest.mark.skipif(not EXPORTER_AVAILABLE, reason="covered by the VS6A RED tracer")
+def test_duplicate_rows_have_no_feature_window_provenance(sample_factory):
+    curated = curate_samples(
+        [
+            sample_factory(second=0, velocity=0.1, payload_hash="duplicate"),
+            sample_factory(second=1, velocity=0.1, payload_hash="duplicate"),
+            sample_factory(second=2, velocity=0.2),
+        ],
+        gap_seconds=10,
+    )
+
+    features = compute_trailing_features(curated, CONFIG)
+
+    duplicate = features.iloc[1]
+    assert not duplicate.is_new_information
+    assert not duplicate.feature_valid
+    assert pd.isna(duplicate.feature_window_start)
+    assert pd.isna(duplicate.feature_window_end)

@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta, timezone
+from importlib.util import find_spec
 from time import perf_counter
 
 import pytest
@@ -11,6 +12,7 @@ from twinops.ml.scorer import AssessmentScorer, ScorerConfig
 
 
 FEATURE_CONFIG = FeatureConfig(10, 60, 3)
+EXPORTER_AVAILABLE = find_spec("twinops.ml.historical_assessments_v1") is not None
 
 
 def _scorer(sample_factory):
@@ -107,6 +109,32 @@ def test_public_single_assessment_boundary_rejects_multisensor_input(sample_fact
         scorer.assess(
             samples, now=datetime(2026, 8, 12, 13, 0, 3, tzinfo=timezone.utc)
         )
+
+
+@pytest.mark.skipif(not EXPORTER_AVAILABLE, reason="covered by the VS6A RED tracer")
+def test_live_and_historical_paths_share_the_exact_evidence_builder(sample_factory):
+    from twinops.ml.evidence import build_assessment_evidence
+
+    scorer = _scorer(sample_factory)
+    samples = [
+        sample_factory(second=index, velocity=0.1 + index * 0.01)
+        for index in range(8)
+    ]
+    now = datetime(2026, 8, 12, 13, 0, 8, tzinfo=timezone.utc)
+    result = scorer.assess(samples, now=now)
+    relevant = curate_samples(samples, gap_seconds=15)
+    features = compute_trailing_features(relevant, FEATURE_CONFIG)
+    scored = scorer.baseline.score(features)
+
+    shared = build_assessment_evidence(
+        scored.iloc[-1],
+        scorer.baseline,
+        window_seconds=FEATURE_CONFIG.long_window_seconds,
+    )
+
+    assert tuple(result.evidence) == shared
+    assert [item.feature for item in shared] == list(scorer.baseline.config.feature_columns)
+    assert [item.unit for item in shared] == ["mm/s", "mm/s/s", "mm/s", "degC"]
 
 
 @pytest.mark.performance

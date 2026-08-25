@@ -34,6 +34,8 @@ _FEATURE_COLUMNS = [
     "temperature_median",
     "temperature_deviation",
     "temperature_phase_points",
+    "feature_window_start",
+    "feature_window_end",
     "feature_valid",
 ]
 
@@ -55,9 +57,15 @@ def compute_trailing_features(frame: pd.DataFrame, config: FeatureConfig) -> pd.
         raise ValueError(f"curated frame is missing columns: {sorted(missing)}")
 
     output = frame.copy()
-    for column in _FEATURE_COLUMNS[:-1]:
+    for column in _FEATURE_COLUMNS[:-3]:
         output[column] = np.nan
     output["temperature_phase_points"] = 0
+    output["feature_window_start"] = pd.Series(
+        pd.NaT, index=output.index, dtype="datetime64[ns, UTC]"
+    )
+    output["feature_window_end"] = pd.Series(
+        pd.NaT, index=output.index, dtype="datetime64[ns, UTC]"
+    )
     output["feature_valid"] = False
     if output.empty:
         return output
@@ -133,6 +141,8 @@ def compute_trailing_features(frame: pd.DataFrame, config: FeatureConfig) -> pd.
             output.at[row_index, "velocity_slope"] = slope
             output.at[row_index, "velocity_persistence_seconds"] = persistence_seconds
             output.at[row_index, "velocity_change_point"] = change_point
+            output.at[row_index, "feature_window_start"] = ordered_times.iloc[long_start]
+            output.at[row_index, "feature_window_end"] = ordered_times.iloc[local_index]
 
     _compute_phase_temperature(output, config)
     return output

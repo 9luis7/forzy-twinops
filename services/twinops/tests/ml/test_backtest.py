@@ -1,6 +1,9 @@
 from datetime import datetime, timedelta, timezone
+from importlib.util import find_spec
+import json
 
 import pandas as pd
+import pytest
 
 from twinops.ml.backtest import (
     WalkForwardFold,
@@ -10,6 +13,9 @@ from twinops.ml.backtest import (
     run_backtest_csv,
 )
 from twinops.ml.baseline import BaselineConfig, RobustBaseline
+
+
+EXPORTER_AVAILABLE = find_spec("twinops.ml.historical_assessments_v1") is not None
 
 
 def _six_cycle_features():
@@ -33,6 +39,16 @@ def _six_cycle_features():
                 }
             )
     return pd.DataFrame(rows)
+
+
+def _row_evaluation_frame():
+    frame = _six_cycle_features()
+    frame["reading_id"] = [f"reading-{index:03d}" for index in range(len(frame))]
+    frame["source"] = "forzy-csv"
+    frame["is_new_information"] = True
+    frame["feature_window_start"] = frame["event_at"] - timedelta(seconds=4)
+    frame["feature_window_end"] = frame["event_at"]
+    return frame
 
 
 def test_folds_never_split_cycles_or_use_future_training_rows():
@@ -176,3 +192,126 @@ def test_steady_alert_seconds_rejects_timestamp_jump_that_breaks_cadence():
     )
 
     assert _steady_alert_seconds(group) == 0.0
+
+
+@pytest.mark.skipif(not EXPORTER_AVAILABLE, reason="covered by the VS6A RED tracer")
+def test_row_evaluator_uses_only_fold_training_and_has_deterministic_order():
+    from twinops.ml.backtest import evaluate_walk_forward_rows
+
+    frame = _row_evaluation_frame()
+    folds = build_walk_forward_folds(frame, holdout_count=2)
+
+    first = evaluate_walk_forward_rows(frame, RobustBaseline(), folds)
+    second = evaluate_walk_forward_rows(frame, RobustBaseline(), folds)
+
+    assert first == second
+    assert first.fold_count == 3
+    assert first.evaluated_cycle_ids == (2, 3, 4, 5)
+    assert first.skipped_cycle_ids == (0, 1)
+    assert [(row.anchor_event_at, row.reading_id, row.sensor_id, row.fold_id) for row in first.rows] == sorted(
+        (row.anchor_event_at, row.reading_id, row.sensor_id, row.fold_id) for row in first.rows
+    )
+    assert len({(row.fold_id, row.reading_id) for row in first.rows}) == len(first.rows)
+    assert all(row.training_end < row.window_start <= row.window_end <= row.anchor_event_at for row in first.rows)
+    assert all(row.fold_model_hash.startswith("sha256:") for row in first.rows)
+    assert first.rows[0].training_end == frame.loc[frame.cycle_id.eq(1), "event_at"].max()
+
+    future_mutated = frame.copy()
+    future_mutated.loc[future_mutated.cycle_id.eq(5), "velocity_ewma"] = 999_999.0
+    replay = evaluate_walk_forward_rows(future_mutated, RobustBaseline(), folds)
+    cycle_two = [row for row in first.rows if row.anchor_event_at.minute == 2]
+    replay_cycle_two = [row for row in replay.rows if row.anchor_event_at.minute == 2]
+    assert cycle_two == replay_cycle_two
+
+
+@pytest.mark.skipif(not EXPORTER_AVAILABLE, reason="covered by the VS6A RED tracer")
+def test_row_evaluator_omits_duplicate_missing_and_non_finite_anchors():
+    from twinops.ml.backtest import evaluate_walk_forward_rows
+
+    frame = _row_evaluation_frame()
+    folds = build_walk_forward_folds(frame, holdout_count=2)
+    test_rows = frame.index[frame.cycle_id.eq(2)].tolist()
+    frame.loc[test_rows[0], "is_new_information"] = False
+    frame.loc[test_rows[1], "reading_id"] = None
+    frame.loc[test_rows[2], "velocity_ewma"] = float("nan")
+    frame.loc[test_rows[3], "feature_window_start"] = pd.NaT
+
+    result = evaluate_walk_forward_rows(frame, RobustBaseline(), folds)
+
+    omitted = {f"reading-{index:03d}" for index in (test_rows[0], test_rows[2], test_rows[3])}
+    assert omitted.isdisjoint({row.reading_id for row in result.rows})
+    assert all(row.reading_id for row in result.rows)
+    assert not any(
+        row.anchor_event_at == frame.loc[index, "event_at"]
+        for index in test_rows[:4]
+        for row in result.rows
+    )
+
+
+@pytest.mark.skipif(not EXPORTER_AVAILABLE, reason="covered by the VS6A RED tracer")
+def test_row_evaluator_resets_candidate_episode_on_every_causal_break():
+    from twinops.ml.backtest import evaluate_walk_forward_rows
+
+    frame = _row_evaluation_frame()
+    frame.loc[frame.cycle_id.isin((0, 1)), [
+        "velocity_ewma", "velocity_slope", "velocity_change_point", "temperature_deviation"
+    ]] = 0.0
+    candidate_indexes = frame.index[frame.cycle_id.eq(2)].tolist()
+    frame.loc[candidate_indexes, [
+        "velocity_ewma", "velocity_slope", "velocity_change_point", "temperature_deviation"
+    ]] = 0.0
+    frame.loc[candidate_indexes, "velocity_ewma"] = [100.0, 100.0, 0.0, 100.0, 100.0]
+    frame.loc[candidate_indexes[3], "quality_flags"] = ("gap_before",)
+    folds = [WalkForwardFold(train_cycle_ids=(0, 1), test_cycle_ids=(2,))]
+
+    result = evaluate_walk_forward_rows(
+        frame,
+        RobustBaseline(BaselineConfig(persistence_seconds=1)),
+        folds,
+    )
+    rows = [row for row in result.rows if row.anchor_event_at.minute == 2]
+
+    assert [row.persistence_count for row in rows] == [1, 2, 0, 1, 2]
+    assert rows[0].episode_started_at == rows[0].anchor_event_at
+    assert rows[1].episode_started_at == rows[0].anchor_event_at
+    assert rows[2].episode_id is None
+    assert rows[3].episode_started_at == rows[3].anchor_event_at
+    assert rows[4].episode_started_at == rows[3].anchor_event_at
+    assert rows[0].status == "watch"
+    assert rows[1].status == "alert"
+    assert rows[3].status == "watch"
+    assert rows[4].status == "alert"
+
+
+@pytest.mark.skipif(not EXPORTER_AVAILABLE, reason="covered by the VS6A RED tracer")
+def test_legacy_top_ten_candidate_event_bytes_remain_unchanged():
+    frame = _six_cycle_features()
+    report = run_backtest(
+        frame,
+        RobustBaseline(BaselineConfig()),
+        build_walk_forward_folds(frame, holdout_count=2),
+    )
+
+    actual = json.dumps(report.candidate_events, sort_keys=True, separators=(",", ":"))
+    assert actual == (
+        '[{"classification":"candidate_not_ground_truth","cycle_id":5,"fold":2,'
+        '"observed_at":"2026-08-12T13:05:04+00:00","score":41.59359683439005,"sensor_id":"s1"},'
+        '{"classification":"candidate_not_ground_truth","cycle_id":5,"fold":2,'
+        '"observed_at":"2026-08-12T13:05:03+00:00","score":40.469445568595724,"sensor_id":"s1"},'
+        '{"classification":"candidate_not_ground_truth","cycle_id":5,"fold":2,'
+        '"observed_at":"2026-08-12T13:05:02+00:00","score":39.3452943028014,"sensor_id":"s1"},'
+        '{"classification":"candidate_not_ground_truth","cycle_id":2,"fold":0,'
+        '"observed_at":"2026-08-12T13:02:04+00:00","score":38.22114303700708,"sensor_id":"s1"},'
+        '{"classification":"candidate_not_ground_truth","cycle_id":5,"fold":2,'
+        '"observed_at":"2026-08-12T13:05:01+00:00","score":38.221143037007074,"sensor_id":"s1"},'
+        '{"classification":"candidate_not_ground_truth","cycle_id":5,"fold":2,'
+        '"observed_at":"2026-08-12T13:05:00+00:00","score":37.09699177121274,"sensor_id":"s1"},'
+        '{"classification":"candidate_not_ground_truth","cycle_id":2,"fold":0,'
+        '"observed_at":"2026-08-12T13:02:03+00:00","score":35.97284050541843,"sensor_id":"s1"},'
+        '{"classification":"candidate_not_ground_truth","cycle_id":2,"fold":0,'
+        '"observed_at":"2026-08-12T13:02:02+00:00","score":33.724537973829776,"sensor_id":"s1"},'
+        '{"classification":"candidate_not_ground_truth","cycle_id":2,"fold":0,'
+        '"observed_at":"2026-08-12T13:02:01+00:00","score":31.476235442241123,"sensor_id":"s1"},'
+        '{"classification":"candidate_not_ground_truth","cycle_id":4,"fold":2,'
+        '"observed_at":"2026-08-12T13:04:04+00:00","score":30.352084176446787,"sensor_id":"s1"}]'
+    )

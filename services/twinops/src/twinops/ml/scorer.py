@@ -10,7 +10,6 @@ from hashlib import sha256
 import json
 import uuid
 
-import numpy as np
 import pandas as pd
 
 from twinops.contracts.models import (
@@ -26,6 +25,7 @@ from twinops.contracts.models import (
 from twinops.ml.baseline import RobustBaseline
 from twinops.ml.curation import curate_samples
 from twinops.ml.features import FeatureConfig, compute_trailing_features
+from twinops.ml.evidence import build_assessment_evidence
 
 
 @dataclass(frozen=True)
@@ -211,34 +211,13 @@ class AssessmentScorer:
         )
 
     def _evidence(self, row: pd.Series) -> list[AssessmentEvidence]:
-        units = {
-            "velocity_ewma": "mm/s",
-            "velocity_slope": "mm/s/s",
-            "velocity_change_point": "mm/s",
-            "temperature_deviation": "degC",
-        }
-        evidence: list[AssessmentEvidence] = []
-        sensor_id = str(row.sensor_id)
-        for feature in self.baseline.config.feature_columns:
-            value = float(row[feature])
-            if not np.isfinite(value):
-                continue
-            baseline = self.baseline.centers_[sensor_id][feature]
-            deviation = value - baseline
-            direction = "stable" if abs(deviation) <= 1e-12 else ("up" if deviation > 0 else "down")
-            evidence.append(
-                AssessmentEvidence(
-                    id=f"ev-v1-{feature.replace('_', '-')}",
-                    feature=feature,
-                    value=value,
-                    unit=units[feature],
-                    baseline=baseline,
-                    deviation=deviation,
-                    direction=direction,
-                    windowSeconds=self.feature_config.long_window_seconds,
-                )
+        return list(
+            build_assessment_evidence(
+                row,
+                self.baseline,
+                window_seconds=self.feature_config.long_window_seconds,
             )
-        return evidence
+        )
 
 
 def _event_datetime(sample: CanonicalSensorReading) -> datetime:
