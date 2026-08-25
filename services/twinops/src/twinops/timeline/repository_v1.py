@@ -87,7 +87,7 @@ class TimelineReadQueryV1:
             "temperature",
         }:
             raise ValueError("unknown timeline metric")
-        if isinstance(self.limit, bool) or not 1 <= self.limit <= 500:
+        if type(self.limit) is not int or not 1 <= self.limit <= 500:
             raise ValueError("timeline limit must be between 1 and 500")
 
 
