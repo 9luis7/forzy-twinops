@@ -451,6 +451,22 @@ describe("Timeline v1 composed runtime contract", () => {
     reject(assertTimelineOverviewV1, reversedPoints);
   });
 
+  it("accepts unobservable tied-point order and rejects observable series violations", () => {
+    const tied = fixture("overview-unified.valid.json");
+    tied.series[0].points[0].pointId = "00000000-0000-5000-8000-000000000109";
+    tied.series[0].points[1].pointId = "00000000-0000-5000-8000-000000000108";
+    tied.series[0].points[1].eventAt = tied.series[0].points[0].eventAt;
+    expect(() => assertTimelineOverviewV1(tied)).not.toThrow();
+
+    const decreasing = fixture("overview-unified.valid.json");
+    decreasing.series[0].points.reverse();
+    reject(assertTimelineOverviewV1, decreasing);
+
+    const duplicate = fixture("overview-unified.valid.json");
+    duplicate.series[0].points[1].pointId = duplicate.series[0].points[0].pointId;
+    reject(assertTimelineOverviewV1, duplicate);
+  });
+
   it("requires method none to retain every original point", () => {
     const payload = fixture("overview-unified.valid.json");
     payload.aggregationSummary.requestedMaxPoints = 100;

@@ -39,6 +39,7 @@ from twinops.timeline.segments_v1 import (
     TimelineCoverageV1,
     build_operating_cycles_v1,
     build_timeline_coverage_v1,
+    project_timeline_coverage_v1,
 )
 
 
@@ -309,12 +310,6 @@ def _series(
                 for point in originals
                 if str(point.point_id) in selected_ids
             )
-            selected = tuple(
-                sorted(
-                    selected,
-                    key=lambda point: (point.event_at, str(point.point_id)),
-                )
-            )
             rows.append(
                 TimelineSeriesV1.model_validate(
                     {
@@ -392,6 +387,14 @@ class TimelineServiceV1:
                 key=timeline_order_key_v1,
             )
         )
+        topology_policies = _policies_for_effective_points(
+            self._repository, all_originals
+        )
+        topology = build_timeline_coverage_v1(
+            all_originals,
+            active_batch_id=active_batch_id,
+            policies=topology_policies,
+        )
         available_points = tuple(
             point
             for point in all_originals
@@ -410,13 +413,20 @@ class TimelineServiceV1:
                 for point in available_points
                 if ranges.effective_from <= point.event_at < ranges.effective_to
             )
-        policies = _policies_for_effective_points(
-            self._repository, effective_points
-        )
-        coverage = build_timeline_coverage_v1(
-            effective_points,
-            active_batch_id=active_batch_id,
-            policies=policies,
+        coverage = (
+            TimelineCoverageV1(segments=(), gaps=(), point_segment_ids={})
+            if ranges.effective_from is None or ranges.effective_to is None
+            else project_timeline_coverage_v1(
+                topology,
+                tuple(
+                    point
+                    for point in all_originals
+                    if ranges.effective_from <= point.event_at < ranges.effective_to
+                ),
+                effective_points,
+                effective_from=ranges.effective_from,
+                effective_to=ranges.effective_to,
+            )
         )
         budgets = _budgets(
             effective_points,

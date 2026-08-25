@@ -710,7 +710,7 @@ const assertOverview = (value) => {
     if (aggregation.originalPointCount !== segment.sensorCounts[row.sensorId]) {
       fail("series membership disagrees with segment sensor counts");
     }
-    const pointKeys = [];
+    const pointTimes = [];
     for (const point of row.points) {
       if (seenPointIds.has(point.pointId)) fail("series cannot duplicate original point IDs");
       seenPointIds.add(point.pointId);
@@ -718,10 +718,10 @@ const assertOverview = (value) => {
         || milliseconds(point.eventAt) > milliseconds(segment.endAt)) {
         fail("series point does not belong to its segment");
       }
-      pointKeys.push(`${point.eventAt}|${point.pointId}`);
+      pointTimes.push(milliseconds(point.eventAt));
     }
-    if (JSON.stringify(pointKeys) !== JSON.stringify([...pointKeys].sort())) {
-      fail("series points must retain total order");
+    if (pointTimes.some((pointTime, index) => index > 0 && pointTime < pointTimes[index - 1])) {
+      fail("series points must retain chronological order");
     }
     const combinationKey = `${row.sensorId}|${row.sourceKind}`;
     combinations.set(combinationKey, [...(combinations.get(combinationKey) ?? []), row]);

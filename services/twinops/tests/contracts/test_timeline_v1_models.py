@@ -648,6 +648,33 @@ def test_overview_none_method_requires_full_retention() -> None:
     assert _model_accepts(TimelineOverviewV1, payload) is False
 
 
+def test_overview_series_order_uses_only_observable_public_facts() -> None:
+    tied = _fixture("overview-unified.valid.json")
+    tied["series"][0]["points"][0]["pointId"] = (
+        "00000000-0000-5000-8000-000000000109"
+    )
+    tied["series"][0]["points"][1]["pointId"] = (
+        "00000000-0000-5000-8000-000000000108"
+    )
+    tied["series"][0]["points"][1]["eventAt"] = tied["series"][0]["points"][
+        0
+    ]["eventAt"]
+    TimelineOverviewV1.model_validate(tied)
+    validate_timeline_public_v1("timeline-overview", tied)
+
+    decreasing = _fixture("overview-unified.valid.json")
+    decreasing["series"][0]["points"].reverse()
+    _assert_rejected_everywhere(
+        "timeline-overview", TimelineOverviewV1, decreasing
+    )
+
+    duplicate = _fixture("overview-unified.valid.json")
+    duplicate["series"][0]["points"][1]["pointId"] = duplicate["series"][0][
+        "points"
+    ][0]["pointId"]
+    _assert_rejected_everywhere("timeline-overview", TimelineOverviewV1, duplicate)
+
+
 def test_overview_requires_every_nonzero_segment_sensor_group() -> None:
     payload = _fixture("overview-unified.valid.json")
     omitted = payload["series"].pop()

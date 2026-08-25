@@ -112,7 +112,7 @@ def test_empty_and_bounded_no_result_overviews_are_honest_and_validated() -> Non
     assert no_result.available_range.from_ == start
     assert no_result.available_range.to == start + timedelta(milliseconds=1)
     assert no_result.segments == []
-    assert repository.policy_reads == []
+    assert repository.policy_reads == [{policy.collection_policy_id}]
 
 
 def test_unified_overview_is_fully_validated_read_only_and_byte_deterministic() -> None:
@@ -201,8 +201,11 @@ def test_narrow_zoom_returns_the_exact_original_without_reduction() -> None:
         for index in range(3)
     )
     repository = FakeTimelineRepositoryV1(archive=archive)
+    service = _service(repository)
 
-    overview = _service(repository).overview(
+    full = service.overview(_query(sensor_ids=("s1",)))
+
+    overview = service.overview(
         _query(
             sensor_ids=("s1",),
             from_at=start + timedelta(seconds=10),
@@ -219,9 +222,154 @@ def test_narrow_zoom_returns_the_exact_original_without_reduction() -> None:
     assert overview.aggregation_summary.returned_point_count == 1
     assert overview.series[0].aggregation.method == "none"
     assert overview.series[0].points[0].point_id == archive[1].point_id
+    assert overview.segments[0].segment_id == full.segments[0].segment_id
+
+    from twinops.timeline.segments_v1 import build_timeline_coverage_v1
+
+    recomputed = build_timeline_coverage_v1(
+        archive,
+        active_batch_id=BATCH_A,
+        policies={},
+    )
+    assert str(overview.segments[0].segment_id) == recomputed.point_segment_ids[
+        str(archive[1].point_id)
+    ]
 
 
-def test_tied_series_points_use_the_frozen_public_projection_order() -> None:
+def test_sensor_filter_does_not_change_global_segment_identity() -> None:
+    start = datetime(2026, 8, 22, 12, tzinfo=timezone.utc)
+    archive = tuple(
+        sorted(
+            (
+                make_point(10, event_at=start, sensor_id="s1", pair_key="a"),
+                make_point(
+                    11,
+                    event_at=start + timedelta(seconds=10),
+                    sensor_id="s2",
+                    pair_key="b",
+                ),
+            ),
+            key=timeline_order_key_v1,
+        )
+    )
+    service = _service(FakeTimelineRepositoryV1(archive=archive))
+
+    unified = service.overview(_query(sensor_ids=("s1", "s2")))
+    s1_only = service.overview(_query(sensor_ids=("s1",)))
+    s2_only = service.overview(_query(sensor_ids=("s2",)))
+
+    assert unified.segments[0].segment_id == s1_only.segments[0].segment_id
+    assert unified.segments[0].segment_id == s2_only.segments[0].segment_id
+
+
+def test_archive_gap_remains_explicit_at_leading_and_trailing_range_edges() -> None:
+    start = datetime(2026, 8, 22, 12, tzinfo=timezone.utc)
+    midpoint = start + timedelta(seconds=30)
+    right_at = start + timedelta(seconds=60)
+    archive = (
+        make_point(30, event_at=start, sensor_id="s1", cycle_id=uuid5_text("a")),
+        make_point(
+            31,
+            event_at=right_at,
+            sensor_id="s1",
+            cycle_id=uuid5_text("b"),
+        ),
+    )
+    service = _service(FakeTimelineRepositoryV1(archive=archive))
+
+    full = service.overview(_query(sensor_ids=("s1",)))
+    leading = service.overview(
+        _query(
+            sensor_ids=("s1",),
+            from_at=midpoint,
+            to_at=right_at + timedelta(milliseconds=1),
+        )
+    )
+    trailing = service.overview(
+        _query(sensor_ids=("s1",), from_at=start, to_at=midpoint)
+    )
+
+    assert [gap.gap_type for gap in full.gaps] == ["archive_sampling_gap"]
+    assert leading.segments[0].segment_id == full.segments[1].segment_id
+    assert leading.gaps[0].left_segment_id is None
+    assert leading.gaps[0].right_segment_id == full.segments[1].segment_id
+    assert leading.gaps[0].start_at == midpoint
+    assert leading.gaps[0].end_at == right_at
+    assert trailing.segments[0].segment_id == full.segments[0].segment_id
+    assert trailing.gaps[0].left_segment_id == full.segments[0].segment_id
+    assert trailing.gaps[0].right_segment_id is None
+    assert trailing.gaps[0].start_at == start
+    assert trailing.gaps[0].end_at == midpoint
+
+
+def test_source_and_live_gaps_remain_explicit_at_both_range_edges() -> None:
+    start = datetime(2026, 8, 12, 15, tzinfo=timezone.utc)
+    policy = make_policy()
+    cases = (
+        (
+            "source_discontinuity",
+            start + timedelta(seconds=60),
+            FakeTimelineRepositoryV1(
+                archive=(make_point(40, event_at=start),),
+                live=(
+                    make_point(
+                        41,
+                        event_at=start + timedelta(seconds=60),
+                        source_kind="live_collection",
+                    ),
+                ),
+                policies=(policy,),
+            ),
+        ),
+        (
+            "live_expected_collection_gap",
+            start + timedelta(seconds=20),
+            FakeTimelineRepositoryV1(
+                live=(
+                    make_point(42, event_at=start, source_kind="live_collection"),
+                    make_point(
+                        43,
+                        event_at=start + timedelta(seconds=20),
+                        source_kind="live_collection",
+                    ),
+                ),
+                policies=(policy,),
+                batch_id=None,
+            ),
+        ),
+    )
+
+    for gap_type, right_at, repository in cases:
+        midpoint = start + (right_at - start) / 2
+        service = _service(repository)
+        full = service.overview(_query(sensor_ids=("s1",)))
+        leading = service.overview(
+            _query(
+                sensor_ids=("s1",),
+                from_at=midpoint,
+                to_at=right_at + timedelta(milliseconds=1),
+            )
+        )
+        trailing = service.overview(
+            _query(sensor_ids=("s1",), from_at=start, to_at=midpoint)
+        )
+
+        assert [gap.gap_type for gap in full.gaps] == [gap_type]
+        assert leading.segments[0].segment_id == full.segments[1].segment_id
+        assert leading.gaps[0].gap_type == gap_type
+        assert leading.gaps[0].left_segment_id is None
+        assert leading.gaps[0].right_segment_id == full.segments[1].segment_id
+        assert leading.gaps[0].start_at == midpoint
+        assert leading.gaps[0].end_at == right_at
+        assert trailing.segments[0].segment_id == full.segments[0].segment_id
+        assert trailing.gaps[0].gap_type == gap_type
+        assert trailing.gaps[0].left_segment_id == full.segments[0].segment_id
+        assert trailing.gaps[0].right_segment_id is None
+        assert trailing.gaps[0].start_at == start
+        assert trailing.gaps[0].end_at == midpoint
+
+
+def test_tied_series_points_preserve_original_full_total_order() -> None:
     event_at = datetime(2026, 8, 22, 12, tzinfo=timezone.utc)
     first_payload = make_point(20, event_at=event_at).model_dump_public()
     second_payload = make_point(21, event_at=event_at).model_dump_public()
@@ -239,8 +387,8 @@ def test_tied_series_points_use_the_frozen_public_projection_order() -> None:
     )
 
     assert [str(point.point_id) for point in overview.series[0].points] == [
-        "00000000-0000-5000-8000-000000000008",
         "00000000-0000-5000-8000-000000000009",
+        "00000000-0000-5000-8000-000000000008",
     ]
 
 

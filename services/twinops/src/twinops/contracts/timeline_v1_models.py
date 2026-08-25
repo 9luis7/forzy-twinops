@@ -1057,7 +1057,7 @@ def _assert_overview(value: dict[str, object]) -> None:
             raise ValueError("none aggregation must retain every original point")
         if original != segment["sensorCounts"][row["sensorId"]]:
             raise ValueError("series membership disagrees with segment sensor counts")
-        point_keys: list[tuple[datetime, str]] = []
+        point_times: list[datetime] = []
         for point in points:
             point_id = point["pointId"]
             if point_id in seen_point_ids:
@@ -1066,9 +1066,9 @@ def _assert_overview(value: dict[str, object]) -> None:
             event_at = _timestamp(point["eventAt"])
             if not (_timestamp(segment["startAt"]) <= event_at <= _timestamp(segment["endAt"])):
                 raise ValueError("series point does not belong to its segment")
-            point_keys.append((event_at, point_id))
-        if point_keys != sorted(point_keys):
-            raise ValueError("series points must retain total order")
+            point_times.append(event_at)
+        if point_times != sorted(point_times):
+            raise ValueError("series points must retain chronological order")
         key = (row["sensorId"], row["sourceKind"])
         combinations.setdefault(key, []).append(row)
         expected_series_keys.append(

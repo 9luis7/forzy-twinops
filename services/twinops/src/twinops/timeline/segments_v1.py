@@ -239,6 +239,29 @@ def _gap(
     right: TimelineSegmentV1,
     gap_type: str,
 ) -> TimelineGapV1:
+    return _bounded_gap(
+        left=left,
+        right=right,
+        start=left.end_at,
+        end=right.start_at,
+        gap_type=gap_type,
+    )
+
+
+def _bounded_gap(
+    *,
+    left: TimelineSegmentV1 | None,
+    right: TimelineSegmentV1 | None,
+    start: datetime,
+    end: datetime,
+    gap_type: str,
+) -> TimelineGapV1:
+    if left is None and right is None:
+        raise ValueError("a projected gap must border a returned segment")
+    start = parse_public_utc_millis_v1(start)
+    end = parse_public_utc_millis_v1(end)
+    if start >= end:
+        raise ValueError("a projected gap must retain a positive open interval")
     message_code = {
         "source_discontinuity": "timeline_gap_source_discontinuity",
         "archive_sampling_gap": "timeline_gap_archive_sampling",
@@ -246,14 +269,16 @@ def _gap(
         "expected_idle": "timeline_gap_expected_idle",
         "unclassified_coverage_gap": "timeline_gap_unclassified_coverage",
     }[gap_type]
-    start_text = serialize_public_utc_millis_v1(left.end_at)
-    end_text = serialize_public_utc_millis_v1(right.start_at)
+    start_text = serialize_public_utc_millis_v1(start)
+    end_text = serialize_public_utc_millis_v1(end)
+    left_id = None if left is None else str(left.segment_id)
+    right_id = None if right is None else str(right.segment_id)
     name = "|".join(
         (
             "timeline-gap-v1",
             gap_type,
-            str(left.segment_id),
-            str(right.segment_id),
+            left_id or "none",
+            right_id or "none",
             start_text,
             end_text,
             "timeline-gap-v1",
@@ -262,12 +287,12 @@ def _gap(
     return TimelineGapV1.model_validate(
         {
             "gapId": str(uuid5(NAMESPACE_URL, name)),
-            "leftSegmentId": str(left.segment_id),
-            "rightSegmentId": str(right.segment_id),
+            "leftSegmentId": left_id,
+            "rightSegmentId": right_id,
             "startAt": start_text,
             "endAt": end_text,
             "gapType": gap_type,
-            "durationSeconds": (right.start_at - left.end_at).total_seconds(),
+            "durationSeconds": (end - start).total_seconds(),
             "ruleVersion": "timeline-gap-v1",
             "messageCode": message_code,
         }
@@ -494,6 +519,117 @@ def build_timeline_coverage_v1(
     )
 
 
+def project_timeline_coverage_v1(
+    topology: TimelineCoverageV1,
+    topology_points: Sequence[TimelinePointV1],
+    points: Sequence[TimelinePointV1],
+    *,
+    effective_from: datetime,
+    effective_to: datetime,
+) -> TimelineCoverageV1:
+    """Project query counts/range while retaining global segment identities."""
+
+    range_start = parse_public_utc_millis_v1(effective_from)
+    range_end = parse_public_utc_millis_v1(effective_to)
+    if range_start >= range_end:
+        raise ValueError("timeline range must be non-empty and increasing")
+    range_originals = _validated_originals(topology_points)
+    selected = _validated_originals(points)
+    if any(
+        not range_start <= point.event_at < range_end
+        for point in range_originals
+    ):
+        raise ValueError(
+            "topology projection points must be inside the effective range"
+        )
+    range_ids = {str(point.point_id) for point in range_originals}
+    if any(str(point.point_id) not in range_ids for point in selected):
+        raise ValueError("timeline projection points must be original topology points")
+    if any(
+        str(point.point_id) not in topology.point_segment_ids
+        for point in range_originals
+    ):
+        raise ValueError("timeline topology membership is incomplete")
+
+    range_by_segment: dict[str, list[TimelinePointV1]] = defaultdict(list)
+    selected_by_segment: dict[str, list[TimelinePointV1]] = defaultdict(list)
+    for point in range_originals:
+        range_by_segment[topology.point_segment_ids[str(point.point_id)]].append(
+            point
+        )
+    for point in selected:
+        selected_by_segment[topology.point_segment_ids[str(point.point_id)]].append(
+            point
+        )
+
+    segments: list[TimelineSegmentV1] = []
+    membership: dict[str, str] = {}
+    for segment in topology.segments:
+        segment_id = str(segment.segment_id)
+        segment_points = selected_by_segment.get(segment_id, [])
+        if not segment_points:
+            continue
+        segment_topology_points = range_by_segment[segment_id]
+        payload = segment.model_dump_public()
+        payload.update(
+            {
+                "startAt": serialize_public_utc_millis_v1(
+                    segment_topology_points[0].event_at
+                ),
+                "endAt": serialize_public_utc_millis_v1(
+                    segment_topology_points[-1].event_at
+                ),
+                "totalPoints": len(segment_points),
+                "sensorCounts": {
+                    "s1": sum(point.sensor_id == "s1" for point in segment_points),
+                    "s2": sum(point.sensor_id == "s2" for point in segment_points),
+                },
+            }
+        )
+        projected = TimelineSegmentV1.model_validate(payload)
+        segments.append(projected)
+        for point in segment_points:
+            membership[str(point.point_id)] = segment_id
+
+    segment_by_id = {str(segment.segment_id): segment for segment in segments}
+    gaps: list[TimelineGapV1] = []
+    for gap in topology.gaps:
+        start = max(gap.start_at, range_start)
+        end = min(gap.end_at, range_end)
+        if start >= end:
+            continue
+        left = (
+            None
+            if gap.left_segment_id is None
+            else segment_by_id.get(str(gap.left_segment_id))
+        )
+        right = (
+            None
+            if gap.right_segment_id is None
+            else segment_by_id.get(str(gap.right_segment_id))
+        )
+        if left is not None and left.end_at != start:
+            left = None
+        if right is not None and right.start_at != end:
+            right = None
+        if left is None and right is None:
+            continue
+        gaps.append(
+            _bounded_gap(
+                left=left,
+                right=right,
+                start=start,
+                end=end,
+                gap_type=gap.gap_type,
+            )
+        )
+    return TimelineCoverageV1(
+        segments=tuple(segments),
+        gaps=tuple(gaps),
+        point_segment_ids=membership,
+    )
+
+
 def build_operating_cycles_v1(
     archive_points: Sequence[TimelinePointV1],
     *,
@@ -578,4 +714,5 @@ __all__ = [
     "TimelineUnrepresentableLiveGapV1",
     "build_operating_cycles_v1",
     "build_timeline_coverage_v1",
+    "project_timeline_coverage_v1",
 ]
