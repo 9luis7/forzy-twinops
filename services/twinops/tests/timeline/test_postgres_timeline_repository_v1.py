@@ -187,6 +187,69 @@ def test_postgres_timeline_archive_reads_use_direct_point_projection(
     ]
 
 
+def test_postgres_timeline_archive_projection_rejects_live_canonical_without_deep_validation(
+    monkeypatch,
+) -> None:
+    batch = prepared_batch(1)
+    sample = batch.samples[0]
+    canonical = sample.reading.model_dump_public()
+    canonical["operatingCycleId"] = None
+    canonical["sourceKind"] = "live_collection"
+    canonical["timestampQuality"] = "assumed_from_retrieval"
+    canonical["provenance"] = {
+        "sourceSystem": "forzy-api",
+        "readingId": "11111111-1111-4111-8111-111111111111",
+        "scheduledAt": canonical["eventAt"],
+        "receivedAt": canonical["eventAt"],
+        "collectionPolicyId": None,
+    }
+    row = {
+        "canonical_json": json.dumps(
+            canonical,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+    }
+    deep_calls = 0
+
+    def fail_deep_revalidation(cls, *args, **kwargs):
+        nonlocal deep_calls
+        deep_calls += 1
+        raise AssertionError("timeline adapter must not revalidate deep readings")
+
+    monkeypatch.setattr(
+        HistoricalSensorReadingV1,
+        "model_validate",
+        classmethod(fail_deep_revalidation),
+    )
+    operations = (
+        lambda: _repository(_Connection([[row]])).read_archive_points(
+            TimelineReadQueryV1(
+                asset_id=batch.asset_id,
+                from_at=None,
+                to_at=None,
+                sensor_id=None,
+                metric=None,
+                limit=1,
+            )
+        ),
+        lambda: _repository(_Connection([[row], []])).point_by_id(
+            batch.asset_id,
+            sample.point_id,
+        ),
+        lambda: _repository(_Connection([[row], []])).points_for_pair(
+            batch.asset_id,
+            str(sample.reading.sample_pair_id),
+        ),
+    )
+
+    for operation in operations:
+        with pytest.raises(HistoricalBatchConflict, match="failed closed validation"):
+            operation()
+    assert deep_calls == 0
+
+
 def test_postgres_live_adapter_projects_and_bulk_loads_policy_associations() -> None:
     scheduled = datetime(2026, 8, 12, 15, tzinfo=timezone.utc)
     reading = live_reading(

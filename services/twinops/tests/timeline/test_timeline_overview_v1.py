@@ -6,7 +6,7 @@ from threading import Event
 import pytest
 
 from twinops.contracts.timeline_v1_models import TimelineOverviewV1, TimelinePointV1
-from twinops.timeline.repository_v1 import timeline_order_key_v1
+from twinops.timeline.repository_v1 import TimelineReadQueryV1, timeline_order_key_v1
 
 from overview_fixtures_v1 import (
     BATCH_A,
@@ -51,6 +51,19 @@ def _query(**changes):
     return TimelineOverviewQueryV1(**(values | changes))
 
 
+def _samples_query(**changes):
+    values = {
+        "asset_id": "forzy-motor-01",
+        "from_at": None,
+        "to_at": None,
+        "sensor_id": None,
+        "metric": "temperature",
+        "after": None,
+        "limit": 2,
+    }
+    return TimelineReadQueryV1(**(values | changes))
+
+
 def test_overview_uses_only_metadata_active_batch_guards() -> None:
     repository = FakeTimelineRepositoryV1()
 
@@ -72,6 +85,120 @@ def test_overview_reuses_one_archive_read_for_the_same_active_batch() -> None:
     assert first.model_dump_public_json() == second.model_dump_public_json()
     assert reads_after_first == 1
     assert len(repository.archive_reads) == reads_after_first
+
+
+def test_samples_reuse_warm_archive_cache_with_identical_cursor_and_fresh_live() -> None:
+    start = datetime(2026, 8, 22, 14, tzinfo=timezone.utc)
+    archive = (make_point(20, event_at=start),)
+    first_live = make_point(
+        21,
+        event_at=start + timedelta(minutes=2),
+        source_kind="live_collection",
+        policy_id=None,
+    )
+    second_live = make_point(
+        22,
+        event_at=start + timedelta(minutes=2, seconds=30),
+        source_kind="live_collection",
+        policy_id=None,
+    )
+    trailing_live = make_point(
+        23,
+        event_at=start + timedelta(minutes=3),
+        source_kind="live_collection",
+        policy_id=None,
+    )
+    expected = _service(
+        FakeTimelineRepositoryV1(
+            archive=archive,
+            live=(first_live, trailing_live),
+        )
+    ).samples(_samples_query(), cursor=None)
+    repository = FakeTimelineRepositoryV1(
+        archive=archive,
+        live=(first_live, trailing_live),
+    )
+    service = _service(repository)
+
+    service.overview(_query())
+    archive_reads_after_warm = len(repository.archive_reads)
+    actual = service.samples(_samples_query(), cursor=None)
+    repository.live = (second_live, trailing_live)
+    refreshed = service.samples(_samples_query(), cursor=None)
+
+    assert actual.model_dump_public_json() == expected.model_dump_public_json()
+    assert actual.next_cursor == expected.next_cursor
+    assert str(first_live.point_id) in {
+        str(point.point_id) for point in actual.items
+    }
+    assert str(first_live.point_id) not in {
+        str(point.point_id) for point in refreshed.items
+    }
+    assert str(second_live.point_id) in {
+        str(point.point_id) for point in refreshed.items
+    }
+    assert len(repository.archive_reads) == archive_reads_after_warm
+    assert len(repository.live_reads) == 3
+
+
+def test_samples_bypass_stale_archive_cache_after_active_batch_change() -> None:
+    second_batch = "sha256:" + "c" * 64
+    first_point = make_point(
+        25,
+        event_at=datetime(2026, 8, 22, 14, tzinfo=timezone.utc),
+    )
+    second_payload = first_point.model_dump_public()
+    second_payload["provenance"]["batchId"] = second_batch
+    second_point = TimelinePointV1.model_validate(second_payload)
+    repository = FakeTimelineRepositoryV1(archive=(first_point,))
+    service = _service(repository)
+
+    service.overview(_query())
+    archive_reads_after_warm = len(repository.archive_reads)
+    repository.archive = (second_point,)
+    repository.batch_id = second_batch
+    page = service.samples(_samples_query(), cursor=None)
+
+    assert page.active_historical_batch_id == second_batch
+    assert page.items == [second_point]
+    assert len(repository.archive_reads) == archive_reads_after_warm + 1
+
+
+def test_samples_do_not_block_behind_an_inflight_archive_cache_miss() -> None:
+    class BlockingArchiveRepository(FakeTimelineRepositoryV1):
+        def __init__(self, **kwargs) -> None:
+            super().__init__(**kwargs)
+            self.first_archive_started = Event()
+            self.release_first_archive = Event()
+
+        def read_archive_points(self, query):
+            page = super().read_archive_points(query)
+            if len(self.archive_reads) == 1:
+                self.first_archive_started.set()
+                assert self.release_first_archive.wait(2)
+            return page
+
+    point = make_point(
+        24,
+        event_at=datetime(2026, 8, 22, 14, tzinfo=timezone.utc),
+    )
+    repository = BlockingArchiveRepository(archive=(point,))
+    service = _service(repository)
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        overview_future = executor.submit(service.overview, _query())
+        assert repository.first_archive_started.wait(1)
+        samples_future = executor.submit(
+            service.samples,
+            _samples_query(),
+            cursor=None,
+        )
+        page = samples_future.result(timeout=1)
+        repository.release_first_archive.set()
+        overview_future.result(timeout=2)
+
+    assert page.items == [point]
+    assert len(repository.archive_reads) == 2
 
 
 def test_overview_reloads_once_when_active_batch_changes_then_reuses_it() -> None:

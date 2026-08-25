@@ -2,6 +2,7 @@
 
 from datetime import datetime, timedelta, timezone
 from hashlib import sha256
+import json
 import sqlite3
 from uuid import NAMESPACE_URL, uuid5
 
@@ -202,6 +203,86 @@ def test_sqlite_timeline_archive_reads_use_direct_point_projection(
     }
     assert str(point.point_id) == active.samples[0].point_id
     assert {str(item.point_id) for item in pair} == expected_pair_ids
+
+
+def test_sqlite_timeline_archive_projection_rejects_live_canonical_without_deep_validation(
+    sqlite_database_path,
+    sqlite_timeline_repository,
+    monkeypatch,
+) -> None:
+    active = prepared_batch(1)
+    sqlite_timeline_repository.stage_batch(active)
+    sqlite_timeline_repository.activate_batch(
+        asset_id=active.asset_id,
+        batch_id=active.batch_id,
+        expected_active_batch_id=None,
+    )
+    sample = active.samples[0]
+    canonical = sample.reading.model_dump_public()
+    canonical["operatingCycleId"] = None
+    canonical["sourceKind"] = "live_collection"
+    canonical["timestampQuality"] = "assumed_from_retrieval"
+    canonical["provenance"] = {
+        "sourceSystem": "forzy-api",
+        "readingId": "11111111-1111-4111-8111-111111111111",
+        "scheduledAt": canonical["eventAt"],
+        "receivedAt": canonical["eventAt"],
+        "collectionPolicyId": None,
+    }
+    canonical_json = json.dumps(
+        canonical,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    connection = sqlite3.connect(sqlite_database_path)
+    try:
+        connection.execute(
+            "UPDATE historical_samples_v1 SET canonical_json=? "
+            "WHERE batch_id=? AND reading_id=?",
+            (canonical_json, active.batch_id, sample.point_id),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+    deep_calls = 0
+
+    def fail_deep_revalidation(cls, *args, **kwargs):
+        nonlocal deep_calls
+        deep_calls += 1
+        raise AssertionError("timeline adapter must not revalidate deep readings")
+
+    monkeypatch.setattr(
+        HistoricalSensorReadingV1,
+        "model_validate",
+        classmethod(fail_deep_revalidation),
+    )
+    operations = (
+        lambda: sqlite_timeline_repository.read_archive_points(
+            TimelineReadQueryV1(
+                asset_id=active.asset_id,
+                from_at=None,
+                to_at=None,
+                sensor_id=None,
+                metric=None,
+                limit=10,
+            )
+        ),
+        lambda: sqlite_timeline_repository.point_by_id(
+            active.asset_id,
+            sample.point_id,
+        ),
+        lambda: sqlite_timeline_repository.points_for_pair(
+            active.asset_id,
+            str(sample.reading.sample_pair_id),
+        ),
+    )
+
+    for operation in operations:
+        with pytest.raises(HistoricalBatchConflict, match="failed closed validation"):
+            operation()
+    assert deep_calls == 0
 
 
 def test_sqlite_reads_live_points_with_deterministic_ids_and_nullable_policy(

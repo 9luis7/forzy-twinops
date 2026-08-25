@@ -728,7 +728,22 @@ class TimelineServiceV1:
         self._paginator = TimelinePaginatorV1(
             repository,
             TimelineCursorCodecV1(),
+            cached_archive_points=self._cached_archive_points_for_batch,
         )
+
+    def _cached_archive_points_for_batch(
+        self,
+        active_batch_id: str | None,
+    ) -> tuple[TimelinePointV1, ...] | None:
+        if not self._archive_cache_lock.acquire(blocking=False):
+            return None
+        try:
+            cache = self._archive_cache
+            if cache is None or cache.active_batch_id != active_batch_id:
+                return None
+            return cache.points
+        finally:
+            self._archive_cache_lock.release()
 
     def _archive_points_for_batch(
         self,

@@ -126,6 +126,8 @@ def historical_timeline_point_v1(
 def historical_timeline_point_from_canonical_v1(
     canonical: dict[str, object],
 ) -> TimelinePointV1:
+    if canonical.get("sourceKind") != "historical_archive":
+        raise ValueError("sourceKind must be historical_archive")
     source_timestamp_text = canonical.get("sourceTimestampText")
     if type(source_timestamp_text) is not str or not source_timestamp_text:
         raise ValueError("sourceTimestampText must be non-empty text")

@@ -9,7 +9,7 @@ from uuid import NAMESPACE_URL, uuid5
 
 import pytest
 
-from twinops.contracts.timeline_v1_models import TimelinePointV1
+from twinops.contracts.timeline_v1_models import TimelinePageV1, TimelinePointV1
 from twinops.timeline.cursor_v1 import (
     TimelineCursorCodecV1,
     TimelineCursorConflict,
@@ -113,6 +113,12 @@ class _SwitchingRepository(_Repository):
         return super().read_archive_points(query)
 
 
+class _SwitchingLiveRepository(_Repository):
+    def read_live_points(self, query):
+        self.batch_id = _OTHER_BATCH
+        return super().read_live_points(query)
+
+
 def _query() -> TimelineReadQueryV1:
     return TimelineReadQueryV1(
         asset_id="forzy-motor-01",
@@ -155,6 +161,89 @@ def test_all_pages_merge_tied_archive_and_live_points_without_deduplication() ->
         point.point_id for point in expected
     ]
     assert len({point.point_id for point in returned}) == len(points)
+
+
+def test_paginator_reuses_validated_cached_archive_tuple_with_identical_pages() -> None:
+    points = [_point("archive", index) for index in range(3)] + [
+        _point("live", index) for index in range(3, 6)
+    ]
+    direct_repository = _Repository(points[:3][::-1], points[3:][::-1])
+    direct_paginator = TimelinePaginatorV1(
+        direct_repository,
+        TimelineCursorCodecV1(),
+    )
+    expected_pages = []
+    cursor = None
+    while True:
+        page = direct_paginator.page(_query(), cursor=cursor)
+        expected_pages.append(page.model_dump_public_json())
+        if not page.has_more:
+            break
+        cursor = page.next_cursor
+
+    cached_archive = tuple(sorted(points[:3], key=timeline_order_key_v1))
+    cached_repository = _Repository(cached_archive, points[3:][::-1])
+    cache_reads = []
+    cached_paginator = TimelinePaginatorV1(
+        cached_repository,
+        TimelineCursorCodecV1(),
+        cached_archive_points=lambda active_batch_id: (
+            cache_reads.append(active_batch_id) or cached_archive
+        ),
+    )
+    actual_pages = []
+    cursor = None
+    while True:
+        page = cached_paginator.page(_query(), cursor=cursor)
+        actual_pages.append(page.model_dump_public_json())
+        if not page.has_more:
+            break
+        cursor = page.next_cursor
+
+    assert actual_pages == expected_pages
+    assert cache_reads == [_BATCH] * len(actual_pages)
+    assert cached_repository.source_reads == len(actual_pages)
+
+
+def test_paginator_does_not_redump_already_validated_points_for_page_validation(
+    monkeypatch,
+) -> None:
+    point = _point("archive", 0)
+    repository = _Repository((point,), ())
+    original_model_validate = TimelinePageV1.model_validate
+
+    def require_validated_point_instances(cls, payload, *args, **kwargs):
+        assert all(
+            isinstance(item, TimelinePointV1) for item in payload["items"]
+        ), "validated timeline points must remain model instances"
+        return original_model_validate(payload, *args, **kwargs)
+
+    monkeypatch.setattr(
+        TimelinePageV1,
+        "model_validate",
+        classmethod(require_validated_point_instances),
+    )
+
+    page = TimelinePaginatorV1(
+        repository,
+        TimelineCursorCodecV1(),
+    ).page(_query(), cursor=None)
+
+    assert page.items == [point]
+
+
+def test_cached_archive_path_retains_active_batch_race_guard() -> None:
+    point = _point("archive", 0)
+    repository = _SwitchingLiveRepository((), ())
+    paginator = TimelinePaginatorV1(
+        repository,
+        TimelineCursorCodecV1(),
+        cached_archive_points=lambda active_batch_id: (point,),
+    )
+
+    with pytest.raises(TimelineCursorConflict):
+        paginator.page(_query(), cursor=None)
+    assert repository.active_batch_id_calls == 2
 
 
 def test_cursor_conflicts_fail_closed_before_source_reads() -> None:

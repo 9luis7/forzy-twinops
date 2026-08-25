@@ -3,15 +3,18 @@
 from __future__ import annotations
 
 import base64
+from collections.abc import Callable
 from dataclasses import replace
 from hashlib import sha256
 import hmac
 from heapq import merge
+from itertools import islice
 import json
 import re
 
 from twinops.contracts.timeline_v1_models import (
     TimelinePageV1,
+    TimelinePointV1,
     parse_public_utc_millis_v1,
     serialize_public_utc_millis_v1,
 )
@@ -19,6 +22,7 @@ from twinops.timeline.repository_v1 import (
     TimelineOrderKeyV1,
     TimelineReadQueryV1,
     TimelineReadRepositoryV1,
+    TimelineSliceV1,
     timeline_order_key_v1,
 )
 
@@ -201,14 +205,44 @@ def _point_matches_query(point, query: TimelineReadQueryV1) -> bool:
     )
 
 
+def _cached_archive_slice(
+    points: tuple[TimelinePointV1, ...],
+    query: TimelineReadQueryV1,
+) -> TimelineSliceV1:
+    selected = tuple(
+        islice(
+            (
+                point
+                for point in points
+                if _point_matches_query(point, query)
+                and (
+                    query.after is None
+                    or timeline_order_key_v1(point) > query.after
+                )
+            ),
+            query.limit + 1,
+        )
+    )
+    return TimelineSliceV1(
+        points=selected,
+        has_more=len(selected) > query.limit,
+    )
+
+
 class TimelinePaginatorV1:
     def __init__(
         self,
         repository: TimelineReadRepositoryV1,
         codec: TimelineCursorCodecV1,
+        *,
+        cached_archive_points: Callable[
+            [str | None], tuple[TimelinePointV1, ...] | None
+        ]
+        | None = None,
     ) -> None:
         self._repository = repository
         self._codec = codec
+        self._cached_archive_points = cached_archive_points
 
     def page(
         self,
@@ -239,7 +273,16 @@ class TimelinePaginatorV1:
             ):
                 raise TimelineCursorConflict("timeline cursor boundary is unavailable")
         read_query = replace(query, after=after)
-        archive = self._repository.read_archive_points(read_query)
+        cached_archive = (
+            None
+            if self._cached_archive_points is None
+            else self._cached_archive_points(active_batch_id)
+        )
+        archive = (
+            self._repository.read_archive_points(read_query)
+            if cached_archive is None
+            else _cached_archive_slice(cached_archive, read_query)
+        )
         live = self._repository.read_live_points(read_query)
         active_batch_id_after_reads = self._repository.active_batch_id(
             query.asset_id
@@ -272,7 +315,7 @@ class TimelinePaginatorV1:
                 "assetId": query.asset_id,
                 "queryFingerprint": query_fingerprint,
                 "activeHistoricalBatchId": active_batch_id,
-                "items": [item.model_dump_public() for item in items],
+                "items": items,
                 "nextCursor": next_cursor,
                 "hasMore": has_more,
                 "limit": query.limit,

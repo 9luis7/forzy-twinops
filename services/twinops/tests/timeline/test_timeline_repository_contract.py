@@ -168,3 +168,22 @@ if _TIMELINE_FOUNDATION_AVAILABLE:
             timeline_repository_v1.historical_timeline_point_from_canonical_v1(
                 canonical
             )
+
+
+    def test_direct_historical_projector_rejects_live_canonical_shape() -> None:
+        canonical = prepared_batch(1).samples[0].reading.model_dump_public()
+        canonical["operatingCycleId"] = None
+        canonical["sourceKind"] = "live_collection"
+        canonical["timestampQuality"] = "assumed_from_retrieval"
+        canonical["provenance"] = {
+            "sourceSystem": "forzy-api",
+            "readingId": "11111111-1111-4111-8111-111111111111",
+            "scheduledAt": canonical["eventAt"],
+            "receivedAt": canonical["eventAt"],
+            "collectionPolicyId": None,
+        }
+
+        with pytest.raises(ValueError, match="historical_archive"):
+            timeline_repository_v1.historical_timeline_point_from_canonical_v1(
+                canonical
+            )
