@@ -27,6 +27,7 @@ from twinops.timeline.repository_v1 import (
 
 _FIXTURES = Path(__file__).resolve().parents[4] / "contracts/timeline/v1/fixtures"
 _BATCH = "sha256:" + "a" * 64
+_OTHER_BATCH = "sha256:" + "b" * 64
 
 
 def _fixture(name: str):
@@ -102,6 +103,12 @@ class _Repository:
         )
 
 
+class _SwitchingRepository(_Repository):
+    def read_archive_points(self, query):
+        self.batch_id = _OTHER_BATCH
+        return super().read_archive_points(query)
+
+
 def _query() -> TimelineReadQueryV1:
     return TimelineReadQueryV1(
         asset_id="forzy-motor-01",
@@ -162,3 +169,22 @@ def test_cursor_conflicts_fail_closed_before_source_reads() -> None:
     with pytest.raises(TimelineCursorConflict):
         paginator.page(_query(), cursor=forged)
     assert repository.source_reads == 0
+
+
+@pytest.mark.parametrize("source", ("live", "archive"))
+def test_batch_activation_change_during_source_reads_is_a_cursor_conflict(
+    source: str,
+) -> None:
+    point = _point(source, 0)
+    if source == "archive":
+        payload = point.model_dump_public()
+        payload["provenance"]["batchId"] = _OTHER_BATCH
+        point = TimelinePointV1.model_validate(payload)
+    repository = _SwitchingRepository(
+        (point,) if source == "archive" else (),
+        (point,) if source == "live" else (),
+    )
+    paginator = TimelinePaginatorV1(repository, TimelineCursorCodecV1())
+
+    with pytest.raises(TimelineCursorConflict):
+        paginator.page(_query(), cursor=None)

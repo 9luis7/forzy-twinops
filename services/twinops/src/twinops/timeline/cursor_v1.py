@@ -158,8 +158,13 @@ class TimelineCursorCodecV1:
             type(payload) is not dict
             or frozenset(payload) != _CURSOR_KEYS
             or payload.get("v") != "1"
-            or _canonical_json_bytes(payload) != payload_bytes
         ):
+            raise TimelineCursorConflict("invalid timeline cursor")
+        try:
+            canonical_payload = _canonical_json_bytes(payload)
+        except (TypeError, ValueError, OverflowError, RecursionError) as exc:
+            raise TimelineCursorConflict("invalid timeline cursor") from exc
+        if canonical_payload != payload_bytes:
             raise TimelineCursorConflict("invalid timeline cursor")
         active_batch_id = payload["activeBatchId"]
         if active_batch_id is not None:
@@ -237,6 +242,16 @@ class TimelinePaginatorV1:
         read_query = replace(query, after=after)
         archive = self._repository.read_archive_points(read_query)
         live = self._repository.read_live_points(read_query)
+        active_after_reads = self._repository.active_batch(query.asset_id)
+        active_batch_id_after_reads = (
+            None if active_after_reads is None else str(active_after_reads.batch_id)
+        )
+        if active_batch_id_after_reads != active_batch_id or any(
+            point.source_kind != "historical_archive"
+            or point.provenance.batch_id != active_batch_id
+            for point in archive.points
+        ):
+            raise TimelineCursorConflict("active historical batch changed")
         merged = list(
             merge(
                 archive.points,

@@ -124,3 +124,23 @@ def test_cursor_rejects_corruption_noncanonical_payloads_and_oversize() -> None:
                 expected_active_batch_id=None,
                 expected_query_fingerprint=fingerprint,
             )
+
+
+def test_cursor_translates_non_finite_json_numbers_to_domain_conflict() -> None:
+    codec = TimelineCursorCodecV1()
+    fingerprint = timeline_query_fingerprint_v1(_query())
+
+    for number_token in ("1e999", "NaN", "Infinity", "-Infinity"):
+        payload = (
+            '{"activeBatchId":null,"last":['
+            f'{number_token},"00000000-0000-5000-8000-000000000001",'
+            '"s1","00000000-0000-5000-8000-000000000002"],'
+            f'"queryFingerprint":"{fingerprint}","v":"1"}}'
+        ).encode("utf-8")
+
+        with pytest.raises(TimelineCursorConflict):
+            codec.decode(
+                _signed_cursor(payload),
+                expected_active_batch_id=None,
+                expected_query_fingerprint=fingerprint,
+            )
