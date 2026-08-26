@@ -20,6 +20,41 @@ BRANCH_ID = "branch-id-for-test"
 DATABASE_NAME = "twinops_test"
 SCHEMA_NAME = "public"
 DATABASE_URL = "postgresql://user:secret@database.invalid/twinops"
+LEGACY_V2_PUBLIC_RELATIONS = {
+    ("collection_attempts_v2", "r"),
+    ("latest_readings_v2", "r"),
+    ("raw_readings_v2", "r"),
+    ("refresh_cycles_v2", "r"),
+    ("telemetry_samples_v2", "r"),
+    ("collection_attempts_v2_pkey", "i"),
+    ("latest_readings_v2_pkey", "i"),
+    ("raw_readings_v2_pkey", "i"),
+    ("refresh_cycles_v2_pkey", "i"),
+    ("telemetry_samples_v2_pkey", "i"),
+    ("ix_raw_readings_v2_slot", "i"),
+    ("ix_telemetry_samples_v2_history", "i"),
+}
+REGISTERED_002_PLAN_SHA256 = {
+    "preview": (
+        "sha256:0d28b7d23416153cc6bd12fb93a3be51"
+        "0cd0cf239ea4c3be19d14268e8ff47ad"
+    ),
+    "production": (
+        "sha256:60d15d2518749344325d740f069d1f758"
+        "a405257d7dff54d6bfc30e7270fa8e2"
+    ),
+}
+LEGACY_002_PLAN_SHA256 = {
+    "preview": (
+        "sha256:fc4be49486435c53f867825f69f69c4a"
+        "05c32aae5f6446a9d441a6adfc9ad0b0"
+    ),
+    "production": (
+        "sha256:9de3daf5b59ab3bb2558a1b8b3e0af35"
+        "a8c8dde6b2778ffa7fb9f5905c767b68"
+    ),
+}
+_AUTO_PLAN = object()
 
 
 class _Rows:
@@ -38,7 +73,7 @@ class _SuccessfulConnection:
         self.specs = specs
         self.calls = []
         self.pgconn = SimpleNamespace(ssl_in_use=tls)
-        self.migration_table_exists = current_version != "empty"
+        self.migration_table_exists = current_version in {"002", "003"}
         self.migrations = {}
         if current_version in {"002", "003"}:
             self.migrations["002"] = specs[0].postgres_sha256
@@ -49,6 +84,9 @@ class _SuccessfulConnection:
         self.identity_table_exists = current_version == "003"
         self.extra_public_relations = set()
         self.relation_on_lock = None
+        self.legacy_v2_schema_current = current_version == "legacy002"
+        self.invalidate_legacy_v2_on_lock = False
+        self.record_002_on_lock = False
         self.migration_002 = MIGRATION_002.read_text(encoding="utf-8")
         self.migration_003 = MIGRATION_003.read_text(encoding="utf-8")
         if current_version == "003":
@@ -112,6 +150,13 @@ class _SuccessfulConnection:
             if self.relation_on_lock is not None:
                 self.extra_public_relations.add(self.relation_on_lock)
                 self.relation_on_lock = None
+            if self.invalidate_legacy_v2_on_lock:
+                self.legacy_v2_schema_current = False
+                self.invalidate_legacy_v2_on_lock = False
+            if self.record_002_on_lock:
+                self.migration_table_exists = True
+                self.migrations["002"] = self.specs[0].postgres_sha256
+                self.record_002_on_lock = False
             return _Rows()
         if query == self.migration_002:
             return _Rows()
@@ -165,7 +210,7 @@ class _SuccessfulConnection:
             return _Rows()
         if "FROM pg_catalog.pg_tables" in normalized:
             if "AS tables_current" in normalized:
-                current = bool(self.migrations)
+                current = bool(self.migrations) or self.legacy_v2_schema_current
                 return _Rows(
                     [{"tables_current": current, "indexes_current": current}]
                 )
@@ -177,7 +222,9 @@ class _SuccessfulConnection:
                 return _Rows()
             return _Rows((name,) for name in check_postgres.POSTGRES_V3_REQUIRED_INDEXES)
         if "FROM pg_catalog.pg_class" in normalized:
-            relations = self.extra_public_relations
+            relations = set(self.extra_public_relations)
+            if self.legacy_v2_schema_current:
+                relations.update(LEGACY_V2_PUBLIC_RELATIONS)
             if "relkind IN" in normalized:
                 relations = {
                     row
@@ -209,7 +256,7 @@ def _args(
     mode="--apply",
     environment="preview",
     label=f"{PROJECT_ID}/{BRANCH_ID}",
-    expected_plan_sha256=None,
+    expected_plan_sha256=_AUTO_PLAN,
 ):
     args = [
         "--migrate",
@@ -229,7 +276,13 @@ def _args(
     ]
     if mode is not None:
         args.append(mode)
-    if expected_plan_sha256 is not None:
+    if (
+        expected_plan_sha256 is _AUTO_PLAN
+        and mode == "--apply"
+        and expected_current_version == "002"
+    ):
+        expected_plan_sha256 = REGISTERED_002_PLAN_SHA256[environment]
+    if expected_plan_sha256 is not _AUTO_PLAN and expected_plan_sha256 is not None:
         args.extend(["--expected-plan-sha256", expected_plan_sha256])
     return args
 
@@ -517,8 +570,8 @@ def test_empty_production_dry_run_is_read_only_and_reports_closed_plan(capsys):
         "writesPerformed": 0,
     }
     assert payload["planSha256"] == (
-        "sha256:585a60fac32180fdb781583e955b357f"
-        "854a917d65d428f4104f6ac7f11e9aae"
+        "sha256:c788a0c4a87363b2bf1927375b04dadb"
+        "5e547354ffbbbda0266cde7ea62387ed"
     )
     normalized = [" ".join(query.split()) for query, _, _ in connection.calls]
     assert normalized[0] == "SET TRANSACTION READ ONLY"
@@ -768,6 +821,188 @@ def test_empty_apply_rejects_wrong_plan_and_lock_time_catalog_race(capsys):
     assert not any(
         query in {race_connection.migration_002, race_connection.migration_003}
         for query, _, _ in race_connection.calls
+    )
+
+def test_legacy_002_apply_requires_approved_plan_and_rechecks_under_lock(capsys):
+    specs = check_postgres.registered_migration_specs()
+
+    missing_plan = check_postgres.main(
+        _args(
+            expected_current_version="002",
+            environment="production",
+            label=f"{PROJECT_ID}/{BRANCH_ID}",
+            expected_plan_sha256=None,
+        ),
+        env=_env(),
+        connect=lambda dsn: (_ for _ in ()).throw(
+            AssertionError("missing approved plan must fail before connect")
+        ),
+    )
+    missing_capture = capsys.readouterr()
+    assert missing_plan == 1
+    assert missing_capture.out == ""
+    assert missing_capture.err.strip() == (
+        "postgres_check_failed error_type=ValueError"
+    )
+
+    dry_connection = _SuccessfulConnection(specs, current_version="legacy002")
+    assert dry_connection.migration_table_exists is False
+    dry_run = check_postgres.main(
+        _args(
+            expected_current_version="002",
+            mode="--dry-run",
+            environment="production",
+            label=f"{PROJECT_ID}/{BRANCH_ID}",
+        ),
+        env=_env(),
+        connect=lambda dsn: dry_connection,
+    )
+    assert dry_run == 0
+    dry_payload = json.loads(capsys.readouterr().out)
+    assert dry_payload["operation"] == "upgrade-002"
+    assert dry_payload["planSha256"] == LEGACY_002_PLAN_SHA256["production"]
+    assert dry_payload["pendingMigrationVersions"] == ["003"]
+    assert dry_payload["writesPerformed"] == 0
+    assert " ".join(dry_connection.calls[0][0].split()) == (
+        "SET TRANSACTION READ ONLY"
+    )
+
+    registered_connection = _SuccessfulConnection(specs, current_version="002")
+    registered_dry_run = check_postgres.main(
+        _args(
+            expected_current_version="002",
+            mode="--dry-run",
+            environment="production",
+            label=f"{PROJECT_ID}/{BRANCH_ID}",
+        ),
+        env=_env(),
+        connect=lambda dsn: registered_connection,
+    )
+    assert registered_dry_run == 0
+    registered_payload = json.loads(capsys.readouterr().out)
+    assert registered_payload["plannedAdministrativeWriteCount"] == 3
+    assert dry_payload["plannedAdministrativeWriteCount"] == 4
+    assert registered_payload["planSha256"] != dry_payload["planSha256"]
+
+    extra_relation_connection = _SuccessfulConnection(
+        specs, current_version="legacy002"
+    )
+    extra_relation_connection.extra_public_relations.add(
+        ("unexpected_legacy_relation", "r")
+    )
+    extra_relation = check_postgres.main(
+        _args(
+            expected_current_version="002",
+            mode="--dry-run",
+            environment="production",
+            label=f"{PROJECT_ID}/{BRANCH_ID}",
+        ),
+        env=_env(),
+        connect=lambda dsn: extra_relation_connection,
+    )
+    extra_capture = capsys.readouterr()
+    assert extra_relation == 1
+    assert extra_capture.out == ""
+    assert extra_capture.err.strip().endswith("stage=schema_version")
+
+    wrong_plan_connection = _SuccessfulConnection(
+        specs, current_version="legacy002"
+    )
+    wrong_plan = check_postgres.main(
+        _args(
+            expected_current_version="002",
+            environment="production",
+            label=f"{PROJECT_ID}/{BRANCH_ID}",
+            expected_plan_sha256="sha256:" + "0" * 64,
+        ),
+        env=_env(),
+        connect=lambda dsn: wrong_plan_connection,
+    )
+    wrong_capture = capsys.readouterr()
+    assert wrong_plan == 1
+    assert wrong_capture.out == ""
+    assert wrong_capture.err.strip().endswith("stage=plan_identity")
+    assert not any(
+        "pg_advisory_xact_lock" in query
+        for query, _, _ in wrong_plan_connection.calls
+    )
+
+    inventory_race_connection = _SuccessfulConnection(
+        specs, current_version="legacy002"
+    )
+    inventory_race_connection.record_002_on_lock = True
+    inventory_race = check_postgres.main(
+        _args(
+            expected_current_version="002",
+            environment="production",
+            label=f"{PROJECT_ID}/{BRANCH_ID}",
+            expected_plan_sha256=LEGACY_002_PLAN_SHA256["production"],
+        ),
+        env=_env(),
+        connect=lambda dsn: inventory_race_connection,
+    )
+    inventory_capture = capsys.readouterr()
+    assert inventory_race == 1
+    assert inventory_capture.out == ""
+    assert inventory_capture.err.strip().endswith("stage=plan_identity")
+    assert not any(
+        query in {
+            inventory_race_connection.migration_002,
+            inventory_race_connection.migration_003,
+        }
+        for query, _, _ in inventory_race_connection.calls
+    )
+
+    race_connection = _SuccessfulConnection(specs, current_version="legacy002")
+    race_connection.invalidate_legacy_v2_on_lock = True
+    raced = check_postgres.main(
+        _args(
+            expected_current_version="002",
+            environment="production",
+            label=f"{PROJECT_ID}/{BRANCH_ID}",
+            expected_plan_sha256=LEGACY_002_PLAN_SHA256["production"],
+        ),
+        env=_env(),
+        connect=lambda dsn: race_connection,
+    )
+    race_capture = capsys.readouterr()
+    assert raced == 1
+    assert race_capture.out == ""
+    assert race_capture.err.strip().endswith("stage=schema_version")
+    assert not any(
+        query in {race_connection.migration_002, race_connection.migration_003}
+        for query, _, _ in race_connection.calls
+    )
+
+    apply_connection = _SuccessfulConnection(specs, current_version="legacy002")
+    applied = check_postgres.main(
+        _args(
+            expected_current_version="002",
+            environment="production",
+            label=f"{PROJECT_ID}/{BRANCH_ID}",
+            expected_plan_sha256=LEGACY_002_PLAN_SHA256["production"],
+        ),
+        env=_env(),
+        connect=lambda dsn: apply_connection,
+    )
+    apply_capture = capsys.readouterr()
+    assert applied == 0
+    assert apply_capture.err == ""
+    apply_payload = json.loads(apply_capture.out)
+    assert apply_payload["planSha256"] == LEGACY_002_PLAN_SHA256["production"]
+    assert apply_payload["pendingMigrationVersions"] == ["003"]
+    assert apply_payload["plannedAdministrativeWriteCount"] == 4
+    assert apply_payload["writesPerformed"] == 4
+    assert apply_connection.migrations == {
+        spec.version: spec.postgres_sha256 for spec in specs
+    }
+    assert not any(
+        query == apply_connection.migration_002
+        for query, _, _ in apply_connection.calls
+    )
+    assert any(
+        query == apply_connection.migration_003
+        for query, _, _ in apply_connection.calls
     )
 
 

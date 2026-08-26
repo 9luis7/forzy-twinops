@@ -42,6 +42,30 @@ _EXPECTED_MIGRATIONS = (
     / "003_unified_history_timeline_postgres.sql",
 )
 _SHA256_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
+POSTGRES_V2_REQUIRED_TABLES = frozenset(
+    {
+        "collection_attempts_v2",
+        "latest_readings_v2",
+        "raw_readings_v2",
+        "refresh_cycles_v2",
+        "telemetry_samples_v2",
+    }
+)
+POSTGRES_V2_REQUIRED_INDEXES = frozenset(
+    {
+        "collection_attempts_v2_pkey",
+        "latest_readings_v2_pkey",
+        "raw_readings_v2_pkey",
+        "refresh_cycles_v2_pkey",
+        "telemetry_samples_v2_pkey",
+        "ix_raw_readings_v2_slot",
+        "ix_telemetry_samples_v2_history",
+    }
+)
+POSTGRES_V2_REQUIRED_RELATIONS = frozenset(
+    {(name, "r") for name in POSTGRES_V2_REQUIRED_TABLES}
+    | {(name, "i") for name in POSTGRES_V2_REQUIRED_INDEXES}
+)
 POSTGRES_V3_REQUIRED_TABLES = frozenset(
     {
         "collection_attempts_v2",
@@ -125,11 +149,11 @@ def _parse_args(argv: Sequence[str] | None):
     ):
         raise ValueError("expected plan hash must be canonical sha256")
     if (
-        parsed.expected_current_version == "empty"
+        parsed.expected_current_version in {"empty", "002"}
         and parsed.mode == "apply"
         and parsed.expected_plan_sha256 is None
     ):
-        raise ValueError("empty apply requires approved dry-run plan hash")
+        raise ValueError("schema-changing apply requires approved dry-run plan hash")
     if parsed.mode == "dry-run" and parsed.expected_plan_sha256 is not None:
         raise ValueError("dry-run rejects expected plan hash")
     return parsed
@@ -213,6 +237,8 @@ def _preflight_schema_version(connection, expected_version: str):
         and verification.current_version is None
         and postgres_v2_schema_is_current(connection)
     ):
+        if _public_user_relations(connection) != POSTGRES_V2_REQUIRED_RELATIONS:
+            raise PostgresCheckError("schema_version")
         return verification
     raise PostgresCheckError("schema_version")
 
@@ -316,20 +342,34 @@ def _operation(expected_current_version: str) -> str:
     return "verify-003"
 
 
+def _planned_administrative_write_count(*, args, before, specs) -> int:
+    missing_registry_rows = sum(
+        spec.version not in before.applied_migration_hashes for spec in specs
+    )
+    return missing_registry_rows + (
+        0 if args.expected_current_version == "003" else 2
+    )
+
+
 def _plan_sha256(
     *,
     args,
+    before,
     fingerprint: str,
     migration_hashes: Mapping[str, str],
+    planned_writes: int,
 ) -> str:
     policy = initial_collection_policy(args.initial_policy_effective_from)
     payload = {
+        "beforeSchemaVersion": before.current_version,
         "environment": args.environment,
         "expectedCurrentVersion": args.expected_current_version,
         "indexes": sorted(POSTGRES_V3_REQUIRED_INDEXES),
         "migrationSha256s": dict(migration_hashes),
         "operation": _operation(args.expected_current_version),
+        "plannedAdministrativeWriteCount": planned_writes,
         "policy": policy.model_dump_public(),
+        "recordedMigrationSha256s": dict(before.applied_migration_hashes),
         "tables": sorted(POSTGRES_V3_REQUIRED_TABLES),
         "targetFingerprint": fingerprint,
         "targetLabel": args.expected_target_label,
@@ -436,27 +476,28 @@ def _verify_database(
             connection, args.expected_current_version
         )
         identity = _preflight_deployment_identity(connection, args, fingerprint)
+        pending_versions = _pending_migration_versions(
+            args.expected_current_version
+        )
+        planned_writes = _planned_administrative_write_count(
+            args=args,
+            before=before,
+            specs=specs,
+        )
         plan_sha256 = _plan_sha256(
             args=args,
+            before=before,
             fingerprint=fingerprint,
             migration_hashes=migration_hashes,
+            planned_writes=planned_writes,
         )
         if (
-            args.expected_current_version == "empty"
+            args.expected_current_version in {"empty", "002"}
             and args.mode == "apply"
             and args.expected_plan_sha256 != plan_sha256
         ):
             raise PostgresCheckError("plan_identity")
 
-        pending_versions = _pending_migration_versions(
-            args.expected_current_version
-        )
-        missing_registry_rows = sum(
-            spec.version not in before.applied_migration_hashes for spec in specs
-        )
-        planned_writes = missing_registry_rows + (
-            0 if args.expected_current_version == "003" else 2
-        )
         if args.mode == "dry-run":
             if args.expected_current_version == "003":
                 _verify_current_database(connection, args)
@@ -470,15 +511,34 @@ def _verify_database(
                 writes_performed=0,
             )
 
-        if args.expected_current_version == "empty":
+        if args.expected_current_version in {"empty", "002"}:
             connection.execute(
                 "SELECT pg_advisory_xact_lock(%s)",
                 (POSTGRES_SCHEMA_MIGRATION_LOCK_KEY,),
             )
             if _target_fingerprint(connection, env) != fingerprint:
                 raise PostgresCheckError("target_identity")
-            _preflight_schema_version(connection, "empty")
+            locked_before = _preflight_schema_version(
+                connection, args.expected_current_version
+            )
             _preflight_deployment_identity(connection, args, fingerprint)
+            locked_planned_writes = _planned_administrative_write_count(
+                args=args,
+                before=locked_before,
+                specs=specs,
+            )
+            locked_plan_sha256 = _plan_sha256(
+                args=args,
+                before=locked_before,
+                fingerprint=fingerprint,
+                migration_hashes=migration_hashes,
+                planned_writes=locked_planned_writes,
+            )
+            if (
+                locked_plan_sha256 != plan_sha256
+                or args.expected_plan_sha256 != locked_plan_sha256
+            ):
+                raise PostgresCheckError("plan_identity")
 
         apply_postgres_migrations(
             connection,
