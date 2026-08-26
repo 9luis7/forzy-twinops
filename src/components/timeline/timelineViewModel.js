@@ -15,6 +15,70 @@ const percentageWithin = (milliseconds, from, span) => (
   Math.min(100, Math.max(0, ((milliseconds - from) / span) * 100))
 );
 
+const liveDayFormatter = new Intl.DateTimeFormat("en-US", {
+  day: "2-digit",
+  month: "2-digit",
+  timeZone: "America/Sao_Paulo",
+  year: "numeric",
+});
+
+const localDayKey = (timeMs) => {
+  const parts = Object.fromEntries(
+    liveDayFormatter.formatToParts(new Date(timeMs)).map(({ type, value }) => [type, value]),
+  );
+  return `${parts.year}-${parts.month}-${parts.day}`;
+};
+
+const comparePoints = (left, right) => (
+  left.timeMs - right.timeMs || left.pointId.localeCompare(right.pointId)
+);
+
+function buildDisplaySeries(series) {
+  const passthrough = series
+    .filter((item) => item.sourceKind !== "live_collection")
+    .map((item) => ({
+      ...item,
+      displayKey: `source:${item.segmentId}:${item.sensorId}`,
+    }));
+  const livePoints = series
+    .filter((item) => item.sourceKind === "live_collection")
+    .flatMap((item) => item.points.map((point) => ({ item, point })))
+    .sort((left, right) => comparePoints(left.point, right.point));
+  const activeRuns = new Map();
+  const liveRuns = [];
+
+  for (const entry of livePoints) {
+    const { item, point } = entry;
+    const day = localDayKey(point.timeMs);
+    const aggregationKey = `${item.aggregation.method}:${item.aggregation.requestedMaxPoints}`;
+    const groupKey = [item.sensorId, item.metric, aggregationKey, day].join(":");
+    const active = activeRuns.get(groupKey);
+    if (active !== undefined) {
+      active.points.push(point);
+      continue;
+    }
+
+    const run = {
+      ...item,
+      displayKey: `live:${groupKey}:${point.pointId}`,
+      points: [point],
+      showSinglePointMarker: true,
+    };
+    activeRuns.set(groupKey, run);
+    liveRuns.push(run);
+  }
+
+  return [...passthrough, ...liveRuns].sort((left, right) => {
+    const leftPoint = left.points[0];
+    const rightPoint = right.points[0];
+    if (leftPoint === undefined) return rightPoint === undefined ? 0 : 1;
+    if (rightPoint === undefined) return -1;
+    return comparePoints(leftPoint, rightPoint)
+      || left.sensorId.localeCompare(right.sensorId)
+      || left.sourceKind.localeCompare(right.sourceKind);
+  });
+}
+
 export function resolveOperationsDisplay({
   snapshot,
   viewMode,
@@ -61,6 +125,7 @@ export function buildTimelineViewModel(overview) {
     segments: [],
     gaps: [],
     series: [],
+    displaySeries: [],
   };
 
   if (overview.effectiveRange === null) return base;
@@ -81,6 +146,28 @@ export function buildTimelineViewModel(overview) {
     };
   };
 
+  const series = overview.series.map((item) => {
+    const points = item.points.map((point) => {
+      const timeMs = canonicalUtcMillis(point.eventAt, `point:${point.pointId}.eventAt`);
+      return {
+        pointId: point.pointId,
+        eventAt: point.eventAt,
+        value: point.value,
+        timeMs,
+        xPercent: percentageWithin(timeMs, from, span),
+      };
+    });
+    return {
+      segmentId: item.segmentId,
+      sensorId: item.sensorId,
+      sourceKind: item.sourceKind,
+      metric: item.metric,
+      aggregation: item.aggregation,
+      points,
+      showSinglePointMarker: points.length === 1,
+    };
+  });
+
   return {
     ...base,
     domain: [from, to],
@@ -92,26 +179,7 @@ export function buildTimelineViewModel(overview) {
       ...gap,
       ...interval(gap.startAt, gap.endAt, `gap:${gap.gapId}`),
     })),
-    series: overview.series.map((series) => {
-      const points = series.points.map((point) => {
-        const timeMs = canonicalUtcMillis(point.eventAt, `point:${point.pointId}.eventAt`);
-        return {
-          pointId: point.pointId,
-          eventAt: point.eventAt,
-          value: point.value,
-          timeMs,
-          xPercent: percentageWithin(timeMs, from, span),
-        };
-      });
-      return {
-        segmentId: series.segmentId,
-        sensorId: series.sensorId,
-        sourceKind: series.sourceKind,
-        metric: series.metric,
-        aggregation: series.aggregation,
-        points,
-        showSinglePointMarker: points.length === 1,
-      };
-    }),
+    series,
+    displaySeries: buildDisplaySeries(series),
   };
 }

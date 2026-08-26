@@ -78,6 +78,8 @@ describe("TimelineWorkspace", () => {
     expect(within(rangeControls).getAllByRole("button")).toHaveLength(3);
     expect(screen.getByText("4 pontos representativos no gráfico · 44 leituras persistidas")).toBeVisible();
     expect(screen.getByText(/scores pertencem ao lote histórico avaliado/i)).toBeVisible();
+    expect(screen.getByText(/mesmo dia de coleta, no horário de São Paulo/i))
+      .toBeVisible();
     fireEvent.click(within(rangeControls).getByRole("button", { name: "Histórico avaliado" }));
     expect(onRangePresetChange).toHaveBeenCalledWith("historical");
     fireEvent.click(within(rangeControls).getByRole("button", { name: "Coletas recentes" }));
@@ -186,8 +188,8 @@ describe("TimelineWorkspace", () => {
     expect(Number(telemetry.dataset.domainTo)).toBe(Date.parse(domainTo));
     expect(screen.getByText("1× · 6/6 pontos visíveis")).toBeVisible();
     expect(screen.getByRole("button", { name: "Reenquadrar" })).toBeDisabled();
-    expect(screen.getByText(/Visão completa comprime meses sem coleta/i)).toBeVisible();
-    expect(screen.getByText(/Selecione Histórico avaliado/i)).toBeVisible();
+    expect(screen.getByText(/Visão completa preserva os intervalos sem coleta/i)).toBeVisible();
+    expect(screen.getByText(/intervalos longos aparecem como espaço sem dados/i)).toBeVisible();
   });
 
   it("keeps the evaluated historical overview readable until the operator zooms", async () => {

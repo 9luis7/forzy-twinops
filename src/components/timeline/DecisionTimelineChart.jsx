@@ -367,6 +367,16 @@ export default function DecisionTimelineChart({
       .filter((series) => series.points.length > 0),
     [domain, model.series, visibleSensors],
   );
+  const visibleDisplaySeries = useMemo(
+    () => (model.displaySeries ?? model.series)
+      .filter((series) => visibleSensors.has(series.sensorId))
+      .map((series) => ({
+        ...series,
+        points: series.points.filter((point) => point.timeMs >= domain[0] && point.timeMs <= domain[1]),
+      }))
+      .filter((series) => series.points.length > 0),
+    [domain, model.displaySeries, model.series, visibleSensors],
+  );
   const sensorDomain = useMemo(() => {
     const values = visibleSeries.flatMap((series) => series.points.map((point) => point.value));
     if (values.length === 0) return [0, 1];
@@ -490,11 +500,11 @@ export default function DecisionTimelineChart({
             {showCoverageGaps ? (
               <GapAreas domain={domain} gaps={model.gaps} height={SENSOR_CHART_HEIGHT} />
             ) : null}
-            {visibleSeries.map((series) => (
+            {visibleDisplaySeries.map((series) => (
               <polyline
                 aria-hidden="true"
                 data-sensor={series.sensorId}
-                key={`${series.segmentId}:${series.sensorId}`}
+                key={series.displayKey ?? `${series.segmentId}:${series.sensorId}`}
                 points={linePoints(series.points, domain, sensorDomain, SENSOR_CHART_HEIGHT)}
               />
             ))}

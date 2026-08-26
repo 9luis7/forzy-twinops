@@ -78,6 +78,52 @@ const assessmentOverview = {
 };
 
 describe("DecisionTimelineChart zoom viewport", () => {
+  it("draws one live line for a same-day display run while preserving every point", () => {
+    const first = point(31, fullDomain[0] + HOUR);
+    const second = point(32, fullDomain[0] + HOUR + MINUTE);
+    const onSelectPoint = vi.fn();
+    const model = {
+      domain: fullDomain,
+      gaps: [],
+      series: [first, second].map((item, index) => ({
+        displayKey: `source-${index}`,
+        points: [item],
+        segmentId: `segment-${index}`,
+        sensorId: "s1",
+        sourceKind: "live_collection",
+      })),
+      displaySeries: [{
+        displayKey: "live-session-s1",
+        points: [first, second],
+        segmentId: "segment-0",
+        sensorId: "s1",
+        sourceKind: "live_collection",
+      }],
+    };
+
+    render(
+      <DecisionTimelineChart
+        assessmentOverview={null}
+        model={model}
+        onSelectPoint={onSelectPoint}
+        selectedAt={second.eventAt}
+        selectedPointId={second.pointId}
+        visibleSensors={new Set(["s1", "s2"])}
+      />,
+    );
+
+    const telemetry = screen.getByRole("img", { name: /Telemetria hist/i });
+    const traces = telemetry.querySelectorAll("polyline[data-sensor='s1']");
+    expect(traces).toHaveLength(1);
+    expect(traces[0].getAttribute("points").trim().split(/\s+/)).toHaveLength(2);
+    const points = within(telemetry).getAllByRole("button", { name: /Inspecionar ponto/i });
+    expect(points).toHaveLength(2);
+    expect(telemetry.querySelectorAll(".decision-chart__crosshair")).toHaveLength(1);
+    expect(points[1]).toHaveAttribute("data-selected", "true");
+    fireEvent.click(points[1]);
+    expect(onSelectPoint).toHaveBeenCalledWith(second.pointId);
+  });
+
   it("summarizes coverage gaps instead of painting a barcode at overview scale", () => {
     render(
       <DecisionTimelineChart

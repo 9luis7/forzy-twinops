@@ -127,14 +127,22 @@ export default function TimelineWorkspace({
         {!liveOnly && rangePreset === "7d" ? (
           <div className="decision-console__availability">
             <strong>Coletas recentes sem avaliação histórica</strong>
-            <span>Os scores pertencem ao lote histórico avaliado; nenhum valor recente foi inventado ou preenchido com zero.</span>
+            <span>
+              Os scores pertencem ao lote histórico avaliado; nenhum valor recente foi inventado
+              ou preenchido com zero. As linhas conectam apenas leituras persistidas do mesmo
+              sensor no mesmo dia de coleta, no horário de São Paulo; intervalos entre dias e
+              mudanças de origem permanecem separados.
+            </span>
           </div>
         ) : null}
 
         {!liveOnly && rangePreset === "all" && spansHistoricalAndLive ? (
           <div className="decision-console__availability">
-            <strong>Visão completa comprime meses sem coleta</strong>
-            <span>Selecione Histórico avaliado para analisar a telemetria e os scores no período denso.</span>
+            <strong>Visão completa preserva os intervalos sem coleta</strong>
+            <span>
+              Intervalos longos aparecem como espaço sem dados. Selecione Histórico avaliado para
+              analisar a telemetria e os scores no período denso.
+            </span>
           </div>
         ) : null}
 
