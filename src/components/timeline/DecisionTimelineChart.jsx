@@ -6,6 +6,7 @@ const SCORE_CHART_HEIGHT = 250;
 const MARGIN = Object.freeze({ top: 18, right: 22, bottom: 34, left: 58 });
 const SENSOR_COLORS = Object.freeze({ s1: "#5eead4", s2: "#fbbf24" });
 const MINUTE = 60 * 1000;
+const RAW_SCORE_TRACE_MIN_ZOOM = 2;
 const dateFormatter = new Intl.DateTimeFormat("pt-BR", {
   timeZone: "America/Sao_Paulo",
   day: "2-digit",
@@ -27,6 +28,33 @@ const splitScoreRuns = (points, scoreKey) => {
   }
   if (current.length > 0) runs.push(current);
   return runs;
+};
+
+const isCandidatePoint = (point) => point.status === "watch" || point.status === "alert";
+
+const combinedScore = (point) => Math.max(
+  point.anomalyScore ?? Number.NEGATIVE_INFINITY,
+  point.deteriorationScore ?? Number.NEGATIVE_INFINITY,
+);
+
+const candidateEpisodeRepresentatives = (points) => {
+  const representatives = [];
+  let representative = null;
+
+  for (const point of points) {
+    if (!isCandidatePoint(point)) {
+      if (representative !== null) representatives.push(representative);
+      representative = null;
+      continue;
+    }
+
+    if (representative === null || combinedScore(point) > combinedScore(representative)) {
+      representative = point;
+    }
+  }
+
+  if (representative !== null) representatives.push(representative);
+  return representatives;
 };
 
 const fitDomain = (candidate, fullDomain) => {
@@ -206,6 +234,7 @@ export default function DecisionTimelineChart({
   const fullSpan = Math.max(1, fullDomain[1] - fullDomain[0]);
   const visibleSpan = Math.max(1, domain[1] - domain[0]);
   const zoomFactor = fullSpan / visibleSpan;
+  const showRawScoreTraces = !frameFullDomain || zoomFactor >= RAW_SCORE_TRACE_MIN_ZOOM;
   const dragRef = useRef(null);
   const suppressClickRef = useRef(false);
   const [dragging, setDragging] = useState(false);
@@ -336,33 +365,52 @@ export default function DecisionTimelineChart({
     });
     return [...unique.values()];
   }, [visibleSeries]);
-  const scoreRuns = useMemo(() => scoreSeries.flatMap((series) => (
-    ["anomalyScore", "deteriorationScore"].flatMap((scoreKey) => (
-      splitScoreRuns(
-        series.points.filter((point) => {
-          const timeMs = Date.parse(point.eventAt);
-          return timeMs >= domain[0] && timeMs <= domain[1];
-        }),
-        scoreKey,
-      ).map((points) => ({
-        points,
-        scoreKey,
-        seriesId: series.seriesId,
-      }))
-    ))
-  )), [domain, scoreSeries]);
+  const scoreRuns = useMemo(() => {
+    if (!showRawScoreTraces) return [];
+    return scoreSeries.flatMap((series) => (
+      ["anomalyScore", "deteriorationScore"].flatMap((scoreKey) => (
+        splitScoreRuns(
+          series.points.filter((point) => {
+            const timeMs = Date.parse(point.eventAt);
+            return timeMs >= domain[0] && timeMs <= domain[1];
+          }),
+          scoreKey,
+        ).map((points) => ({
+          points,
+          scoreKey,
+          seriesId: series.seriesId,
+        }))
+      ))
+    ));
+  }, [domain, scoreSeries, showRawScoreTraces]);
   const scoreMarkers = useMemo(() => {
     const unique = new Map();
-    scoreSeries.flatMap((series) => series.points).forEach((point) => {
-      const timeMs = Date.parse(point.eventAt);
-      if (timeMs >= domain[0]
-        && timeMs <= domain[1]
-        && (point.candidateState === "candidate_not_ground_truth" || point.anchorPointId === selectedPointId)) {
+    for (const series of scoreSeries) {
+      const visiblePoints = series.points.filter((point) => {
+        const timeMs = Date.parse(point.eventAt);
+        return timeMs >= domain[0] && timeMs <= domain[1];
+      });
+      const candidates = showRawScoreTraces
+        ? visiblePoints.filter(isCandidatePoint)
+        : candidateEpisodeRepresentatives(visiblePoints);
+
+      for (const point of candidates) {
         unique.set(point.anchorPointId, point);
       }
-    });
+
+      if (selectedPointId !== null) {
+        const selected = series.points.find((point) => point.anchorPointId === selectedPointId);
+        if (selected !== undefined) {
+          const timeMs = Date.parse(selected.eventAt);
+          if (timeMs >= domain[0] && timeMs <= domain[1]) {
+            unique.set(selected.anchorPointId, selected);
+          }
+        }
+      }
+    }
     return [...unique.values()];
-  }, [domain, scoreSeries, selectedPointId]);
+  }, [domain, scoreSeries, selectedPointId, showRawScoreTraces]);
+  const visibleCandidateMarkerCount = scoreMarkers.filter(isCandidatePoint).length;
   const parsedSelectedTime = selectedAt === null ? null : Date.parse(selectedAt);
   const selectedTime = parsedSelectedTime !== null
     && parsedSelectedTime >= domain[0]
@@ -460,24 +508,35 @@ export default function DecisionTimelineChart({
             <span>Nenhum valor foi inferido ou preenchido com zero.</span>
           </div>
         ) : (
-          <div className="decision-chart__canvas" {...interactiveCanvasProps}>
-            <svg
-              aria-label="Scores históricos sincronizados"
-              data-domain-from={domain[0]}
-              data-domain-to={domain[1]}
-              role="img"
-              viewBox={`0 0 ${CHART_WIDTH} ${SCORE_CHART_HEIGHT}`}
-            >
+          <>
+            {showRawScoreTraces ? null : (
+              <p className="decision-chart__overview-note" role="status">
+                {"Vis\u00e3o geral limpa \u00b7 "}{visibleCandidateMarkerCount}
+                {visibleCandidateMarkerCount === 1
+                  ? " epis\u00f3dio candidato n\u00e3o confirmado."
+                  : " epis\u00f3dios candidatos n\u00e3o confirmados."}
+                <span>{"Aproxime para revelar as curvas brutas."}</span>
+              </p>
+            )}
+            <div className="decision-chart__canvas" {...interactiveCanvasProps}>
+              <svg
+                aria-label="Scores históricos sincronizados"
+                data-detail-level={showRawScoreTraces ? "raw" : "episodes"}
+                data-domain-from={domain[0]}
+                data-domain-to={domain[1]}
+                role="img"
+                viewBox={`0 0 ${CHART_WIDTH} ${SCORE_CHART_HEIGHT}`}
+              >
               <Grid domain={domain} height={SCORE_CHART_HEIGHT} valueDomain={[0, 100]} />
               <GapAreas domain={domain} gaps={model.gaps} height={SCORE_CHART_HEIGHT} />
-              {scoreRuns.map((run, index) => (
+              {showRawScoreTraces ? scoreRuns.map((run, index) => (
                 <polyline
                   aria-hidden="true"
                   data-score={run.scoreKey === "anomalyScore" ? "anomaly" : "deterioration"}
                   key={`${run.seriesId}:${run.scoreKey}:${index}`}
                   points={linePoints(run.points, domain, [0, 100], SCORE_CHART_HEIGHT)}
                 />
-              ))}
+              )) : null}
               {selectedTime === null ? null : (
                 <line
                   className="decision-chart__crosshair"
@@ -504,8 +563,9 @@ export default function DecisionTimelineChart({
                   />
                 );
               })}
-            </svg>
-          </div>
+              </svg>
+            </div>
+          </>
         )}
       </section>
     </div>

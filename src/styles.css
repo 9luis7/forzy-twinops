@@ -851,68 +851,44 @@ circle.timeline-lane__series {
   border-top: 1px solid #263c57;
 }
 
-.assessment-trend__chart {
-  display: block;
-  width: 100%;
-  min-height: 13rem;
-  margin-top: 1rem;
-  overflow: visible;
-  background: #081421;
+.assessment-trend__summary {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.5rem;
+  margin: 0.75rem 0;
+  padding: 0;
+  list-style: none;
+}
+
+.assessment-trend__summary li {
+  display: grid;
+  min-width: 0;
+  gap: 0.2rem;
+  padding: 0.7rem;
   border: 1px solid #263c57;
+  background: #0b1929;
 }
 
-.assessment-trend__grid line {
-  stroke: #263c57;
-  stroke-width: 1;
-}
-
-.assessment-trend__grid text {
-  fill: #9fb0c4;
-  font-size: 0.7rem;
-  text-anchor: end;
-}
-
-.assessment-trend__chart [data-score-kind="anomaly"] {
-  fill: #5eead4;
-  stroke: #5eead4;
-}
-
-.assessment-trend__chart [data-score-kind="deterioration"] {
-  fill: #fbbf24;
-  stroke: #fbbf24;
-}
-
-.assessment-trend__chart polyline {
-  fill: none;
-  stroke-width: 2;
-}
-
-.assessment-trend__legend {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.75rem 1.25rem;
-  margin-top: 0.75rem;
+.assessment-trend__summary span,
+.assessment-trend__summary small {
   color: var(--muted);
-  font-size: 0.78rem;
 }
 
-.assessment-trend__legend span {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.4rem;
+.assessment-trend__summary span {
+  font-size: 0.63rem;
+  font-weight: 750;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
 }
 
-.assessment-trend__legend i {
-  width: 1.75rem;
-  height: 0.15rem;
+.assessment-trend__summary strong {
+  color: #f8fafc;
+  font-size: 0.95rem;
+  overflow-wrap: anywhere;
 }
 
-.assessment-trend__legend [data-score-kind="anomaly"] {
-  background: #5eead4;
-}
-
-.assessment-trend__legend [data-score-kind="deterioration"] {
-  background: #fbbf24;
+.assessment-trend__summary small {
+  font-size: 0.68rem;
 }
 
 .assessment-trend__models {
@@ -1989,6 +1965,22 @@ body {
   color: var(--text);
 }
 
+.decision-chart__overview-note {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem 0.75rem;
+  margin: 0;
+  padding: 0.45rem 0.8rem;
+  border-block: 1px solid #263c57;
+  color: #c8d7e8;
+  background: #102138;
+  font-size: 0.72rem;
+}
+
+.decision-chart__overview-note span {
+  color: var(--muted);
+}
+
 .decision-inspector {
   min-width: 0;
   padding: 1rem;
@@ -2248,6 +2240,10 @@ body {
   .decision-inspector {
     position: static;
   }
+
+  .assessment-trend__summary {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
 }
 
 @media (max-width: 600px) {
@@ -2331,6 +2327,10 @@ body {
   }
 
   .decision-inspector__actions {
+    grid-template-columns: 1fr;
+  }
+
+  .assessment-trend__summary {
     grid-template-columns: 1fr;
   }
 }

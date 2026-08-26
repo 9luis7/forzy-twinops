@@ -32,75 +32,38 @@ describe("AssessmentTrend", () => {
     expect(screen.queryByRole("img", { name: /scores relativos/i })).not.toBeInTheDocument();
   });
 
-  it("renders discontinuous bounded evidence without percent or positive claims", async () => {
+  it("summarizes persisted evidence without rendering a second score chart", async () => {
+    const modulePath = "./AssessmentTrend.jsx";
+    const { default: AssessmentTrend } = await import(/* @vite-ignore */ modulePath);
+    render(<AssessmentTrend overview={structuredClone(materializedFixture)} />);
+
+    const evidence = screen.getByTestId("assessment-trend");
+    const summary = within(evidence).getByRole("list", { name: "Resumo da evidência persistida" });
+
+    expect(within(evidence).queryByRole("img", { name: /scores relativos/i })).not.toBeInTheDocument();
+    expect(within(summary).getByText("Avaliações")).toBeVisible();
+    expect(within(summary).getByText("4 de 4")).toBeVisible();
+    expect(within(summary).getByText("Episódios candidatos")).toBeVisible();
+    expect(within(summary).getByText("2 não confirmados")).toBeVisible();
+    expect(within(summary).getByText("revisão humana obrigatória")).toBeVisible();
+    expect(within(summary).getByText("S1 e S2")).toBeVisible();
+    expect(within(summary).getByText("2 janelas causais")).toBeVisible();
+  });
+
+  it("publishes bounded evidence without percent or positive claims", async () => {
     const modulePath = "./AssessmentTrend.jsx";
     const { default: AssessmentTrend } = await import(/* @vite-ignore */ modulePath);
     const { container } = render(
       <AssessmentTrend overview={structuredClone(materializedFixture)} />,
     );
 
-    const chart = screen.getByRole("img", { name: /scores relativos.*0 a 100/i });
-    expect(within(chart).getByText("100")).toBeInTheDocument();
-    expect(within(chart).getByText("50")).toBeInTheDocument();
-    expect(within(chart).getByText("0")).toBeInTheDocument();
-    expect(chart.querySelectorAll('[data-score-kind="anomaly"]')).toHaveLength(2);
-    expect(chart.querySelectorAll('[data-score-kind="deterioration"]')).toHaveLength(2);
+    expect(screen.getByRole("heading", { name: "Resumo dos scores históricos" })).toBeVisible();
+    expect(screen.queryByRole("img", { name: /scores relativos/i })).not.toBeInTheDocument();
     expect(container).not.toHaveTextContent("%");
     expect(container).not.toHaveTextContent("Probabilidade de falha confirmada");
     expect(container).not.toHaveTextContent("Confian\u00e7a calibrada confirmada");
     expect(container).not.toHaveTextContent("RUL estimado");
     expect(container).not.toHaveTextContent("Diagn\u00f3stico confirmado");
-  });
-
-  it("does not bridge either score trace across a multi-point insufficient-data run", async () => {
-    const modulePath = "./AssessmentTrend.jsx";
-    const { default: AssessmentTrend } = await import(/* @vite-ignore */ modulePath);
-    const overview = structuredClone(materializedFixture);
-    const scoredStart = structuredClone(overview.series[0].points[0]);
-    const scoredBeforeGap = structuredClone(scoredStart);
-    const nullStart = structuredClone(overview.series[0].points[2]);
-    const nullEnd = structuredClone(nullStart);
-    const scoredAfterGap = structuredClone(overview.series[0].points[1]);
-    const scoredEnd = structuredClone(scoredAfterGap);
-    Object.assign(scoredBeforeGap, {
-      assessmentId: "00000000-0000-5000-8000-000000000024",
-      anchorPointId: "00000000-0000-5000-8000-000000000044",
-      eventAt: "2026-08-22T12:05:00.000Z",
-    });
-    Object.assign(nullStart, { eventAt: "2026-08-22T12:10:00.000Z" });
-    Object.assign(nullEnd, {
-      assessmentId: "00000000-0000-5000-8000-000000000025",
-      anchorPointId: "00000000-0000-5000-8000-000000000045",
-      eventAt: "2026-08-22T12:15:00.000Z",
-    });
-    Object.assign(scoredAfterGap, { eventAt: "2026-08-22T12:20:00.000Z" });
-    Object.assign(scoredEnd, {
-      assessmentId: "00000000-0000-5000-8000-000000000026",
-      anchorPointId: "00000000-0000-5000-8000-000000000046",
-      eventAt: "2026-08-22T12:25:00.000Z",
-    });
-    overview.series = [overview.series[0]];
-    overview.series[0].points = [
-      scoredStart,
-      scoredBeforeGap,
-      nullStart,
-      nullEnd,
-      scoredAfterGap,
-      scoredEnd,
-    ];
-    overview.series[0].aggregation.originalAssessmentCount = 6;
-    overview.series[0].aggregation.returnedAssessmentCount = 6;
-    overview.materialization.assessmentCount = 6;
-    overview.aggregationSummary.originalAssessmentCount = 6;
-    overview.aggregationSummary.returnedAssessmentCount = 6;
-
-    const { container } = render(<AssessmentTrend overview={overview} />);
-
-    for (const kind of ["anomaly", "deterioration"]) {
-      const trace = container.querySelector(`[data-score-kind="${kind}"]`);
-      expect(trace.querySelectorAll("polyline")).toHaveLength(2);
-      expect(trace.querySelectorAll("circle")).toHaveLength(0);
-    }
   });
 
   it("publishes the exact model limits and candidate warning", async () => {
@@ -123,12 +86,10 @@ describe("AssessmentTrend", () => {
     )).toBeInTheDocument();
   });
 
-  it("compacts repeated model provenance without collapsing score series", async () => {
+  it("compacts repeated model provenance alongside the evidence summary", async () => {
     const modulePath = "./AssessmentTrend.jsx";
     const { default: AssessmentTrend } = await import(/* @vite-ignore */ modulePath);
-    const { container } = render(
-      <AssessmentTrend overview={structuredClone(materializedFixture)} />,
-    );
+    render(<AssessmentTrend overview={structuredClone(materializedFixture)} />);
 
     const models = screen.getByRole("list", { name: /modelos causais/i });
     expect(within(models).getAllByRole("listitem")).toHaveLength(1);
@@ -137,7 +98,8 @@ describe("AssessmentTrend", () => {
       "cortes de treinamento de 2026-08-22T11:30:00.000Z a 2026-08-22T12:30:00.000Z",
     );
     expect(models).toHaveTextContent(`sha256:${"d".repeat(64)}`);
-    expect(container.querySelectorAll("[data-series-id]")).toHaveLength(4);
+    expect(within(screen.getByRole("list", { name: "Resumo da evidência persistida" }))
+      .getAllByRole("listitem")).toHaveLength(4);
   });
 
   it("does not show a candidate warning when all points are normal or insufficient", async () => {

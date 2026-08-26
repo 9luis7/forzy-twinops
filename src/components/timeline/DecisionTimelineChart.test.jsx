@@ -1,6 +1,6 @@
 import "@testing-library/jest-dom/vitest";
 import React from "react";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import DecisionTimelineChart from "./DecisionTimelineChart.jsx";
 
@@ -37,7 +37,75 @@ const clusteredModel = {
   }],
 };
 
+const assessmentPoint = (index, hour, status) => ({
+  assessmentId: `00000000-0000-5000-8000-${String(index + 100).padStart(12, "0")}`,
+  anchorPointId: `00000000-0000-5000-8000-${String(index + 200).padStart(12, "0")}`,
+  eventAt: new Date(fullDomain[0] + hour * HOUR).toISOString(),
+  anomalyScore: 20 + index * 5,
+  deteriorationScore: 10 + index * 4,
+  candidateState: status === "watch" || status === "alert" ? "candidate_not_ground_truth" : null,
+  qualityStatus: "ok",
+  status,
+});
+
+const assessmentOverview = {
+  series: [{
+    seriesId: "assessment-series-1",
+    sensorId: "s1",
+    points: [
+      assessmentPoint(1, 1, "normal"),
+      assessmentPoint(2, 2, "watch"),
+      assessmentPoint(3, 3, "alert"),
+      assessmentPoint(4, 4, "watch"),
+      assessmentPoint(5, 5, "normal"),
+      assessmentPoint(6, 6, "alert"),
+      assessmentPoint(7, 7, "normal"),
+    ],
+  }],
+};
+
 describe("DecisionTimelineChart zoom viewport", () => {
+  it("shows candidate episodes instead of raw score traces in the full-range overview", () => {
+    render(
+      <DecisionTimelineChart
+        assessmentOverview={assessmentOverview}
+        frameFullDomain
+        model={clusteredModel}
+        onSelectPoint={vi.fn()}
+        selectedAt={null}
+        selectedPointId={null}
+        visibleSensors={new Set(["s1", "s2"])}
+      />,
+    );
+
+    const scores = screen.getByRole("img", { name: /Scores hist.*sincronizados/i });
+    expect(scores).toHaveAttribute("data-detail-level", "episodes");
+    expect(scores.querySelectorAll("polyline[data-score]")).toHaveLength(0);
+    expect(within(scores).getAllByRole("button", { name: /Inspecionar evid/i }))
+      .toHaveLength(2);
+
+    const canvas = scores.closest(".decision-chart__canvas");
+    vi.spyOn(canvas, "getBoundingClientRect").mockReturnValue({
+      bottom: 250,
+      height: 250,
+      left: 0,
+      right: 1000,
+      top: 0,
+      width: 1000,
+      x: 0,
+      y: 0,
+      toJSON: () => ({}),
+    });
+    for (let step = 0; step < 4; step += 1) {
+      fireEvent.wheel(canvas, { clientX: 100, deltaY: -100 });
+    }
+
+    expect(scores).toHaveAttribute("data-detail-level", "raw");
+    expect(scores.querySelectorAll("polyline[data-score]")).toHaveLength(2);
+    expect(within(scores).getAllByRole("button", { name: /Inspecionar evid/i }))
+      .toHaveLength(4);
+  });
+
   it("auto-frames dense readings and navigates directly by wheel, drag and reset", () => {
     render(
       <DecisionTimelineChart
