@@ -178,6 +178,7 @@ function PointButton({ candidate, color, cx, cy, label, onActivate, selected, ti
 
 export default function DecisionTimelineChart({
   assessmentOverview,
+  frameFullDomain = false,
   model,
   onSelectPoint,
   selectedPointId,
@@ -190,8 +191,8 @@ export default function DecisionTimelineChart({
     .filter((series) => visibleSensors.has(series.sensorId))
     .flatMap((series) => series.points.map((point) => point.timeMs)), [model.series, visibleSensors]);
   const autoDomain = useMemo(
-    () => denseDataDomain(visibleTimes, fullDomain),
-    [domainKey, visibleTimes],
+    () => frameFullDomain ? [...fullDomain] : denseDataDomain(visibleTimes, fullDomain),
+    [domainKey, frameFullDomain, visibleTimes],
   );
   const [viewport, setViewport] = useState(() => ({
     domain: null,

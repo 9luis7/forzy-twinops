@@ -81,6 +81,58 @@ describe("TimelineWorkspace", () => {
     expect(screen.getByRole("complementary", { name: "Ponto selecionado" })).toBeInTheDocument();
   });
 
+  it("frames the complete published domain when Tudo is selected", async () => {
+    const { default: TimelineWorkspace } = await import("./TimelineWorkspace.jsx");
+    const allRangeOverview = structuredClone(overviewFixture);
+    const domainFrom = "2026-08-24T00:00:00.000Z";
+    const domainTo = "2026-08-25T00:00:00.000Z";
+    const clusteredTimes = [
+      domainFrom,
+      "2026-08-24T23:55:00.000Z",
+      "2026-08-24T23:56:00.000Z",
+      "2026-08-24T23:57:00.000Z",
+      "2026-08-24T23:58:00.000Z",
+      "2026-08-24T23:59:00.000Z",
+    ];
+    allRangeOverview.requestedRange = null;
+    allRangeOverview.effectiveRange = { from: domainFrom, to: domainTo };
+    allRangeOverview.availableRange = { from: domainFrom, to: domainTo };
+    allRangeOverview.aggregationSummary = {
+      originalPointCount: 6,
+      returnedPointCount: 6,
+      omittedPointCount: 0,
+    };
+    allRangeOverview.series = [{
+      ...allRangeOverview.series[0],
+      points: clusteredTimes.map((eventAt, index) => ({
+        pointId: `00000000-0000-5000-8000-${String(index + 200).padStart(12, "0")}`,
+        eventAt,
+        value: 0.04 + index / 1000,
+      })),
+    }];
+
+    render(
+      <TimelineWorkspace
+        assessmentOverview={null}
+        context={null}
+        errors={{ overview: null, page: null, assessments: null, context: null }}
+        loading={{ overview: false, page: false, assessments: false, context: false }}
+        onRangePresetChange={vi.fn()}
+        overview={allRangeOverview}
+        page={null}
+        pendingSelection={null}
+        rangePreset="all"
+        selectTimelinePoint={vi.fn()}
+      />,
+    );
+
+    const telemetry = screen.getByRole("img", { name: "Telemetria histórica sincronizada" });
+    expect(Number(telemetry.dataset.domainFrom)).toBe(Date.parse(domainFrom));
+    expect(Number(telemetry.dataset.domainTo)).toBe(Date.parse(domainTo));
+    expect(screen.getByText("1× · 6/6 pontos visíveis")).toBeVisible();
+    expect(screen.getByRole("button", { name: "Reenquadrar" })).toBeDisabled();
+  });
+
   it("selects an original point directly from the synchronized chart", async () => {
     const { default: TimelineWorkspace } = await import("./TimelineWorkspace.jsx");
     const selectTimelinePoint = vi.fn();

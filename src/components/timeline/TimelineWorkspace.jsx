@@ -171,6 +171,7 @@ export default function TimelineWorkspace({
           {model === null ? null : (
             <DecisionTimelineChart
               assessmentOverview={resolvedAssessmentOverview}
+              frameFullDomain={rangePreset === "all"}
               model={model}
               onSelectPoint={selectPoint}
               selectedAt={context?.selectedAt ?? null}
