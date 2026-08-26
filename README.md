@@ -1,186 +1,264 @@
 # Forzy TwinOps
 
-Protótipo navegável de **Digital Twin** para manutenção preditiva de motores elétricos industriais.
-Challenge FIAP × Forzy.
+Fatia vertical de um **Digital Twin para manutenção preditiva de motores
+elétricos**, construída para o Challenge FIAP × Forzy.
 
-> Status: **demonstrador preditivo em evolução**. O front preserva o replay
-> determinístico, enquanto o backend já normaliza CSV/API, persiste telemetria,
-> executa ML clássico com artefato verificado e fornece o contrato canônico ao
-> copiloto. Parte dos cards legados ainda é ilustrativa.
->
-> **Novidades v0.4:** **loop de cenários ao vivo** no motor-estrela — a telemetria
-> determinística (1/seg) cicla sozinha por `estável → falha → detecção → normalização`
-> e percorre vários tipos de falha (superaquecimento, sobrecarga elétrica, desbalanceamento).
->
-> Essa leitura ao vivo é a **fonte única da verdade de TODO o app** (`LiveTwinContext`):
-> gauges, gêmeo ilustrativo (a hipótese do cenário acende), árvore de TAGs, cards, sinótico da planta,
-> KPIs, central de alertas, copiloto e auditoria refletem o **mesmo estado, no mesmo instante**.
-> O alerta do motor é dinâmico — aparece quando um cenário é detectado e some quando normaliza.
-> O histórico curado (OS, documentos) permanece. Controles: Iniciar/Pausar · Reset · Próximo cenário.
->
-> **v0.3:** nível de **Componente** na hierarquia de TAGs (Motor → Componente → Sensor) e
-> trilha de **procedência/auditoria** reforçada (traceId, inputHash, pipelineVersion,
-> scoringModel, validação humana).
+**Demonstração pública:**
+[forzy-twinops.vercel.app](https://forzy-twinops.vercel.app/)
 
----
+> Estado da demonstração em 26 de agosto de 2026: histórico real ativado,
+> avaliações históricas materializadas e console de decisão publicado. Este é
+> um recorte demonstrável do produto, não a declaração de conclusão de todas as
+> fases planejadas.
 
-## O problema
+## O que entregamos
 
-Plantas industriais carecem de uma camada de inteligência operacional onde cada ativo tem
-identidade, histórico e uma trilha auditável de decisões. Hoje o conhecimento sobre o estado
-de um motor fica disperso e só aparece **depois** da falha.
+O demonstrador mantém dois trilhos reais, unidos pela mesma API e pelo mesmo
+console de decisão:
 
-## A solução
-
-Uma camada de inteligência operacional onde cada ativo tem **identidade por TAG**, seu histórico,
-seus documentos, seus dados de sensores e uma trilha auditável de recomendações. O motor é o
-primeiro caso prático — a janela para a fábrica inteira, não o limite da solução.
-
-O coração do protótipo é o **ciclo de vida do dado**: mostrar o dado se transformando de leitura
-de sensor até virar decisão, com origem rastreável.
-
-## Arquitetura (ciclo de vida do dado)
-
-```
-[1] SENSOR     ESP32 + DHT22 / MPU6050 / potenciômetro lê o motor
-      ↓ MQTT
-[2] BROKER     HiveMQ recebe o payload raw (1 leitura/seg)
-      ↓
-[3] INGESTÃO   n8n valida + faz lookup + insere
-      ↓
-[4] SUPABASE   assets + readings
-      ↓
-[5] INTERFACE  navega TAG → leitura atual + gráfico temporal + ficha
-      ↓
-[6] DECISÃO    alerta + recomendação + procedência auditável
+```text
+leituras S1/S2 disponibilizadas pela Forzy
+      ├─ arquivo histórico → lote imutável → robust-baseline 1.0.1
+      │                    → scores causais persistidos
+      └─ API operacional   → coleta e persistência idempotentes
+                           → coletas recentes sem score inventado
+                                      ↓
+             API canônica + gráfico + contexto do ponto
+                                      ↓
+             confirmação ou rejeição humana antes da ação
 ```
 
-## Stack
+A aplicação integra React e Vite no front-end, FastAPI no backend e PostgreSQL
+no ambiente publicado. O front-end consome somente rotas de mesma origem em
+`/api/v2`; credenciais, DSN e payloads brutos não são enviados ao navegador.
 
-- **Front-end:** React + Vite
-- **Gráficos:** Recharts
-- **Dados:** replay determinístico, histórico Forzy real e coleta server-side dos endpoints S1/S2
-- **Backend:** FastAPI/Python com SQLite no demonstrador
-- **ML:** baseline robusto causal, backtest walk-forward e artefatos com hashes externos
+## Evidência disponível para a apresentação
 
-## Schema de referência
+O lote histórico ativo validado em produção em 26 de agosto de 2026 contém:
 
-```sql
-CREATE TABLE public.assets (
-  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  tag text NOT NULL UNIQUE,
-  name text NOT NULL,
-  motor_type text NOT NULL,
-  sector text NOT NULL,
-  created_at timestamptz NOT NULL DEFAULT now()
-);
+| Evidência | Quantidade | Interpretação |
+| --- | ---: | --- |
+| Leituras históricas canônicas | 14.366 | 7.183 leituras de S1 e 7.183 de S2 |
+| Ciclos operacionais | 204 | Séries separadas por interrupções maiores que 15 s |
+| Avaliações persistidas | 4.209 | Resultado causal e imutável do lote histórico ativo |
+| Avaliações candidatas | 1.968 | Desvios que exigem confirmação ou rejeição humana |
+| Violações de âncora ou episódio | 0 | Invariantes causais verificadas na materialização |
 
-CREATE TABLE public.readings (
-  id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-  asset_tag text NOT NULL REFERENCES public.assets(tag),
-  ts timestamptz NOT NULL,
-  temperature numeric NOT NULL,   -- °C
-  current numeric NOT NULL,       -- A
-  vibration numeric NOT NULL,     -- m/s²
-  rotation integer,               -- RPM
-  created_at timestamptz NOT NULL DEFAULT now()
-);
+Uma segunda execução da materialização inseriu zero registros e preservou as
+4.209 avaliações existentes. Esse no-op comprova idempotência; não representa
+um novo treinamento.
+
+## Modelo e semântica dos scores
+
+O `robust-baseline 1.0.1` usa o conjunto `curated-features.csv`, com 14.366
+amostras distribuídas em 204 ciclos. Ele combina quatro atributos causais:
+
+- `velocity_ewma`;
+- `velocity_slope`;
+- `velocity_change_point`;
+- `temperature_deviation`.
+
+O artefato registra que o modelo foi treinado até
+`2026-05-19T17:40:14.229Z`. Na avaliação walk-forward, cada corte causal de
+treinamento termina antes do ponto que ele avalia.
+
+Os resultados medem **anomalia relativa** e **deterioração relativa** contra o
+baseline histórico. A escala 0–100 serve para priorizar inspeção dentro desse
+contexto.
+
+Os scores **não são**:
+
+- probabilidade de falha;
+- confiança calibrada;
+- vida útil remanescente (RUL);
+- diagnóstico de causa ou componente;
+- falha confirmada.
+
+O conjunto não contém rótulos de falha confirmada. Por isso,
+`candidate_not_ground_truth` significa somente **candidato não confirmado**.
+O ciclo correto de evolução é:
+
+```text
+candidato → confirmação/rejeição humana → evento rotulado
+          → novo treinamento/backtest → nova versão → ativação explícita
 ```
 
-## Rodando localmente
+Não existe aprendizado online automático nesta versão.
 
-```bash
+## Como ler o console
+
+### Histórico avaliado
+
+É o caminho principal da demonstração. Mostra o lote histórico ativo, a
+telemetria S1/S2 e os scores persistidos no mesmo eixo temporal. O gráfico usa
+pontos representativos para manter a interação fluida; os totais exibidos na
+interface informam quantas leituras originais sustentam o recorte.
+
+Selecione um ponto para abrir o inspetor lateral. O contexto preserva a leitura
+original, o sensor, o horário, a origem, o status, a versão do modelo, o corte
+causal de treinamento e os identificadores de proveniência disponíveis.
+
+### Coletas recentes
+
+Mostra somente leituras recuperadas da API e persistidas. As linhas oferecem
+uma ligação visual entre pontos reais do mesmo sensor e dia de coleta; elas não
+criam novos pontos, não unem dias diferentes e não provam coleta contínua nos
+intervalos entre observações.
+
+O upstream não fornece um timestamp físico de aquisição. O TwinOps registra o
+horário de recuperação como `receivedAt` e declara essa qualidade temporal na
+evidência, em vez de apresentá-la como horário medido pelo sensor.
+
+As coletas recentes ainda não têm scores materializados. A cadência e a
+cobertura S1/S2 persistidas não satisfazem o gate de atributos do modelo atual:
+no mínimo três pontos, janela causal de 60 s, intervalo máximo de 15 s e
+frescor máximo de 30 s. A interface mostra “indisponível” em vez de inferir um
+score ou preencher o valor com zero.
+
+### Visão completa
+
+Combina o lote histórico e as coletas recentes no tempo civil. Os intervalos
+longos sem coleta permanecem vazios de propósito. Use esta visão para provar a
+separação entre fontes e a ausência de continuidade inventada; para analisar
+uma tendência durante a apresentação, volte a **Histórico avaliado**.
+
+### Controles do gráfico
+
+- Arraste horizontalmente para navegar.
+- Use `Ctrl` + roda do mouse ou trackpad para aplicar zoom no gráfico sem
+  competir com o scroll da página.
+- Use **Reenquadrar** para restaurar a janela inicial.
+- Ative ou oculte S1 e S2 pelos controles acima do gráfico.
+- Selecione um ponto para sincronizar o gráfico, os scores e o inspetor.
+
+## O que a interface prova
+
+- O histórico original chega à aplicação como lote imutável e identificável.
+- O modelo e cada avaliação permanecem ligados a versão, configuração,
+  manifesto, relatório e hashes de origem.
+- A API entrega telemetria, avaliações e contexto ao front-end sem usar dados
+  sintéticos como fallback.
+- O usuário navega da tendência agregada até a evidência do ponto original.
+- Lacunas, canal ausente e score indisponível continuam explícitos.
+- Candidatos permanecem separados de falhas confirmadas e exigem revisão
+  humana.
+
+O demonstrador não comprova SLA industrial, captura contínua garantida,
+probabilidade de falha, RUL, diagnóstico automático ou eficácia em falhas reais
+rotuladas.
+
+## Roteiro de demonstração em 5 minutos
+
+1. **0:00–0:30 — Abra o produto.** Acesse a URL pública e apresente o objetivo:
+   transformar telemetria real em evidência rastreável para priorizar uma
+   inspeção humana.
+2. **0:30–1:30 — Mostre o histórico.** Entre em **Histórico avaliado** e destaque
+   as 14.366 leituras, os 204 ciclos e a separação entre S1 e S2.
+3. **1:30–3:00 — Demonstre a decisão.** Navegue e aplique zoom, selecione um
+   candidato e mostre no inspetor o valor original, o score relativo, a versão
+   do modelo e a procedência. Diga explicitamente: “candidato não confirmado;
+   não é probabilidade de falha”.
+4. **3:00–4:00 — Mostre o dado novo.** Abra **Coletas recentes**. Explique que os
+   pontos vieram da API, foram persistidos e não receberam score porque o gate
+   causal não foi satisfeito. Isso prova que o sistema não inventa evidência.
+5. **4:00–5:00 — Feche o ciclo.** Abra **Visão completa** brevemente para mostrar
+   os intervalos sem coleta. Termine com o fluxo humano: candidato, validação,
+   rótulo, novo treinamento, backtest, nova versão e ativação controlada.
+
+Para reduzir risco durante a apresentação, abra a URL alguns minutos antes,
+faça um refresh e deixe **Histórico avaliado** selecionado. Não comece pela
+**Visão completa**, pois ela preserva deliberadamente os grandes intervalos sem
+coleta.
+
+## Executar e validar localmente
+
+### Front-end
+
+```powershell
 npm install
 npm run dev
 ```
 
-O backend pode ser instalado e validado separadamente:
+O front-end usa a API de mesma origem. Sem um backend local configurado, o shell
+abre, mas os dados reais ficam indisponíveis.
+
+Execute os testes e o build de produção:
+
+```powershell
+npm run test:run
+npm run build
+```
+
+### Backend
+
+Crie o ambiente Python e instale as dependências:
 
 ```powershell
 python -m venv services/twinops/.venv
-services/twinops/.venv/Scripts/python -m pip install -e "services/twinops[dev]"
-services/twinops/.venv/Scripts/python -m pytest services/twinops/tests
+.\services\twinops\.venv\Scripts\python.exe -m pip install -e "services/twinops[dev]"
+.\services\twinops\.venv\Scripts\python.exe -m pytest services/twinops/tests
 ```
 
-Com as variáveis `TWINOPS_*` configuradas, o histórico nativo pode ser
-importado de forma idempotente:
+O backend publicado depende das variáveis server-side descritas em
+`.env.example`. Nunca use o prefixo `VITE_` para banco, upstream ou hashes ML,
+pois variáveis Vite podem entrar no bundle do navegador.
+
+O smoke read-only do deployment é:
 
 ```powershell
-services/twinops/.venv/Scripts/python -m twinops.cli import-forzy-history data/raw/forzy-history-2026-05-19.csv
+$env:DEPLOYMENT_URL="https://forzy-twinops.vercel.app"
+.\services\twinops\.venv\Scripts\python.exe scripts\verify_deployment.py `
+  --url $env:DEPLOYMENT_URL
 ```
 
-Para trocar o replay pelo snapshot canônico do backend no front, defina
-`VITE_TWINOPS_DATA_MODE=live`. Se a API falhar, o contexto preserva o replay
-como fallback explícito. O comando `python -m twinops.ml.real_history` imprime
-os hashes de manifesto e modelo que devem ser copiados para as variáveis
-`TWINOPS_ML_*`; o CSV industrial bruto permanece ignorado pelo Git.
-
-O gate ponta a ponta cria uma base temporária a partir do CSV original, inicia
-API e frontend locais e navega pelo modo canônico no Chrome:
+O teste ponta a ponta local requer o arquivo histórico original fora do Git:
 
 ```powershell
-npm.cmd run test:e2e
+npm run test:e2e
 ```
 
-Ele espera o arquivo `docs/History_32026-05-19T11-46-10-920.csv` localmente e
-não acessa os endpoints externos da Forzy.
+O CSV industrial bruto, bancos locais, resultados administrativos, variáveis de
+ambiente e credenciais permanecem fora do repositório e dos logs públicos.
 
-## As 4 cenas da demo
+## Proveniência e gates operacionais
 
-1. **Visão da Planta** — KPIs + mapa macro das áreas (A Produção · B Utilidades · C Manutenção · D Expedição). Partimos do macro para o micro.
-2. **Drill-down por TAG** — `PLT-FORZY-001 → AREA-PROD-01 → MTR-BMB-042 → CMP-BRG-042A → SNS-VIB-042B`. Perfil do ativo ("LinkedIn da máquina"): leituras, risco, **componentes**, sensores, documentos e OS vinculadas. A associação do sensor ao rolamento é um cenário ilustrativo do replay; a montagem real de S1/S2 ainda precisa ser confirmada.
-3. **Alertas + timeline** — fluxo de alerta, origem (`SNS-VIB-042B`) e base consultada; a confiança de 87% do cenário legado é ilustrativa e não representa probabilidade produzida pelo modelo real.
-4. **Assistente técnico (copiloto)** — Q&A asset-aware: possíveis causas, ação recomendada e evidências rastreáveis.
+Cada lote e avaliação preserva os vínculos necessários para reprodução:
 
-### Caminho ensaiado
-`Visão da Planta → Área de Produção → MTR-BMB-042 → Componentes → Telemetria ao vivo → Alerta → Evidências → Recomendação → Copiloto → Auditoria`
+- identidade do ativo e do lote;
+- hash da fonte e do manifesto histórico;
+- família, versão e hash do modelo;
+- hashes da configuração, dos atributos e do relatório;
+- hash do manifesto de avaliações;
+- janela de treinamento, janela avaliada, âncora temporal e sensor.
 
-## Estrutura
+Os gates continuam separados mesmo após esta demonstração:
 
+1. executar migration;
+2. importar ou preparar um novo lote imutável;
+3. materializar avaliações;
+4. ativar o lote;
+5. publicar ou promover um deployment.
+
+Uma autorização para um gate não autoriza os seguintes. Rollback de aplicação
+também não autoriza apagar histórico, avaliações ou tabelas.
+
+## Estrutura principal
+
+```text
+api/                         entrada ASGI para o ambiente Vercel
+artifacts/ml/real-forzy/     artefato, configuração e evidência do modelo
+contracts/                   contratos JSON versionados
+services/twinops/            API, ingestão, persistência, ML e testes Python
+src/components/timeline/     console, gráficos, scores e inspetor de decisão
+src/dataSources/             cliente same-origin da API v2
+tests/e2e/                   validação ponta a ponta
+docs/deploy/                 runbooks de publicação e verificação
 ```
-forzy-twinops/
-├── src/
-│   ├── data/mock.js              # planta, áreas, ativos, sensores, leituras, alertas, OS, docs, risco, KPIs, cenários ao vivo
-│   ├── useLiveTelemetry.js       # motor do loop de cenários ao vivo (1/seg, determinístico)
-│   ├── LiveTwinContext.jsx       # provider global: fonte única do estado do motor-estrela
-│   ├── components/
-│   │   ├── Sidebar.jsx           # navegação principal
-│   │   ├── Breadcrumb.jsx        # trilha PLT → AREA → MTR
-│   │   ├── TagTree.jsx           # árvore Planta → Área → Motor → Sensores
-│   │   ├── AssetProfile.jsx      # perfil do ativo (cena 2)
-│   │   ├── Copilot.jsx           # assistente técnico (cena 4)
-│   │   ├── TimeChart.jsx         # série temporal (Recharts) + barra do loop ao vivo
-│   │   ├── Gauge.jsx             # medidor radial SCADA (SVG)
-│   │   ├── MotorMimic.jsx        # gêmeo digital 2.5D do motor (SVG)
-│   │   ├── DataPipeline.jsx      # as 6 etapas do ciclo de vida do dado
-│   │   ├── Provenance.jsx        # procedência por leitura
-│   │   └── ui.jsx                # badges / barra de confiança
-│   ├── views/
-│   │   ├── PlantOverview.jsx     # cena 1 — KPIs + mapa de áreas
-│   │   ├── AssetsView.jsx        # cena 2 — drill-down por TAG
-│   │   ├── AlertsView.jsx        # cena 3 — central de alertas
-│   │   ├── OrdersView.jsx        # ordens de manutenção
-│   │   ├── DocumentsView.jsx     # documentos técnicos
-│   │   └── AuditView.jsx         # auditoria (pipeline + procedência)
-│   └── App.jsx                   # shell + roteamento por estado
-├── public/
-├── README.md
-└── package.json
-```
-
-## Escopo
-
-**Dentro (demo):** sidebar + roteamento · visão macro da planta com KPIs · drill-down por TAG ·
-perfil do ativo + gráfico temporal · alerta preditivo com confiança · assistente técnico (copiloto) ·
-ordens de manutenção · documentos técnicos · auditoria/procedência do dado.
-
-**Fora (evolução):** API de produção com URL estável/SLA · autenticação e permissões ·
-rótulos de falha e validação longitudinal do ML · RAG sobre documentos · visão computacional (leitura de placa).
-
-> Teatro honesto: o caminho da demo é navegável e coerente; números de planta (128 ativos etc.)
-> são sintéticos e alguns cards são ilustrativos. O objetivo é mostrar a **visão** e a lógica.
 
 ## Segurança
 
-Chaves `service_role` do Supabase **não** vão para o repositório. O mock não contém credenciais.
-Ver `.env.example`.
+- Não versione `.env`, DSN, credenciais ou payloads brutos.
+- Valide os hashes externos antes de carregar `pipeline.joblib`.
+- Trate o ambiente publicado como demonstrador, sem SLA industrial.
+- Use somente endpoints sanitizados para saúde e observabilidade.
+- Exija validação humana antes de converter um candidato em ação operacional.
