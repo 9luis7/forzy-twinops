@@ -1659,6 +1659,25 @@ body {
   font-size: 0.68rem;
 }
 
+.decision-console__availability {
+  display: grid;
+  max-width: 22rem;
+  gap: 0.2rem;
+  padding-inline: 0.8rem;
+  border-left: 2px solid #fbbf24;
+}
+
+.decision-console__availability strong {
+  color: #fde68a;
+  font-size: 0.74rem;
+}
+
+.decision-console__availability span {
+  color: var(--muted);
+  font-size: 0.68rem;
+  line-height: 1.45;
+}
+
 .decision-console__range {
   display: inline-flex;
   border: 1px solid #3a4d65;
@@ -2203,6 +2222,7 @@ body {
   }
 
   .decision-console__summary,
+  .decision-console__availability,
   .decision-console__sensors {
     justify-self: start;
     justify-items: start;

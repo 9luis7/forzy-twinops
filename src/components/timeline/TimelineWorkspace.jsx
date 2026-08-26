@@ -1,4 +1,4 @@
-import React, { useMemo, useRef, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { useOptionalTwinOps } from "../../TwinOpsContext.jsx";
 import AssessmentTrend from "./AssessmentTrend.jsx";
 import DecisionInspector from "./DecisionInspector.jsx";
@@ -46,6 +46,7 @@ export default function TimelineWorkspace({
     () => overview === null ? null : buildTimelineViewModel(overview),
     [overview],
   );
+  const liveOnly = overview?.capabilities?.historical === false;
   const selectedPointId = context?.anchor?.pointId ?? null;
   const aggregation = overview?.aggregationSummary ?? null;
   const selectPoint = (pointId) => {
@@ -67,38 +68,57 @@ export default function TimelineWorkspace({
     });
   };
 
+  useEffect(() => {
+    if (liveOnly && rangePreset !== "all") {
+      void onRangePresetChange("all");
+    }
+  }, [liveOnly, onRangePresetChange, rangePreset]);
+
   return (
     <section className="timeline-workspace decision-console" data-testid="timeline-workspace" aria-labelledby="timeline-title">
       <header className="decision-console__toolbar">
         <div className="decision-console__title">
-          <p className="eyebrow">Histórico operacional</p>
+          <p className="eyebrow">{liveOnly ? "Coleta operacional" : "Histórico operacional"}</p>
           <h2 id="timeline-title">Console de decisão</h2>
-          <p>Telemetria, scores persistidos e evidência do ponto no mesmo eixo temporal.</p>
+          <p>
+            {liveOnly
+              ? "Leituras ao vivo publicadas, sem profundidade histórica simulada."
+              : "Telemetria, scores persistidos e evidência do ponto no mesmo eixo temporal."}
+          </p>
         </div>
 
         <div className="decision-console__summary" aria-label="Resumo da consulta">
           <span data-status={errors?.overview ? "warning" : "ready"}>
-            {errors?.overview ? "Cobertura parcial" : "Histórico validado"}
+            {errors?.overview ? "Cobertura parcial" : liveOnly ? "Coleta ao vivo" : "Histórico validado"}
           </span>
           {aggregation === null ? null : (
             <small>
-              {aggregation.returnedPointCount} exibidos de {aggregation.originalPointCount} pontos
+              {liveOnly
+                ? `${aggregation.originalPointCount} leituras ao vivo disponíveis`
+                : `${aggregation.returnedPointCount} exibidos de ${aggregation.originalPointCount} pontos`}
             </small>
           )}
         </div>
 
-        <div aria-label="Período exibido" className="decision-console__range" role="group">
-          {RANGE_PRESETS.map(([value, label]) => (
-            <button
-              aria-pressed={rangePreset === value}
-              key={value}
-              onClick={() => { void onRangePresetChange(value); }}
-              type="button"
-            >
-              {label}
-            </button>
-          ))}
-        </div>
+        {liveOnly ? (
+          <div className="decision-console__availability">
+            <strong>Sem lote histórico ativo</strong>
+            <span>A consulta carrega tudo o que foi publicado; o gráfico abre no trecho recente. Use a roda para zoom e arraste para navegar.</span>
+          </div>
+        ) : (
+          <div aria-label="Período exibido" className="decision-console__range" role="group">
+            {RANGE_PRESETS.map(([value, label]) => (
+              <button
+                aria-pressed={rangePreset === value}
+                key={value}
+                onClick={() => { void onRangePresetChange(value); }}
+                type="button"
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        )}
 
         <fieldset className="decision-console__sensors">
           <legend>Sensores visíveis</legend>

@@ -2,7 +2,7 @@ import "@testing-library/jest-dom/vitest";
 import React from "react";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import overviewFixture from "../../../contracts/timeline/v1/fixtures/overview-unified.valid.json";
 import pageFixture from "../../../contracts/timeline/v1/fixtures/page.valid.json";
@@ -16,6 +16,37 @@ import HistoricalContextEvidence from "./HistoricalContextEvidence.jsx";
 afterEach(cleanup);
 
 describe("TimelineWorkspace", () => {
+  it("removes redundant period filters when only live collection data exists", async () => {
+    const { default: TimelineWorkspace } = await import("./TimelineWorkspace.jsx");
+    const liveOnlyOverview = structuredClone(overviewFixture);
+    liveOnlyOverview.activeHistoricalBatchId = null;
+    liveOnlyOverview.capabilities.historical = false;
+    const onRangePresetChange = vi.fn();
+
+    render(
+      <TimelineWorkspace
+        assessmentOverview={null}
+        context={null}
+        errors={{ overview: null, page: null, assessments: null, context: null }}
+        loading={{ overview: false, page: false, assessments: false, context: false }}
+        onRangePresetChange={onRangePresetChange}
+        overview={liveOnlyOverview}
+        page={structuredClone(pageFixture)}
+        pendingSelection={null}
+        rangePreset="24h"
+        selectTimelinePoint={vi.fn()}
+      />,
+    );
+
+    expect(screen.queryByRole("group", { name: "Período exibido" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "7 dias" })).not.toBeInTheDocument();
+    expect(screen.getByText("Sem lote histórico ativo")).toBeInTheDocument();
+    expect(screen.getByText("44 leituras ao vivo disponíveis")).toBeInTheDocument();
+    expect(screen.getByText(/consulta carrega tudo o que foi publicado/i)).toBeInTheDocument();
+    await waitFor(() => expect(onRangePresetChange).toHaveBeenCalledOnce());
+    expect(onRangePresetChange).toHaveBeenCalledWith("all");
+  });
+
   it("presents range controls and keeps technical evidence collapsed", async () => {
     const { default: TimelineWorkspace } = await import("./TimelineWorkspace.jsx");
     const onRangePresetChange = vi.fn();
