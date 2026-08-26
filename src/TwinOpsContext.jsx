@@ -54,8 +54,27 @@ export function isForzyWindowOpen(value) {
 
 const isAbortError = (error) => error?.name === "AbortError";
 
-const timelineRangeQuery = (preset, now) => {
+const historicalArchiveRangeQuery = (overview) => {
+  const segments = overview?.segments?.filter(
+    (segment) => segment.sourceKind === "historical_archive",
+  ) ?? [];
+  if (segments.length === 0) {
+    throw new TypeError("TwinOps historical archive range is unavailable");
+  }
+  const starts = segments.map((segment) => Date.parse(segment.startAt));
+  const ends = segments.map((segment) => Date.parse(segment.endAt));
+  if ([...starts, ...ends].some((value) => !Number.isFinite(value))) {
+    throw new TypeError("TwinOps historical archive range is invalid");
+  }
+  return Object.freeze({
+    from: new Date(Math.min(...starts)).toISOString(),
+    to: new Date(Math.max(...ends) + 1).toISOString(),
+  });
+};
+
+const timelineRangeQuery = (preset, now, overview = null) => {
   if (preset === "all") return Object.freeze({});
+  if (preset === "historical") return historicalArchiveRangeQuery(overview);
   const days = TIMELINE_RANGE_DAYS[preset];
   if (days === undefined) throw new TypeError("TwinOps timeline range preset is invalid");
   if (!(now instanceof Date) || Number.isNaN(now.getTime())) {
@@ -267,12 +286,18 @@ export function TwinOpsProvider({
   }, [beginTimelineRequest, dataSource]);
 
   const loadHistoricalRange = useCallback((preset) => {
-    const rangeQuery = timelineRangeQuery(preset, clock());
+    const rangeQuery = timelineRangeQuery(preset, clock(), timelineState.timelineOverview);
     const overviewPromise = loadTimelineOverview(rangeQuery);
     const pagePromise = loadTimelinePage(rangeQuery);
     const assessmentsPromise = loadTimelineAssessments(rangeQuery);
     return Promise.all([overviewPromise, pagePromise, assessmentsPromise]);
-  }, [clock, loadTimelineAssessments, loadTimelineOverview, loadTimelinePage]);
+  }, [
+    clock,
+    loadTimelineAssessments,
+    loadTimelineOverview,
+    loadTimelinePage,
+    timelineState.timelineOverview,
+  ]);
 
   const showHistory = useCallback(() => {
     dispatchTimeline({ type: "SHOW_HISTORY" });
@@ -282,11 +307,10 @@ export function TwinOpsProvider({
   const selectTimelineRange = useCallback((preset) => {
     const availableTo = timelineState.timelineOverview?.availableRange?.to ?? null;
     const anchor = availableTo === null ? clock() : new Date(availableTo);
-    timelineRangeQuery(preset, anchor);
+    const rangeQuery = timelineRangeQuery(preset, anchor, timelineState.timelineOverview);
     abortTimelineRequest(contextRequestRef);
     setTimelineRangePreset(preset);
     dispatchTimeline({ type: "SHOW_HISTORY" });
-    const rangeQuery = timelineRangeQuery(preset, anchor);
     const overviewPromise = loadTimelineOverview(rangeQuery);
     const pagePromise = loadTimelinePage(rangeQuery);
     const assessmentsPromise = loadTimelineAssessments(rangeQuery);

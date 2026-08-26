@@ -478,6 +478,38 @@ describe("historical navigation", () => {
     });
   });
 
+  it("queries the dense immutable archive when Lote histórico is selected", async () => {
+    const source = sourceStub();
+    const doc = visibleDocument();
+    const { result } = renderHook(() => useTwinOps(), {
+      wrapper: wrapperFor({
+        dataSource: source,
+        clock: outsideWindowClock,
+        documentRef: doc.target,
+      }),
+    });
+    await flush();
+
+    await act(async () => {
+      await result.current.showHistory();
+    });
+    await act(async () => {
+      await result.current.selectTimelineRange("historical");
+    });
+
+    expect(result.current.timelineRangePreset).toBe("historical");
+    for (const request of [
+      source.getTimelineOverview.mock.calls[1][1],
+      source.getTimelineSamples.mock.calls[1][1],
+      source.getTimelineAssessments.mock.calls[1][1],
+    ]) {
+      expect(request).toMatchObject({
+        from: "2026-08-22T12:00:00.000Z",
+        to: "2026-08-22T12:03:09.001Z",
+      });
+    }
+  });
+
   it("keeps the current display until a selected point validates and commits", async () => {
     const source = sourceStub();
     const contextRequest = deferred();

@@ -1,4 +1,4 @@
-import React, { useMemo, useRef, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 
 const CHART_WIDTH = 1040;
 const SENSOR_CHART_HEIGHT = 310;
@@ -176,14 +176,16 @@ function GapAreas({ domain, gaps, height }) {
   );
 }
 
-function PointButton({ candidate, color, cx, cy, label, onActivate, selected, title }) {
+function PointButton({ candidate, color, cx, cy, label, onActivate, pending, selected, title }) {
   return (
     <circle
+      aria-busy={pending ? "true" : undefined}
       aria-label={label}
       className="decision-chart__point"
       cx={cx}
       cy={cy}
       data-candidate={candidate ? "true" : "false"}
+      data-pending={pending ? "true" : "false"}
       data-selected={selected ? "true" : "false"}
       fill={candidate ? "#8b5cf6" : color}
       onClick={onActivate}
@@ -193,7 +195,7 @@ function PointButton({ candidate, color, cx, cy, label, onActivate, selected, ti
           onActivate();
         }
       }}
-      r={selected ? 5.5 : candidate ? 4.5 : 2.8}
+      r={pending ? 6.5 : selected ? 5.5 : candidate ? 4.5 : 2.8}
       role="button"
       stroke="#07111f"
       strokeWidth="1.5"
@@ -209,11 +211,13 @@ export default function DecisionTimelineChart({
   frameFullDomain = false,
   model,
   onSelectPoint,
+  pendingPointId = null,
   selectedPointId,
   selectedAt,
   visibleSensors,
 }) {
   const fullDomain = model.domain ?? [0, 1];
+  const assessmentAggregation = assessmentOverview?.aggregationSummary ?? null;
   const domainKey = `${fullDomain[0]}:${fullDomain[1]}`;
   const visibleTimes = useMemo(() => model.series
     .filter((series) => visibleSensors.has(series.sensorId))
@@ -235,6 +239,7 @@ export default function DecisionTimelineChart({
   const visibleSpan = Math.max(1, domain[1] - domain[0]);
   const zoomFactor = fullSpan / visibleSpan;
   const showRawScoreTraces = !frameFullDomain || zoomFactor >= RAW_SCORE_TRACE_MIN_ZOOM;
+  const chartRootRef = useRef(null);
   const dragRef = useRef(null);
   const suppressClickRef = useRef(false);
   const [dragging, setDragging] = useState(false);
@@ -253,14 +258,36 @@ export default function DecisionTimelineChart({
       anchor + nextSpan * (1 - ratio),
     ]);
   };
-  const handleWheel = (event) => {
-    event.preventDefault();
-    const rect = event.currentTarget.getBoundingClientRect();
-    const ratio = Math.max(0, Math.min(1, (event.clientX - rect.left) / Math.max(1, rect.width)));
-    zoomAround(ratio, event.deltaY < 0 ? 0.82 : 1.22);
-  };
+  useEffect(() => {
+    const canvases = chartRootRef.current?.querySelectorAll(".decision-chart__canvas") ?? [];
+    const handleWheel = (event) => {
+      if (!event.ctrlKey) return;
+      event.preventDefault();
+      const rect = event.currentTarget.getBoundingClientRect();
+      const ratio = Math.max(0, Math.min(1, (event.clientX - rect.left) / Math.max(1, rect.width)));
+      const minimumSpan = Math.max(MINUTE / 4, fullSpan / 512);
+      const nextSpan = Math.max(
+        minimumSpan,
+        Math.min(fullSpan, visibleSpan * (event.deltaY < 0 ? 0.82 : 1.22)),
+      );
+      const anchor = domain[0] + visibleSpan * ratio;
+      setViewport({
+        domain: fitDomain([
+          anchor - nextSpan * ratio,
+          anchor + nextSpan * (1 - ratio),
+        ], fullDomain),
+        key: domainKey,
+        mode: "manual",
+      });
+    };
+    canvases.forEach((canvas) => canvas.addEventListener("wheel", handleWheel, { passive: false }));
+    return () => {
+      canvases.forEach((canvas) => canvas.removeEventListener("wheel", handleWheel));
+    };
+  }, [domain, domainKey, fullDomain, fullSpan, visibleSpan]);
   const handlePointerDown = (event) => {
     if (event.button !== 0) return;
+    if (event.target.closest?.('[role="button"]')) return;
     const rect = event.currentTarget.getBoundingClientRect();
     dragRef.current = {
       domain: [...domain],
@@ -318,7 +345,7 @@ export default function DecisionTimelineChart({
     }
   };
   const interactiveCanvasProps = {
-    "aria-label": "Gráfico interativo: arraste ou use as setas para navegar; use a roda ou mais e menos para zoom",
+    "aria-label": "Gráfico interativo: arraste ou use as setas para navegar; use Ctrl mais roda, ou mais e menos, para zoom",
     "data-dragging": dragging ? "true" : "false",
     onClickCapture: handleClickCapture,
     onKeyDown: handleKeyDown,
@@ -326,7 +353,6 @@ export default function DecisionTimelineChart({
     onPointerDown: handlePointerDown,
     onPointerMove: handlePointerMove,
     onPointerUp: handlePointerEnd,
-    onWheel: handleWheel,
     role: "group",
     tabIndex: 0,
   };
@@ -422,11 +448,11 @@ export default function DecisionTimelineChart({
   const zoomLabel = `${Math.max(1, Math.round(zoomFactor))}× · ${pointCountLabel}`;
 
   return (
-    <div className="decision-chart" data-testid="decision-timeline-chart">
+    <div className="decision-chart" data-testid="decision-timeline-chart" ref={chartRootRef}>
       <div aria-label="Navegação do gráfico" className="decision-chart__navigation" role="group">
         <p>
           <strong>{zoomLabel}</strong>
-          <span>Arraste para navegar · roda/trackpad para zoom</span>
+          <span>Arraste para navegar · Ctrl + roda/trackpad para zoom</span>
         </p>
         <button disabled={viewportMode === "auto"} onClick={resetViewport} type="button">
           Reenquadrar
@@ -485,6 +511,7 @@ export default function DecisionTimelineChart({
                   key={point.pointId}
                   label={`Inspecionar ponto ${point.pointId}`}
                   onActivate={activate}
+                  pending={point.pointId === pendingPointId}
                   selected={point.pointId === selectedPointId}
                   title={`${point.sensorId.toUpperCase()} · ${dateFormatter.format(new Date(point.timeMs))} · ${point.value}`}
                 />
@@ -496,7 +523,15 @@ export default function DecisionTimelineChart({
 
       <section aria-labelledby="score-chart-title" className="decision-chart__section decision-chart__section--scores">
         <div className="decision-chart__heading">
-          <h3 id="score-chart-title">Scores relativos · 0–100</h3>
+          <div className="decision-chart__heading-title">
+            <h3 id="score-chart-title">Scores relativos · 0–100</h3>
+            {assessmentAggregation === null ? null : (
+              <small>
+                {assessmentAggregation.returnedAssessmentCount} scores representativos de {" "}
+                {assessmentAggregation.originalAssessmentCount} avaliações persistidas
+              </small>
+            )}
+          </div>
           <div aria-label="Legenda dos scores" className="decision-chart__legend" role="group">
             <span><i data-score="anomaly" />Anomalia relativa</span>
             <span><i data-score="deterioration" />Deterioração relativa</span>
@@ -558,6 +593,7 @@ export default function DecisionTimelineChart({
                     key={point.anchorPointId}
                     label={`Inspecionar evidência ${point.anchorPointId}`}
                     onActivate={activate}
+                    pending={point.anchorPointId === pendingPointId}
                     selected={point.anchorPointId === selectedPointId}
                     title={`${dateFormatter.format(new Date(point.eventAt))} · score ${value}`}
                   />

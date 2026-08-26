@@ -73,12 +73,37 @@ describe("TimelineWorkspace", () => {
       "aria-pressed",
       "true",
     );
+    expect(within(rangeControls).getByRole("button", { name: "Lote histórico" })).toBeVisible();
+    expect(within(rangeControls).getByRole("button", { name: "Tudo + live" })).toBeVisible();
+    expect(screen.getByText("4 pontos representativos de 44 leituras persistidas")).toBeVisible();
+    fireEvent.click(within(rangeControls).getByRole("button", { name: "Lote histórico" }));
+    expect(onRangePresetChange).toHaveBeenCalledWith("historical");
     fireEvent.click(within(rangeControls).getByRole("button", { name: "14 dias" }));
     expect(onRangePresetChange).toHaveBeenCalledWith("14d");
 
     const evidenceSummary = screen.getByText("Evidência técnica e leituras originais");
     expect(evidenceSummary.closest("details")).not.toHaveAttribute("open");
     expect(screen.getByRole("complementary", { name: "Ponto selecionado" })).toBeInTheDocument();
+  });
+
+  it("keeps Lote histórico disabled until archive boundaries are available", async () => {
+    const { default: TimelineWorkspace } = await import("./TimelineWorkspace.jsx");
+    render(
+      <TimelineWorkspace
+        assessmentOverview={null}
+        context={null}
+        errors={{ overview: null, page: null, assessments: null, context: null }}
+        loading={{ overview: true, page: true, assessments: true, context: false }}
+        onRangePresetChange={vi.fn()}
+        overview={null}
+        page={null}
+        pendingSelection={null}
+        rangePreset="all"
+        selectTimelinePoint={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByRole("button", { name: "Lote histórico" })).toBeDisabled();
   });
 
   it("frames the complete published domain when Tudo is selected", async () => {
@@ -110,6 +135,7 @@ describe("TimelineWorkspace", () => {
         value: 0.04 + index / 1000,
       })),
     }];
+    allRangeOverview.segments[allRangeOverview.segments.length - 1].sourceKind = "live_collection";
 
     render(
       <TimelineWorkspace
@@ -131,6 +157,8 @@ describe("TimelineWorkspace", () => {
     expect(Number(telemetry.dataset.domainTo)).toBe(Date.parse(domainTo));
     expect(screen.getByText("1× · 6/6 pontos visíveis")).toBeVisible();
     expect(screen.getByRole("button", { name: "Reenquadrar" })).toBeDisabled();
+    expect(screen.getByText(/Tudo \+ live comprime a janela histórica/i)).toBeVisible();
+    expect(screen.getByText(/Selecione Lote histórico/i)).toBeVisible();
   });
 
   it("selects an original point directly from the synchronized chart", async () => {
@@ -304,6 +332,40 @@ describe("TimelineWorkspace", () => {
 
     fireEvent.click(pendingAction);
     expect(selectTimelinePoint).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps the clicked chart point visibly pending while context is loading", async () => {
+    const { default: TimelineWorkspace } = await import("./TimelineWorkspace.jsx");
+    const selectTimelinePoint = vi.fn();
+    const props = {
+      assessmentOverview: null,
+      context: null,
+      errors: { overview: null, page: null, assessments: null, context: null },
+      overview: structuredClone(overviewFixture),
+      page: null,
+      pendingSelection: null,
+      selectTimelinePoint,
+    };
+    const { rerender } = render(
+      <TimelineWorkspace
+        {...props}
+        loading={{ overview: false, page: false, assessments: false, context: false }}
+      />,
+    );
+    const target = screen.getAllByRole("button", { name: /Inspecionar ponto /i })[0];
+    fireEvent.click(target);
+
+    rerender(
+      <TimelineWorkspace
+        {...props}
+        loading={{ overview: false, page: false, assessments: false, context: true }}
+      />,
+    );
+
+    expect(selectTimelinePoint).toHaveBeenCalledWith(target.getAttribute("aria-label").split(" ").at(-1));
+    expect(target).toHaveAttribute("aria-busy", "true");
+    expect(target).toHaveAttribute("data-pending", "true");
+    expect(screen.getByText("Carregando ponto selecionado…")).toBeVisible();
   });
 
   it("places committed context before a 200-point page and announces only the commit", async () => {

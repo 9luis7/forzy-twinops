@@ -8,11 +8,12 @@ import TimelineOverview from "./TimelineOverview.jsx";
 import { buildTimelineViewModel } from "./timelineViewModel.js";
 
 const RANGE_PRESETS = Object.freeze([
+  ["historical", "Lote histórico"],
   ["24h", "24 horas"],
   ["7d", "7 dias"],
   ["14d", "14 dias"],
   ["30d", "30 dias"],
-  ["all", "Tudo"],
+  ["all", "Tudo + live"],
 ]);
 
 export default function TimelineWorkspace({
@@ -47,6 +48,10 @@ export default function TimelineWorkspace({
     [overview],
   );
   const liveOnly = overview?.capabilities?.historical === false;
+  const sourceKinds = new Set(overview?.segments?.map((segment) => segment.sourceKind) ?? []);
+  const hasHistoricalArchive = sourceKinds.has("historical_archive");
+  const spansHistoricalAndLive = hasHistoricalArchive
+    && sourceKinds.has("live_collection");
   const selectedPointId = context?.anchor?.pointId ?? null;
   const aggregation = overview?.aggregationSummary ?? null;
   const selectPoint = (pointId) => {
@@ -95,7 +100,7 @@ export default function TimelineWorkspace({
             <small>
               {liveOnly
                 ? `${aggregation.originalPointCount} leituras ao vivo disponíveis`
-                : `${aggregation.returnedPointCount} exibidos de ${aggregation.originalPointCount} pontos`}
+                : `${aggregation.returnedPointCount} pontos representativos de ${aggregation.originalPointCount} leituras persistidas`}
             </small>
           )}
         </div>
@@ -103,13 +108,14 @@ export default function TimelineWorkspace({
         {liveOnly ? (
           <div className="decision-console__availability">
             <strong>Sem lote histórico ativo</strong>
-            <span>A consulta carrega tudo o que foi publicado; o gráfico abre no trecho recente. Use a roda para zoom e arraste para navegar.</span>
+            <span>A consulta carrega tudo o que foi publicado; o gráfico abre no trecho recente. Use Ctrl + roda para zoom e arraste para navegar.</span>
           </div>
         ) : (
           <div aria-label="Período exibido" className="decision-console__range" role="group">
             {RANGE_PRESETS.map(([value, label]) => (
               <button
                 aria-pressed={rangePreset === value}
+                disabled={value === "historical" && !hasHistoricalArchive}
                 key={value}
                 onClick={() => { void onRangePresetChange(value); }}
                 type="button"
@@ -119,6 +125,13 @@ export default function TimelineWorkspace({
             ))}
           </div>
         )}
+
+        {!liveOnly && rangePreset === "all" && spansHistoricalAndLive ? (
+          <div className="decision-console__availability">
+            <strong>Tudo + live comprime a janela histórica</strong>
+            <span>Selecione Lote histórico para ver a telemetria e os scores no período denso.</span>
+          </div>
+        ) : null}
 
         <fieldset className="decision-console__sensors">
           <legend>Sensores visíveis</legend>
@@ -165,6 +178,11 @@ export default function TimelineWorkspace({
                 : "As avaliações não puderam ser atualizadas. A última série válida continua visível."}
             </p>
           ) : null}
+          {loading?.context && requestedPointId !== null ? (
+            <p className="timeline-inline-status" role="status">
+              Carregando ponto selecionado…
+            </p>
+          ) : null}
           {model === null && !loading?.overview && !errors?.overview ? (
             <p className="timeline-empty">Cobertura histórica indisponível para esta consulta.</p>
           ) : null}
@@ -174,6 +192,8 @@ export default function TimelineWorkspace({
               frameFullDomain={rangePreset === "all"}
               model={model}
               onSelectPoint={selectPoint}
+              pendingPointId={pendingSelection?.pointId
+                ?? (loading?.context ? requestedPointId : null)}
               selectedAt={context?.selectedAt ?? null}
               selectedPointId={selectedPointId}
               visibleSensors={visibleSensors}

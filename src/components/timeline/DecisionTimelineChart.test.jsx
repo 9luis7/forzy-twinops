@@ -49,6 +49,10 @@ const assessmentPoint = (index, hour, status) => ({
 });
 
 const assessmentOverview = {
+  aggregationSummary: {
+    originalAssessmentCount: 7,
+    returnedAssessmentCount: 7,
+  },
   series: [{
     seriesId: "assessment-series-1",
     sensorId: "s1",
@@ -83,6 +87,7 @@ describe("DecisionTimelineChart zoom viewport", () => {
     expect(scores.querySelectorAll("polyline[data-score]")).toHaveLength(0);
     expect(within(scores).getAllByRole("button", { name: /Inspecionar evid/i }))
       .toHaveLength(2);
+    expect(screen.getByText("7 scores representativos de 7 avaliações persistidas")).toBeVisible();
 
     const canvas = scores.closest(".decision-chart__canvas");
     vi.spyOn(canvas, "getBoundingClientRect").mockReturnValue({
@@ -97,7 +102,7 @@ describe("DecisionTimelineChart zoom viewport", () => {
       toJSON: () => ({}),
     });
     for (let step = 0; step < 4; step += 1) {
-      fireEvent.wheel(canvas, { clientX: 100, deltaY: -100 });
+      fireEvent.wheel(canvas, { clientX: 100, ctrlKey: true, deltaY: -100 });
     }
 
     expect(scores).toHaveAttribute("data-detail-level", "raw");
@@ -106,7 +111,7 @@ describe("DecisionTimelineChart zoom viewport", () => {
       .toHaveLength(4);
   });
 
-  it("auto-frames dense readings and navigates directly by wheel, drag and reset", () => {
+  it("keeps normal page wheel scrolling and zooms only with Ctrl held", () => {
     render(
       <DecisionTimelineChart
         assessmentOverview={null}
@@ -125,7 +130,7 @@ describe("DecisionTimelineChart zoom viewport", () => {
     expect(autoTo).toBe(fullDomain[1]);
     expect(screen.queryByRole("slider", { name: "Nível de zoom" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Período anterior" })).not.toBeInTheDocument();
-    expect(screen.getByText(/Arraste para navegar · roda\/trackpad para zoom/i)).toBeVisible();
+    expect(screen.getByText(/Ctrl \+ roda\/trackpad para zoom/i)).toBeVisible();
 
     const canvas = telemetry.closest(".decision-chart__canvas");
     vi.spyOn(canvas, "getBoundingClientRect").mockReturnValue({
@@ -140,7 +145,26 @@ describe("DecisionTimelineChart zoom viewport", () => {
       toJSON: () => ({}),
     });
 
-    fireEvent.wheel(canvas, { clientX: 500, deltaY: -100 });
+    const pageWheel = new WheelEvent("wheel", {
+      bubbles: true,
+      cancelable: true,
+      clientX: 500,
+      deltaY: -100,
+    });
+    fireEvent(canvas, pageWheel);
+    expect(pageWheel.defaultPrevented).toBe(false);
+    expect(Number(telemetry.dataset.domainFrom)).toBe(autoFrom);
+    expect(Number(telemetry.dataset.domainTo)).toBe(autoTo);
+
+    const chartWheel = new WheelEvent("wheel", {
+      bubbles: true,
+      cancelable: true,
+      clientX: 500,
+      ctrlKey: true,
+      deltaY: -100,
+    });
+    fireEvent(canvas, chartWheel);
+    expect(chartWheel.defaultPrevented).toBe(true);
     const zoomedFrom = Number(telemetry.dataset.domainFrom);
     const zoomedTo = Number(telemetry.dataset.domainTo);
     expect(zoomedTo - zoomedFrom).toBeLessThan(autoTo - autoFrom);
@@ -153,5 +177,60 @@ describe("DecisionTimelineChart zoom viewport", () => {
     fireEvent.click(screen.getByRole("button", { name: "Reenquadrar" }));
     expect(Number(telemetry.dataset.domainFrom)).toBe(autoFrom);
     expect(Number(telemetry.dataset.domainTo)).toBe(autoTo);
+  });
+
+  it("keeps a point click reliable when the pointer jitters over the target", () => {
+    const onSelectPoint = vi.fn();
+    render(
+      <DecisionTimelineChart
+        assessmentOverview={null}
+        model={clusteredModel}
+        onSelectPoint={onSelectPoint}
+        selectedAt={null}
+        selectedPointId={null}
+        visibleSensors={new Set(["s1", "s2"])}
+      />,
+    );
+
+    const target = screen.getByRole("button", { name: `Inspecionar ponto ${point(2, 0).pointId}` });
+    const canvas = target.closest(".decision-chart__canvas");
+    vi.spyOn(canvas, "getBoundingClientRect").mockReturnValue({
+      bottom: 310,
+      height: 310,
+      left: 0,
+      right: 1000,
+      top: 0,
+      width: 1000,
+      x: 0,
+      y: 0,
+      toJSON: () => ({}),
+    });
+
+    fireEvent(target, new MouseEvent("pointerdown", { bubbles: true, button: 0, clientX: 500 }));
+    fireEvent(canvas, new MouseEvent("pointermove", { bubbles: true, clientX: 510 }));
+    fireEvent(canvas, new MouseEvent("pointerup", { bubbles: true, clientX: 510 }));
+    fireEvent.click(target);
+
+    expect(onSelectPoint).toHaveBeenCalledTimes(1);
+    expect(onSelectPoint).toHaveBeenCalledWith(point(2, 0).pointId);
+  });
+
+  it("marks the requested point as busy before its context is committed", () => {
+    render(
+      <DecisionTimelineChart
+        assessmentOverview={null}
+        model={clusteredModel}
+        onSelectPoint={vi.fn()}
+        pendingPointId={point(2, 0).pointId}
+        selectedAt={null}
+        selectedPointId={null}
+        visibleSensors={new Set(["s1", "s2"])}
+      />,
+    );
+
+    const target = screen.getByRole("button", { name: `Inspecionar ponto ${point(2, 0).pointId}` });
+    expect(target).toHaveAttribute("aria-busy", "true");
+    expect(target).toHaveAttribute("data-pending", "true");
+    expect(target).toHaveAttribute("r", "6.5");
   });
 });
