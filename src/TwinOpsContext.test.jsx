@@ -326,8 +326,12 @@ it("keeps the last real snapshot when refresh fails", async () => {
   expect(result.current.refreshing).toBe(false);
 });
 
-it("uses GET for manual refresh outside the window", async () => {
+it("makes a manual GET visibly pending outside the window", async () => {
   const source = sourceStub();
+  const pendingSnapshot = deferred();
+  source.getSnapshot
+    .mockResolvedValueOnce(snapshot)
+    .mockImplementationOnce(() => pendingSnapshot.promise);
   const doc = visibleDocument();
   const { result } = renderHook(() => useTwinOps(), {
     wrapper: wrapperFor({
@@ -338,11 +342,22 @@ it("uses GET for manual refresh outside the window", async () => {
   });
   await flush();
 
-  await act(async () => result.current.refreshNow());
+  let requestPromise;
+  act(() => {
+    requestPromise = result.current.refreshNow();
+  });
 
   expect(source.getSnapshot).toHaveBeenCalledTimes(2);
   expect(source.refresh).not.toHaveBeenCalled();
-  expect(result.current.lastRefreshAttemptAt).toBeNull();
+  expect(result.current.refreshing).toBe(true);
+  expect(result.current.lastRefreshAttemptAt).toBe("2026-08-13T15:30:00.000Z");
+
+  await act(async () => {
+    pendingSnapshot.resolve(snapshot);
+    await requestPromise;
+  });
+
+  expect(result.current.refreshing).toBe(false);
 });
 
 it("aborts the active request on unmount", async () => {

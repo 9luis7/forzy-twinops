@@ -45,7 +45,10 @@ button {
   font: inherit;
   font-weight: 750;
   cursor: pointer;
-  transition: transform 160ms ease;
+  transition:
+    background-color 140ms cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 140ms cubic-bezier(0.22, 1, 0.36, 1),
+    transform 120ms cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 button:hover:not(:disabled):not([aria-disabled="true"]) {
@@ -53,10 +56,42 @@ button:hover:not(:disabled):not([aria-disabled="true"]) {
   transform: translateY(-1px);
 }
 
+button:active:not(:disabled):not([aria-disabled="true"]) {
+  transform: translateY(1px) scale(0.985);
+  transition-duration: 80ms;
+}
+
 button:disabled,
 button[aria-disabled="true"] {
   cursor: wait;
   opacity: 0.65;
+}
+
+.refresh-action {
+  display: inline-flex;
+  min-width: 12rem;
+  align-items: center;
+  justify-content: center;
+  gap: 0.65rem;
+}
+
+.refresh-action__spinner {
+  width: 1rem;
+  height: 1rem;
+  flex: 0 0 auto;
+  border: 2px solid rgb(3 22 20 / 28%);
+  border-top-color: #031614;
+  border-radius: 50%;
+  animation: refresh-action-turn 700ms linear infinite;
+}
+
+.fatal-state__retry-status {
+  max-width: 36rem;
+  margin: 1rem 0 0;
+  padding-left: 0.75rem;
+  border-left: 2px solid var(--teal);
+  color: #c8d7e8;
+  font-size: 0.88rem;
 }
 
 button:focus-visible,
@@ -1097,6 +1132,7 @@ circle.timeline-lane__series {
   border-top-color: var(--teal);
   border-right-color: var(--blue);
   border-radius: 50%;
+  animation: loading-ring-turn 900ms linear infinite;
 }
 
 .loading-state__ring::after {
@@ -1113,6 +1149,28 @@ circle.timeline-lane__series {
   border: 1px solid #99f6e4;
   border-radius: 50%;
   background: var(--teal);
+  animation: loading-pulse 1.35s cubic-bezier(0.22, 1, 0.36, 1) infinite;
+}
+
+@keyframes loading-ring-turn {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+@keyframes loading-pulse {
+  0%, 100% {
+    opacity: 0.45;
+    transform: scale(0.72);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.08);
+  }
+}
+
+@keyframes refresh-action-turn {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
 }
 
 .loading-state__label,

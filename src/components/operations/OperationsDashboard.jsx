@@ -70,11 +70,31 @@ export function TwinFallback() {
   );
 }
 
+function RefreshAction({ busy, onRefresh }) {
+  const handleClick = () => {
+    if (!busy) void onRefresh();
+  };
+
+  return (
+    <button
+      aria-busy={busy}
+      aria-disabled={busy}
+      className="refresh-action"
+      type="button"
+      onClick={handleClick}
+    >
+      {busy ? <span aria-hidden="true" className="refresh-action__spinner" /> : null}
+      <span>{busy ? "Consultando dados reais…" : "Atualizar agora"}</span>
+    </button>
+  );
+}
+
 export default function OperationsDashboard({ Twin3DComponent = null }) {
   const {
     snapshot,
     error,
     refreshing,
+    lastRefreshAttemptAt,
     refreshNow,
     viewMode,
     timelineOverview,
@@ -118,9 +138,16 @@ export default function OperationsDashboard({ Twin3DComponent = null }) {
           <p className="eyebrow">TwinOps</p>
           <h1>Dados reais indisponíveis</h1>
           <p>O backend não forneceu um snapshot válido. Nenhum dado sintético foi usado.</p>
-          <button type="button" onClick={() => void refreshNow()} disabled={refreshing}>
-            {refreshing ? "Atualizando…" : "Atualizar agora"}
-          </button>
+          <RefreshAction busy={refreshing} onRefresh={refreshNow} />
+          {refreshing ? (
+            <p aria-live="polite" className="fatal-state__retry-status" role="status">
+              Consultando o backend por um snapshot real…
+            </p>
+          ) : lastRefreshAttemptAt !== null ? (
+            <p aria-live="polite" className="fatal-state__retry-status" role="status">
+              A nova tentativa falhou. O backend continua indisponível.
+            </p>
+          ) : null}
         </section>
       </main>
     );
@@ -188,9 +215,7 @@ export default function OperationsDashboard({ Twin3DComponent = null }) {
 
       <div className="dashboard-actions">
         <p>Atualização automática apenas seg/ter/qua, das 12h às 14h (America/Sao_Paulo).</p>
-        <button type="button" onClick={() => void refreshNow()} disabled={refreshing}>
-          {refreshing ? "Atualizando…" : "Atualizar agora"}
-        </button>
+        <RefreshAction busy={refreshing} onRefresh={refreshNow} />
       </div>
 
       {error && (

@@ -60,6 +60,7 @@ export default function LoadingState({ label, messages = [], variant = "panel" }
 
   return (
     <div
+      aria-busy="true"
       aria-label={label}
       aria-live="polite"
       className={`loading-state loading-state--${visualVariant}`}

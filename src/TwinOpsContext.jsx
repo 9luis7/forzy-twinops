@@ -322,7 +322,8 @@ export function TwinOpsProvider({
 
     const controller = new AbortController();
     const requestOwner = { kind, controller, generation, promise: null };
-    if (kind === "refresh") {
+    const isManualRequest = kind === "refresh" || kind === "manual-snapshot";
+    if (isManualRequest) {
       refreshingOwnerRef.current = requestOwner;
       setRefreshing(true);
       const attemptedAt = clock();
@@ -355,7 +356,7 @@ export function TwinOpsProvider({
       })
       .finally(() => {
         if (inFlightRef.current === requestOwner) inFlightRef.current = null;
-        if (kind === "refresh" && refreshingOwnerRef.current === requestOwner) {
+        if (isManualRequest && refreshingOwnerRef.current === requestOwner) {
           refreshingOwnerRef.current = null;
           setRefreshing(false);
         }
@@ -404,7 +405,7 @@ export function TwinOpsProvider({
   const refreshNow = useCallback(async () => {
     if (!mountedRef.current) return null;
     if (isVisible() && isForzyWindowOpen(clock())) return request("refresh");
-    return request("snapshot");
+    return request("manual-snapshot");
   }, [clock, isVisible, request]);
 
   useEffect(() => {

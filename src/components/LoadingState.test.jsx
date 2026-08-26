@@ -1,8 +1,12 @@
 import "@testing-library/jest-dom/vitest";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import React from "react";
 import { act, cleanup, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import LoadingState from "./LoadingState.jsx";
+
+const styles = readFileSync(resolve(process.cwd(), "src/styles.css"), "utf8");
 
 function motionPreference(matches = false) {
   const listeners = new Set();
@@ -44,12 +48,22 @@ it("keeps the accessible status name stable while hiding decorative copy", () =>
 
   const status = screen.getByRole("status", { name: "Carregando o último snapshot real" });
   expect(status).toHaveClass("loading-state", "loading-state--panel");
-  expect(status).not.toHaveAttribute("aria-busy");
+  expect(status).toHaveAttribute("aria-busy", "true");
   expect(within(status).getByText("Validando a telemetria recebida")).toHaveAttribute(
     "aria-hidden",
     "true",
   );
   expect(within(status).getByTestId("loading-indicator")).toHaveAttribute("aria-hidden", "true");
+});
+
+it("uses visible transform and opacity motion for the loading indicator", () => {
+  const ringRule = styles.match(/\.loading-state__ring\s*\{([^}]*)\}/)?.[1] ?? "";
+  const pulseRule = styles.match(/\.loading-state__pulse\s*\{([^}]*)\}/)?.[1] ?? "";
+
+  expect(ringRule).toMatch(/animation:\s*loading-ring-turn\s+[^;]*infinite/i);
+  expect(pulseRule).toMatch(/animation:\s*loading-pulse\s+[^;]*infinite/i);
+  expect(styles).toMatch(/@keyframes\s+loading-ring-turn\s*\{[^}]*transform:\s*rotate\(/is);
+  expect(styles).toMatch(/@keyframes\s+loading-pulse\s*\{/i);
 });
 
 it.each(["panel", "twin", "canvas"])("exposes the %s visual variant", (variant) => {

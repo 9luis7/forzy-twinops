@@ -144,6 +144,51 @@ it("shows backend unavailability without creating a normal snapshot", async () =
   expect(screen.queryByText("Conjunto motor-bomba monitorado")).not.toBeInTheDocument();
 });
 
+it("shows pending and completion feedback for a failed manual retry", async () => {
+  const retry = deferred();
+  const source = {
+    getSnapshot: vi.fn()
+      .mockRejectedValueOnce(new Error("database unavailable"))
+      .mockImplementationOnce(() => retry.promise),
+    refresh: vi.fn(),
+  };
+
+  render(<App dataSource={source} />);
+  await flush();
+
+  const button = screen.getByRole("button", { name: "Atualizar agora" });
+  button.focus();
+  fireEvent.click(button);
+
+  expect(source.getSnapshot).toHaveBeenCalledTimes(2);
+  expect(source.refresh).not.toHaveBeenCalled();
+  expect(button).toHaveFocus();
+  expect(button).not.toBeDisabled();
+  expect(button).toHaveAttribute("aria-busy", "true");
+  expect(button).toHaveAttribute("aria-disabled", "true");
+  expect(button).toHaveAccessibleName("Consultando dados reais…");
+  expect(screen.getByRole("status")).toHaveTextContent(
+    "Consultando o backend por um snapshot real…",
+  );
+
+  fireEvent.click(button);
+  expect(source.getSnapshot).toHaveBeenCalledTimes(2);
+
+  await act(async () => {
+    retry.reject(new Error("still unavailable"));
+    await retry.promise.catch(() => null);
+  });
+  await flush();
+
+  expect(button).toHaveFocus();
+  expect(button).toHaveAttribute("aria-busy", "false");
+  expect(button).toHaveAttribute("aria-disabled", "false");
+  expect(button).toHaveAccessibleName("Atualizar agora");
+  expect(screen.getByRole("status")).toHaveTextContent(
+    "A nova tentativa falhou. O backend continua indisponível.",
+  );
+});
+
 it("keeps last-known data visible after a later read fails", async () => {
   const source = {
     getSnapshot: vi.fn()
