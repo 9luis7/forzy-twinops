@@ -163,13 +163,14 @@ export default function OperationsDashboard({ Twin3DComponent = null }) {
     assessment: displayedAssessment,
     operationalState: displayedOperationalState,
   } = resolveOperationsDisplay({ snapshot, viewMode, historicalContext, displayContext });
+  const snapshotGeneratedLabel = historicalDateTimeFormatter.format(new Date(snapshot.generatedAt));
   const fallback = <TwinFallback />;
   const contextualPanels = (
     <section
       aria-label={displayViewMode === "historical"
         ? "Contexto histórico sincronizado"
         : "Contexto Agora preservado"}
-      className="contextual-panels"
+      className={`contextual-panels${displayViewMode === "now" ? " contextual-panels--now" : ""}`}
     >
       {committedHistoricalContext === null ? null : (
         <HistoricalContextEvidence context={committedHistoricalContext} />
@@ -222,7 +223,7 @@ export default function OperationsDashboard({ Twin3DComponent = null }) {
   );
 
   return (
-    <main className={`operations-shell${viewMode === "historical" ? " operations-shell--decision" : ""}`}>
+    <main className={`operations-shell operations-shell--decision operations-shell--${viewMode}`}>
       <AssetHeader
         asset={snapshot.asset}
         onShowHistory={showHistory}
@@ -233,11 +234,6 @@ export default function OperationsDashboard({ Twin3DComponent = null }) {
         timelineLoading={timelineLoading.overview || timelineLoading.page || timelineLoading.context}
         viewMode={viewMode}
       />
-
-      <div className="dashboard-actions">
-        <p>Atualização automática apenas seg/ter/qua, das 12h às 14h (America/Sao_Paulo).</p>
-        <RefreshAction busy={refreshing} onRefresh={refreshNow} />
-      </div>
 
       {error && (
         <p className="warning-banner" role="alert">
@@ -265,15 +261,30 @@ export default function OperationsDashboard({ Twin3DComponent = null }) {
           {contextualPanels}
         </TimelineWorkspace>
       ) : (
-        contextualPanels
+        <section className="now-console" data-testid="now-decision-console">
+          <header className="now-console__toolbar">
+            <div>
+              <p className="eyebrow">Agora</p>
+              <h2>Estado operacional agora</h2>
+              <p>Últimas leituras reais, tendência coletada e saúde da integração no mesmo painel.</p>
+            </div>
+            <div className="now-console__summary">
+              <strong>{displayedChannels.filter((channel) => channel !== null).length} canais recebidos</strong>
+              <small>Snapshot de {snapshotGeneratedLabel}</small>
+            </div>
+            <div className="now-console__refresh">
+              <small>Atualização automática seg/ter/qua, 12h–14h</small>
+              <RefreshAction busy={refreshing} onRefresh={refreshNow} />
+            </div>
+          </header>
+          {contextualPanels}
+        </section>
       )}
 
-      {viewMode === "historical" ? (
-        <details className="historical-3d-disclosure">
-          <summary>Modelo 3D (opcional)</summary>
-          {twinPanel}
-        </details>
-      ) : twinPanel}
+      <details className="historical-3d-disclosure">
+        <summary>Modelo 3D (opcional)</summary>
+        {twinPanel}
+      </details>
 
       <footer className="operations-footer">
         <p>

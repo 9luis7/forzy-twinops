@@ -33,6 +33,14 @@ The source and desktop implementation were inspected together in the same compar
 - Desktop fits the primary console in the first viewport. Tablet stacks the inspector below the chart without overlap. Mobile has no page-level horizontal overflow and preserves usable range/sensor controls.
 - The implementation intentionally differs from the illustrative source where the real data differs: telemetry is sparse, scores are absent, and no selected-point score is fabricated.
 
+### Pass 3 — dense-data framing and unified Agora
+
+- P1 chart framing: the 24-hour domain placed almost all 91 readings in the final minutes, compressing the useful evidence against the right edge. The chart now computes a deterministic dense-data viewport, preserves the complete query as its outer bound and exposes a one-click full-window reset.
+- P1 interaction: the former horizontal overflow looked like navigation but was only a scrollbar. It was removed. The chart now has explicit zoom level, zoom in/out, previous/next period and reframe controls; telemetry and score layers share the same visible time domain.
+- P1 current-state consistency: `Agora` still used the old long-form dashboard. It now uses the same compact decision-console language, placing snapshot identity, refresh, S1, S2, assessment, integration and collected trend in one bounded surface; the 3D model remains optional and collapsed.
+- Desktop browser probe at the user-reported width found `canvasScrollWidth === canvasClientWidth` and `overflow-x: hidden`; the automatic 24-hour viewport expanded the dense readings across the chart instead of pinning them to the right edge.
+- Responsive browser probes at 960 × 700 and 390 × 844 found no page-level or chart-level horizontal overflow. Controls wrap without covering the chart or inspector.
+
 ## Interaction and accessibility evidence
 
 - Range `24 horas` returned 91 of 91 real points; `Tudo` restored 93 of 93.
@@ -40,9 +48,9 @@ The source and desktop implementation were inspected together in the same compar
 - Technical evidence disclosure expanded and collapsed without moving decision state.
 - Focusable chart points, range buttons, native sensor checkboxes, error/loading states and the persistent inspector are covered by the frontend tests.
 - Browser console after the tested interactions: zero warnings and zero errors.
-- Frontend suite: 398 passed, 1 pre-existing skip.
+- Frontend suite: 400 passed, 1 pre-existing skip.
 - Python context/contract/API regressions: 147 passed, 1 pre-existing deprecation warning.
-- Production build: passed; only the pre-existing Vite chunk-size advisory remains.
+- Production build: passed with 1,670 transformed modules; only the pre-existing Vite chunk-size advisory remains.
 
 ## Blocking integration finding
 

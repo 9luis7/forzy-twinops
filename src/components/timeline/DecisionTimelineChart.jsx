@@ -1,10 +1,12 @@
-import React, { useMemo } from "react";
+import React, { useMemo, useState } from "react";
 
 const CHART_WIDTH = 1040;
 const SENSOR_CHART_HEIGHT = 310;
 const SCORE_CHART_HEIGHT = 250;
 const MARGIN = Object.freeze({ top: 18, right: 22, bottom: 34, left: 58 });
 const SENSOR_COLORS = Object.freeze({ s1: "#5eead4", s2: "#fbbf24" });
+const MINUTE = 60 * 1000;
+const ZOOM_FACTORS = Object.freeze([1, 2, 4, 8, 16, 32, 64, 128, 256, 512]);
 const dateFormatter = new Intl.DateTimeFormat("pt-BR", {
   timeZone: "America/Sao_Paulo",
   day: "2-digit",
@@ -27,6 +29,56 @@ const splitScoreRuns = (points, scoreKey) => {
   if (current.length > 0) runs.push(current);
   return runs;
 };
+
+const fitDomain = (candidate, fullDomain) => {
+  const fullSpan = Math.max(1, fullDomain[1] - fullDomain[0]);
+  const requestedSpan = Math.min(fullSpan, Math.max(1, candidate[1] - candidate[0]));
+  let start = candidate[0];
+  let end = start + requestedSpan;
+  if (start < fullDomain[0]) {
+    start = fullDomain[0];
+    end = start + requestedSpan;
+  }
+  if (end > fullDomain[1]) {
+    end = fullDomain[1];
+    start = end - requestedSpan;
+  }
+  return [start, end];
+};
+
+const denseDataDomain = (times, fullDomain) => {
+  const sorted = [...new Set(times)]
+    .filter((value) => Number.isFinite(value) && value >= fullDomain[0] && value <= fullDomain[1])
+    .sort((left, right) => left - right);
+  if (sorted.length < 3) return [...fullDomain];
+
+  const targetCount = Math.max(2, Math.ceil(sorted.length * 0.8));
+  let bestStart = sorted[0];
+  let bestEnd = sorted[targetCount - 1];
+  for (let startIndex = 1; startIndex + targetCount <= sorted.length; startIndex += 1) {
+    const endIndex = startIndex + targetCount - 1;
+    if (sorted[endIndex] - sorted[startIndex] < bestEnd - bestStart) {
+      bestStart = sorted[startIndex];
+      bestEnd = sorted[endIndex];
+    }
+  }
+
+  const denseSpan = Math.max(2 * MINUTE, bestEnd - bestStart);
+  const padding = Math.max(MINUTE, denseSpan * 0.12);
+  const framed = fitDomain([bestStart - padding, bestEnd + padding], fullDomain);
+  return framed[1] - framed[0] >= (fullDomain[1] - fullDomain[0]) * 0.85
+    ? [...fullDomain]
+    : framed;
+};
+
+const nearestZoomIndex = (factor) => ZOOM_FACTORS.reduce(
+  (bestIndex, candidate, index) => (
+    Math.abs(candidate - factor) < Math.abs(ZOOM_FACTORS[bestIndex] - factor)
+      ? index
+      : bestIndex
+  ),
+  0,
+);
 
 const scaleX = (value, domain) => {
   const span = Math.max(1, domain[1] - domain[0]);
@@ -88,12 +140,15 @@ function GapAreas({ domain, gaps, height }) {
   return (
     <g aria-hidden="true" className="decision-chart__gaps">
       {gaps.map((gap) => {
-        const x = scaleX(gap.startMs, domain);
+        const start = Math.max(domain[0], gap.startMs);
+        const end = Math.min(domain[1], gap.endMs);
+        if (end <= start) return null;
+        const x = scaleX(start, domain);
         return (
           <rect
             height={height - MARGIN.top - MARGIN.bottom}
             key={gap.gapId}
-            width={Math.max(1, scaleX(gap.endMs, domain) - x)}
+            width={Math.max(1, scaleX(end, domain) - x)}
             x={x}
             y={MARGIN.top}
           />
@@ -139,10 +194,50 @@ export default function DecisionTimelineChart({
   selectedAt,
   visibleSensors,
 }) {
-  const domain = model.domain ?? [0, 1];
+  const fullDomain = model.domain ?? [0, 1];
+  const domainKey = `${fullDomain[0]}:${fullDomain[1]}`;
+  const visibleTimes = useMemo(() => model.series
+    .filter((series) => visibleSensors.has(series.sensorId))
+    .flatMap((series) => series.points.map((point) => point.timeMs)), [model.series, visibleSensors]);
+  const autoDomain = useMemo(
+    () => denseDataDomain(visibleTimes, fullDomain),
+    [domainKey, visibleTimes],
+  );
+  const [viewport, setViewport] = useState(() => ({
+    domain: null,
+    key: null,
+    mode: "auto",
+  }));
+  const viewportMode = viewport.key === domainKey ? viewport.mode : "auto";
+  const domain = viewport.key === domainKey && viewport.domain !== null && viewport.mode !== "auto"
+    ? viewport.domain
+    : autoDomain;
+  const fullSpan = Math.max(1, fullDomain[1] - fullDomain[0]);
+  const visibleSpan = Math.max(1, domain[1] - domain[0]);
+  const zoomFactor = fullSpan / visibleSpan;
+  const zoomIndex = nearestZoomIndex(zoomFactor);
+  const setManualDomain = (nextDomain, mode = "manual") => {
+    setViewport({ domain: fitDomain(nextDomain, fullDomain), key: domainKey, mode });
+  };
+  const applyZoomIndex = (nextIndex) => {
+    const boundedIndex = Math.max(0, Math.min(ZOOM_FACTORS.length - 1, nextIndex));
+    const nextSpan = fullSpan / ZOOM_FACTORS[boundedIndex];
+    const center = (domain[0] + domain[1]) / 2;
+    setManualDomain([center - nextSpan / 2, center + nextSpan / 2]);
+  };
+  const pan = (direction) => {
+    const shift = visibleSpan * 0.45 * direction;
+    setManualDomain([domain[0] + shift, domain[1] + shift]);
+  };
   const visibleSeries = useMemo(
-    () => model.series.filter((series) => visibleSensors.has(series.sensorId)),
-    [model.series, visibleSensors],
+    () => model.series
+      .filter((series) => visibleSensors.has(series.sensorId))
+      .map((series) => ({
+        ...series,
+        points: series.points.filter((point) => point.timeMs >= domain[0] && point.timeMs <= domain[1]),
+      }))
+      .filter((series) => series.points.length > 0),
+    [domain, model.series, visibleSensors],
   );
   const sensorDomain = useMemo(() => {
     const values = visibleSeries.flatMap((series) => series.points.map((point) => point.value));
@@ -171,26 +266,102 @@ export default function DecisionTimelineChart({
   }, [visibleSeries]);
   const scoreRuns = useMemo(() => scoreSeries.flatMap((series) => (
     ["anomalyScore", "deteriorationScore"].flatMap((scoreKey) => (
-      splitScoreRuns(series.points, scoreKey).map((points) => ({
+      splitScoreRuns(
+        series.points.filter((point) => {
+          const timeMs = Date.parse(point.eventAt);
+          return timeMs >= domain[0] && timeMs <= domain[1];
+        }),
+        scoreKey,
+      ).map((points) => ({
         points,
         scoreKey,
         seriesId: series.seriesId,
       }))
     ))
-  )), [scoreSeries]);
+  )), [domain, scoreSeries]);
   const scoreMarkers = useMemo(() => {
     const unique = new Map();
     scoreSeries.flatMap((series) => series.points).forEach((point) => {
-      if (point.candidateState === "candidate_not_ground_truth" || point.anchorPointId === selectedPointId) {
+      const timeMs = Date.parse(point.eventAt);
+      if (timeMs >= domain[0]
+        && timeMs <= domain[1]
+        && (point.candidateState === "candidate_not_ground_truth" || point.anchorPointId === selectedPointId)) {
         unique.set(point.anchorPointId, point);
       }
     });
     return [...unique.values()];
-  }, [scoreSeries, selectedPointId]);
-  const selectedTime = selectedAt === null ? null : Date.parse(selectedAt);
+  }, [domain, scoreSeries, selectedPointId]);
+  const parsedSelectedTime = selectedAt === null ? null : Date.parse(selectedAt);
+  const selectedTime = parsedSelectedTime !== null
+    && parsedSelectedTime >= domain[0]
+    && parsedSelectedTime <= domain[1]
+    ? parsedSelectedTime
+    : null;
+  const visiblePointCount = visibleSeries.reduce((total, series) => total + series.points.length, 0);
+  const pointCountLabel = `${visiblePointCount}/${visibleTimes.length} pontos visíveis`;
+  const zoomModeLabel = viewportMode === "auto"
+    ? `Zoom automático · ${Math.max(1, Math.round(zoomFactor))}×`
+    : viewportMode === "full"
+      ? "Janela completa · 1×"
+      : `Zoom manual · ${Math.max(1, Math.round(zoomFactor))}×`;
+  const zoomLabel = `${zoomModeLabel} · ${pointCountLabel}`;
 
   return (
     <div className="decision-chart" data-testid="decision-timeline-chart">
+      <div aria-label="Controle de zoom do gráfico" className="decision-chart__zoom" role="group">
+        <button
+          disabled={domain[0] <= fullDomain[0]}
+          onClick={() => pan(-1)}
+          type="button"
+        >
+          Período anterior
+        </button>
+        <button
+          aria-label="Reduzir zoom"
+          disabled={zoomIndex === 0}
+          onClick={() => applyZoomIndex(zoomIndex - 1)}
+          type="button"
+        >
+          Menos zoom
+        </button>
+        <label className="decision-chart__zoom-level">
+          <span>Nível de zoom</span>
+          <input
+            aria-label="Nível de zoom"
+            max={ZOOM_FACTORS.length - 1}
+            min="0"
+            onChange={(event) => applyZoomIndex(Number(event.target.value))}
+            step="1"
+            type="range"
+            value={zoomIndex}
+          />
+        </label>
+        <output aria-live="polite">{zoomLabel}</output>
+        <button
+          aria-label="Aumentar zoom"
+          disabled={zoomIndex === ZOOM_FACTORS.length - 1}
+          onClick={() => applyZoomIndex(zoomIndex + 1)}
+          type="button"
+        >
+          Mais zoom
+        </button>
+        <button
+          disabled={domain[1] >= fullDomain[1]}
+          onClick={() => pan(1)}
+          type="button"
+        >
+          Período seguinte
+        </button>
+        <button
+          onClick={() => setViewport({ domain: null, key: domainKey, mode: "auto" })}
+          type="button"
+        >
+          Enquadrar dados
+        </button>
+        <button onClick={() => setManualDomain(fullDomain, "full")} type="button">
+          Mostrar janela completa
+        </button>
+      </div>
       <section aria-labelledby="sensor-chart-title" className="decision-chart__section">
         <div className="decision-chart__heading">
           <h3 id="sensor-chart-title">Vibração · velocidade RMS</h3>
@@ -202,7 +373,13 @@ export default function DecisionTimelineChart({
           </div>
         </div>
         <div className="decision-chart__canvas">
-          <svg aria-label="Telemetria histórica sincronizada" role="img" viewBox={`0 0 ${CHART_WIDTH} ${SENSOR_CHART_HEIGHT}`}>
+          <svg
+            aria-label="Telemetria histórica sincronizada"
+            data-domain-from={domain[0]}
+            data-domain-to={domain[1]}
+            role="img"
+            viewBox={`0 0 ${CHART_WIDTH} ${SENSOR_CHART_HEIGHT}`}
+          >
             <Grid
               domain={domain}
               fractionDigits={sensorDomain[1] - sensorDomain[0] < 0.1 ? 3 : 2}
@@ -262,7 +439,13 @@ export default function DecisionTimelineChart({
           </div>
         ) : (
           <div className="decision-chart__canvas">
-            <svg aria-label="Scores históricos sincronizados" role="img" viewBox={`0 0 ${CHART_WIDTH} ${SCORE_CHART_HEIGHT}`}>
+            <svg
+              aria-label="Scores históricos sincronizados"
+              data-domain-from={domain[0]}
+              data-domain-to={domain[1]}
+              role="img"
+              viewBox={`0 0 ${CHART_WIDTH} ${SCORE_CHART_HEIGHT}`}
+            >
               <Grid domain={domain} height={SCORE_CHART_HEIGHT} valueDomain={[0, 100]} />
               <GapAreas domain={domain} gaps={model.gaps} height={SCORE_CHART_HEIGHT} />
               {scoreRuns.map((run, index) => (

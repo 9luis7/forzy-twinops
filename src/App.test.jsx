@@ -148,6 +148,23 @@ it("shows backend unavailability without creating a normal snapshot", async () =
   expect(screen.queryByText("Conjunto motor-bomba monitorado")).not.toBeInTheDocument();
 });
 
+it("presents Agora in the compact decision console and keeps 3D optional", async () => {
+  render(<App dataSource={sourceWithSnapshot()} />);
+  await flush();
+
+  const main = screen.getByRole("main");
+  const nowConsole = screen.getByTestId("now-decision-console");
+  expect(main).toHaveClass("operations-shell--decision");
+  expect(within(nowConsole).getByText("Estado operacional agora")).toBeVisible();
+  expect(within(nowConsole).getByRole("button", { name: "Atualizar agora" })).toBeVisible();
+  expect(within(nowConsole).getByTestId("telemetry-trend")).toBeVisible();
+  expect(within(nowConsole).getByTestId("sensor-card-s1")).toBeVisible();
+  expect(within(nowConsole).getByTestId("sensor-card-s2")).toBeVisible();
+
+  const twinSummary = screen.getByText("Modelo 3D (opcional)");
+  expect(twinSummary.closest("details")).not.toHaveAttribute("open");
+});
+
 it("shows pending and completion feedback for a failed manual retry", async () => {
   const retry = deferred();
   const source = {
