@@ -22,14 +22,16 @@ services/twinops/.venv/**
 !.env.example
 
 # O runtime usa somente o bundle ML real fixado abaixo.
-artifacts/**
-!artifacts/ml/
-!artifacts/ml/real-forzy/
-!artifacts/ml/real-forzy/pipeline.joblib
-!artifacts/ml/real-forzy/pipeline-config.json
-!artifacts/ml/real-forzy/backtest-report.json
-!artifacts/ml/real-forzy/model-card.md
-!artifacts/ml/real-forzy/feature-manifest.json
+artifacts/ml/backtest-report.json
+artifacts/ml/feature-manifest.json
+artifacts/ml/model-card.md
+artifacts/ml/pipeline-config.json
+artifacts/ml/pipeline.joblib
+artifacts/ml/real-forzy/source-summary.json
+artifacts/ml-public/ablation-report.json
+artifacts/ml-public/dataset-manifest.json
+artifacts/twin3d/bundle-baseline.json
+artifacts/twin3d/conversion-report.json
 
 # Os recursos web do mesmo conjunto motor-bomba permanecem publicáveis.
 !public/models/**

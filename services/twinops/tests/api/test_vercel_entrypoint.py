@@ -227,12 +227,17 @@ def test_vercel_function_bundles_every_schema_migration_used_by_startup():
     config = json.loads((repository_root / "vercel.json").read_text(encoding="utf-8"))
     include_files = config["functions"]["api/index.py"]["includeFiles"]
 
-    for migration in (
+    assert len(include_files) <= 256
+
+    expected_migrations = {
         "002_real_twin_v2.sql",
         "003_unified_history_timeline_postgres.sql",
         "003_unified_history_timeline_sqlite.sql",
-    ):
-        assert f"migrations/{migration}" in include_files
+    }
+    assert {
+        path.name for path in (repository_root / "services/twinops/migrations").glob("*.sql")
+    } == expected_migrations
+    assert "migrations/*.sql" in include_files
 
 
 def test_vercel_function_bundles_runtime_loaded_public_contracts():
@@ -260,6 +265,36 @@ def test_vercel_upload_context_ignores_agent_metadata():
     assert "tmp/**" in ignore_patterns
     assert "**/.pytest_cache" in ignore_patterns
     assert "skills-lock.json" in ignore_patterns
+
+    assert "artifacts/**" not in ignore_patterns
+    deployed_artifacts = {
+        "artifacts/ml/real-forzy/pipeline.joblib",
+        "artifacts/ml/real-forzy/pipeline-config.json",
+        "artifacts/ml/real-forzy/backtest-report.json",
+        "artifacts/ml/real-forzy/model-card.md",
+        "artifacts/ml/real-forzy/feature-manifest.json",
+    }
+    excluded_artifacts = {
+        "artifacts/ml/backtest-report.json",
+        "artifacts/ml/feature-manifest.json",
+        "artifacts/ml/model-card.md",
+        "artifacts/ml/pipeline-config.json",
+        "artifacts/ml/pipeline.joblib",
+        "artifacts/ml/real-forzy/source-summary.json",
+        "artifacts/ml-public/ablation-report.json",
+        "artifacts/ml-public/dataset-manifest.json",
+        "artifacts/twin3d/bundle-baseline.json",
+        "artifacts/twin3d/conversion-report.json",
+    }
+    artifact_inventory = {
+        path.relative_to(repository_root).as_posix()
+        for path in (repository_root / "artifacts").rglob("*")
+        if path.is_file()
+    }
+
+    assert artifact_inventory == deployed_artifacts | excluded_artifacts
+    assert excluded_artifacts <= ignore_patterns
+    assert deployed_artifacts.isdisjoint(ignore_patterns)
 
 
 def test_real_runtime_assessment_does_not_import_training_dependencies():
