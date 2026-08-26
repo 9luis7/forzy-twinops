@@ -4,6 +4,8 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from scripts import check_postgres
 
 
@@ -36,20 +38,24 @@ class _SuccessfulConnection:
         self.specs = specs
         self.calls = []
         self.pgconn = SimpleNamespace(ssl_in_use=tls)
-        self.migrations = {
-            "002": specs[0].postgres_sha256,
-        }
+        self.migration_table_exists = current_version != "empty"
+        self.migrations = {}
+        if current_version in {"002", "003"}:
+            self.migrations["002"] = specs[0].postgres_sha256
         if current_version == "003":
             self.migrations["003"] = specs[1].postgres_sha256
         self.policy = None
         self.identity = None
         self.identity_table_exists = current_version == "003"
+        self.extra_public_relations = set()
+        self.relation_on_lock = None
+        self.migration_002 = MIGRATION_002.read_text(encoding="utf-8")
         self.migration_003 = MIGRATION_003.read_text(encoding="utf-8")
         if current_version == "003":
             self._store_policy(EFFECTIVE_FROM)
             self.identity = {
                 "environment": "preview",
-                "label": "forzy-twinops-preview",
+                "label": f"{PROJECT_ID}/{BRANCH_ID}",
                 "target_fingerprint": _target_fingerprint(),
                 "schema_version": "003",
             }
@@ -82,6 +88,8 @@ class _SuccessfulConnection:
     def execute(self, query, params=None, **kwargs):
         self.calls.append((query, params, kwargs))
         normalized = " ".join(query.split())
+        if normalized == "SET TRANSACTION READ ONLY":
+            return _Rows()
         if normalized.startswith("SELECT current_database()"):
             return _Rows([(DATABASE_NAME, SCHEMA_NAME)])
         if "to_regclass('public.deployment_identity_v1')" in normalized:
@@ -90,7 +98,8 @@ class _SuccessfulConnection:
             )
             return _Rows([{"relation": relation}])
         if "to_regclass('public.schema_migrations_v1')" in normalized:
-            return _Rows([{"relation": "schema_migrations_v1"}])
+            relation = "schema_migrations_v1" if self.migration_table_exists else None
+            return _Rows([{"relation": relation}])
         if normalized.startswith("SELECT migration_version, sql_sha256"):
             return _Rows(
                 {
@@ -100,11 +109,17 @@ class _SuccessfulConnection:
                 for version, digest in sorted(self.migrations.items())
             )
         if "pg_advisory_xact_lock" in normalized:
+            if self.relation_on_lock is not None:
+                self.extra_public_relations.add(self.relation_on_lock)
+                self.relation_on_lock = None
+            return _Rows()
+        if query == self.migration_002:
             return _Rows()
         if query == self.migration_003:
             self.identity_table_exists = True
             return _Rows()
         if normalized.startswith("CREATE TABLE IF NOT EXISTS schema_migrations_v1"):
+            self.migration_table_exists = True
             return _Rows()
         if normalized.startswith("INSERT INTO schema_migrations_v1"):
             self.migrations[params[0]] = params[1]
@@ -150,10 +165,26 @@ class _SuccessfulConnection:
             return _Rows()
         if "FROM pg_catalog.pg_tables" in normalized:
             if "AS tables_current" in normalized:
-                return _Rows([{"tables_current": True, "indexes_current": True}])
+                current = bool(self.migrations)
+                return _Rows(
+                    [{"tables_current": current, "indexes_current": current}]
+                )
+            if not self.migrations:
+                return _Rows()
             return _Rows((name,) for name in check_postgres.POSTGRES_V3_REQUIRED_TABLES)
         if "FROM pg_catalog.pg_indexes" in normalized:
+            if not self.migrations:
+                return _Rows()
             return _Rows((name,) for name in check_postgres.POSTGRES_V3_REQUIRED_INDEXES)
+        if "FROM pg_catalog.pg_class" in normalized:
+            relations = self.extra_public_relations
+            if "relkind IN" in normalized:
+                relations = {
+                    row
+                    for row in relations
+                    if row[1] in {"r", "p", "v", "m", "S", "f", "i", "I"}
+                }
+            return _Rows(sorted(relations))
         if normalized == "SELECT COUNT(*) FROM collection_policies_v1":
             return _Rows([(1 if self.policy else 0,)])
         raise AssertionError(f"unexpected query boundary: {query}")
@@ -171,16 +202,24 @@ def _target_fingerprint() -> str:
     return "sha256:" + hashlib.sha256(canonical).hexdigest()
 
 
-def _args(*, expected_current_version="002", fingerprint=None):
-    return [
+def _args(
+    *,
+    expected_current_version="002",
+    fingerprint=None,
+    mode="--apply",
+    environment="preview",
+    label=f"{PROJECT_ID}/{BRANCH_ID}",
+    expected_plan_sha256=None,
+):
+    args = [
         "--migrate",
         str(MIGRATION_002),
         "--migrate",
         str(MIGRATION_003),
         "--environment",
-        "preview",
+        environment,
         "--expected-target-label",
-        "forzy-twinops-preview",
+        label,
         "--expected-target-fingerprint",
         fingerprint or _target_fingerprint(),
         "--expected-current-version",
@@ -188,6 +227,11 @@ def _args(*, expected_current_version="002", fingerprint=None):
         "--initial-policy-effective-from",
         EFFECTIVE_FROM,
     ]
+    if mode is not None:
+        args.append(mode)
+    if expected_plan_sha256 is not None:
+        args.extend(["--expected-plan-sha256", expected_plan_sha256])
+    return args
 
 
 def _env():
@@ -338,17 +382,18 @@ def test_check_postgres_applies_exact_migration_after_preflight_and_reports_safe
     assert target_index < ddl_index
     assert connection.identity == {
         "environment": "preview",
-        "label": "forzy-twinops-preview",
+        "label": f"{PROJECT_ID}/{BRANCH_ID}",
         "target_fingerprint": _target_fingerprint(),
         "schema_version": "003",
     }
     assert captured.err == ""
-    assert captured.out.strip() == (
-        "postgres_check_ok schema_version=003 tables=13 indexes=8 policies=1 "
-        "policy_id=forzy-live-window-v1 "
-        "policy_hash=sha256:89bde17193c7a34c80d48828f4e61fc"
-        "5802caa92169d83f8a9fd8e4c282b1bce"
-    )
+    payload = json.loads(captured.out)
+    assert payload["mode"] == "apply"
+    assert payload["schemaVersion"] == "003"
+    assert payload["pendingMigrationVersions"] == ["003"]
+    assert payload["plannedAdministrativeWriteCount"] == 3
+    assert payload["writesPerformed"] == 3
+    assert payload["verified"] is True
     for secret in (
         DATABASE_URL,
         "user",
@@ -356,8 +401,6 @@ def test_check_postgres_applies_exact_migration_after_preflight_and_reports_safe
         "database.invalid",
         str(MIGRATION_002),
         str(MIGRATION_003),
-        PROJECT_ID,
-        BRANCH_ID,
         DATABASE_NAME,
         SCHEMA_NAME,
     ):
@@ -403,3 +446,345 @@ def test_checker_sanitizes_catalog_and_tls_failures(capsys):
         "postgres_check_failed error_type=PostgresCheckError stage=tls"
     )
     assert DATABASE_URL not in captured.err
+
+
+def test_empty_production_dry_run_is_read_only_and_reports_closed_plan(capsys):
+    specs = check_postgres.registered_migration_specs()
+    connection = _SuccessfulConnection(specs, current_version="empty")
+
+    result = check_postgres.main(
+        _args(
+            expected_current_version="empty",
+            mode="--dry-run",
+            environment="production",
+            label=f"{PROJECT_ID}/{BRANCH_ID}",
+        ),
+        env=_env(),
+        connect=lambda dsn: connection,
+    )
+
+    captured = capsys.readouterr()
+    assert result == 0
+    assert captured.err == ""
+    payload = json.loads(captured.out)
+    assert set(payload) == {
+        "beforeSchemaVersion",
+        "command",
+        "environment",
+        "expectedCurrentVersion",
+        "initialPolicyEffectiveFrom",
+        "migrationSha256s",
+        "mode",
+        "operation",
+        "pendingMigrationVersions",
+        "planSha256",
+        "plannedAdministrativeWriteCount",
+        "policyConfigurationHash",
+        "policyId",
+        "schemaVersion",
+        "targetFingerprint",
+        "targetIndexCount",
+        "targetSchemaVersion",
+        "targetTableCount",
+        "verified",
+        "writesPerformed",
+    }
+    assert payload == {
+        "beforeSchemaVersion": None,
+        "command": "migrate-postgres",
+        "environment": "production",
+        "expectedCurrentVersion": "empty",
+        "initialPolicyEffectiveFrom": EFFECTIVE_FROM,
+        "migrationSha256s": {
+            spec.version: spec.postgres_sha256 for spec in specs
+        },
+        "mode": "dry-run",
+        "operation": "bootstrap-empty",
+        "pendingMigrationVersions": ["002", "003"],
+        "planSha256": payload["planSha256"],
+        "plannedAdministrativeWriteCount": 4,
+        "policyConfigurationHash": (
+            "sha256:89bde17193c7a34c80d48828f4e61fc"
+            "5802caa92169d83f8a9fd8e4c282b1bce"
+        ),
+        "policyId": "forzy-live-window-v1",
+        "schemaVersion": None,
+        "targetFingerprint": _target_fingerprint(),
+        "targetIndexCount": 8,
+        "targetSchemaVersion": "003",
+        "targetTableCount": 13,
+        "verified": True,
+        "writesPerformed": 0,
+    }
+    assert payload["planSha256"] == (
+        "sha256:585a60fac32180fdb781583e955b357f"
+        "854a917d65d428f4104f6ac7f11e9aae"
+    )
+    normalized = [" ".join(query.split()) for query, _, _ in connection.calls]
+    assert normalized[0] == "SET TRANSACTION READ ONLY"
+    assert not any(query == connection.migration_003 for query, _, _ in connection.calls)
+    assert not any(query.startswith("CREATE ") for query in normalized)
+    assert not any(query.startswith("INSERT ") for query in normalized)
+
+    changed_args = _args(
+        expected_current_version="empty",
+        mode="--dry-run",
+        environment="production",
+        label=f"{PROJECT_ID}/{BRANCH_ID}",
+    )
+    effective_index = changed_args.index("--initial-policy-effective-from")
+    changed_args[effective_index + 1] = "2026-08-23T00:00:00.000Z"
+    changed_connection = _SuccessfulConnection(specs, current_version="empty")
+    assert check_postgres.main(
+        changed_args,
+        env=_env(),
+        connect=lambda dsn: changed_connection,
+    ) == 0
+    changed_payload = json.loads(capsys.readouterr().out)
+    assert changed_payload["planSha256"] != payload["planSha256"]
+
+
+def test_mode_is_required_and_wrong_target_label_fails_before_database_query(
+    capsys,
+):
+    specs = check_postgres.registered_migration_specs()
+    connection = _SuccessfulConnection(specs, current_version="empty")
+
+    missing_mode = check_postgres.main(
+        _args(mode=None),
+        env=_env(),
+        connect=lambda dsn: (_ for _ in ()).throw(
+            AssertionError("mode validation must precede connect")
+        ),
+    )
+    assert missing_mode == 1
+    assert connection.calls == []
+    first = capsys.readouterr()
+    assert first.out == ""
+    assert first.err.strip() == "postgres_check_failed error_type=ValueError"
+
+    wrong_label = check_postgres.main(
+        _args(
+            expected_current_version="empty",
+            mode="--dry-run",
+            environment="production",
+            label="wrong-project/wrong-branch",
+        ),
+        env=_env(),
+        connect=lambda dsn: connection,
+    )
+    assert wrong_label == 1
+    assert connection.calls == []
+    second = capsys.readouterr()
+    assert second.out == ""
+    assert second.err.strip() == (
+        "postgres_check_failed error_type=PostgresCheckError "
+        "stage=target_identity"
+    )
+
+
+def test_empty_production_apply_bootstraps_exact_migrations_after_preflight(capsys):
+    specs = check_postgres.registered_migration_specs()
+    dry_run_connection = _SuccessfulConnection(specs, current_version="empty")
+    dry_run = check_postgres.main(
+        _args(
+            expected_current_version="empty",
+            mode="--dry-run",
+            environment="production",
+            label=f"{PROJECT_ID}/{BRANCH_ID}",
+        ),
+        env=_env(),
+        connect=lambda dsn: dry_run_connection,
+    )
+    assert dry_run == 0
+    approved_plan = json.loads(capsys.readouterr().out)["planSha256"]
+    connection = _SuccessfulConnection(specs, current_version="empty")
+
+    result = check_postgres.main(
+        _args(
+            expected_current_version="empty",
+            environment="production",
+            label=f"{PROJECT_ID}/{BRANCH_ID}",
+            expected_plan_sha256=approved_plan,
+        ),
+        env=_env(),
+        connect=lambda dsn: connection,
+    )
+
+    captured = capsys.readouterr()
+    assert result == 0
+    assert captured.err == ""
+    payload = json.loads(captured.out)
+    assert payload["mode"] == "apply"
+    assert payload["operation"] == "bootstrap-empty"
+    assert payload["planSha256"] == approved_plan
+    assert payload["pendingMigrationVersions"] == ["002", "003"]
+    assert payload["plannedAdministrativeWriteCount"] == 4
+    assert payload["writesPerformed"] == 4
+    assert connection.migrations == {
+        spec.version: spec.postgres_sha256 for spec in specs
+    }
+    assert connection.identity == {
+        "environment": "production",
+        "label": f"{PROJECT_ID}/{BRANCH_ID}",
+        "target_fingerprint": _target_fingerprint(),
+        "schema_version": "003",
+    }
+    assert connection.policy is not None
+    assert connection.calls[0][0].startswith("SELECT current_database()")
+    first_ddl = next(
+        index
+        for index, (query, _, _) in enumerate(connection.calls)
+        if query in {connection.migration_002, connection.migration_003}
+    )
+    identity_check = next(
+        index
+        for index, (query, _, _) in enumerate(connection.calls)
+        if "to_regclass('public.deployment_identity_v1')" in query
+    )
+    assert identity_check < first_ddl
+    lock_index = next(
+        index
+        for index, (query, _, _) in enumerate(connection.calls)
+        if "pg_advisory_xact_lock" in query
+    )
+    assert identity_check < lock_index < first_ddl
+    assert sum(
+        query.startswith("SELECT current_database()")
+        for query, _, _ in connection.calls
+    ) >= 2
+
+
+@pytest.mark.parametrize(
+    "relation",
+    [
+        ("unexpected_demo_table", "r"),
+        ("unexpected_demo_composite_type", "c"),
+    ],
+)
+def test_empty_preflight_rejects_any_unknown_public_relation(capsys, relation):
+    specs = check_postgres.registered_migration_specs()
+    connection = _SuccessfulConnection(specs, current_version="empty")
+    connection.extra_public_relations.add(relation)
+
+    result = check_postgres.main(
+        _args(
+            expected_current_version="empty",
+            mode="--dry-run",
+            environment="production",
+            label=f"{PROJECT_ID}/{BRANCH_ID}",
+        ),
+        env=_env(),
+        connect=lambda dsn: connection,
+    )
+
+    captured = capsys.readouterr()
+    assert result == 1
+    assert captured.out == ""
+    assert captured.err.strip() == (
+        "postgres_check_failed error_type=PostgresCheckError "
+        "stage=schema_version"
+    )
+    assert not any(query == connection.migration_002 for query, _, _ in connection.calls)
+    assert not any(query == connection.migration_003 for query, _, _ in connection.calls)
+
+
+def test_empty_apply_requires_approved_dry_run_plan_before_connecting(capsys):
+    specs = check_postgres.registered_migration_specs()
+
+    result = check_postgres.main(
+        _args(
+            expected_current_version="empty",
+            environment="production",
+            label=f"{PROJECT_ID}/{BRANCH_ID}",
+        ),
+        env=_env(),
+        connect=lambda dsn: (_ for _ in ()).throw(
+            AssertionError("missing approved plan must fail before connect")
+        ),
+    )
+
+    captured = capsys.readouterr()
+    assert result == 1
+    assert captured.out == ""
+    assert captured.err.strip() == "postgres_check_failed error_type=ValueError"
+
+
+def test_empty_apply_rejects_wrong_plan_and_lock_time_catalog_race(capsys):
+    specs = check_postgres.registered_migration_specs()
+    dry_run_connection = _SuccessfulConnection(specs, current_version="empty")
+    assert check_postgres.main(
+        _args(
+            expected_current_version="empty",
+            mode="--dry-run",
+            environment="production",
+            label=f"{PROJECT_ID}/{BRANCH_ID}",
+        ),
+        env=_env(),
+        connect=lambda dsn: dry_run_connection,
+    ) == 0
+    approved_plan = json.loads(capsys.readouterr().out)["planSha256"]
+
+    wrong_plan_connection = _SuccessfulConnection(specs, current_version="empty")
+    wrong_plan = check_postgres.main(
+        _args(
+            expected_current_version="empty",
+            environment="production",
+            label=f"{PROJECT_ID}/{BRANCH_ID}",
+            expected_plan_sha256="sha256:" + "0" * 64,
+        ),
+        env=_env(),
+        connect=lambda dsn: wrong_plan_connection,
+    )
+    wrong_capture = capsys.readouterr()
+    assert wrong_plan == 1
+    assert wrong_capture.out == ""
+    assert wrong_capture.err.strip().endswith("stage=plan_identity")
+    assert not any(
+        "pg_advisory_xact_lock" in query
+        for query, _, _ in wrong_plan_connection.calls
+    )
+    assert not any(
+        query in {wrong_plan_connection.migration_002, wrong_plan_connection.migration_003}
+        for query, _, _ in wrong_plan_connection.calls
+    )
+
+    race_connection = _SuccessfulConnection(specs, current_version="empty")
+    race_connection.relation_on_lock = ("concurrent_relation", "r")
+    raced = check_postgres.main(
+        _args(
+            expected_current_version="empty",
+            environment="production",
+            label=f"{PROJECT_ID}/{BRANCH_ID}",
+            expected_plan_sha256=approved_plan,
+        ),
+        env=_env(),
+        connect=lambda dsn: race_connection,
+    )
+    race_capture = capsys.readouterr()
+    assert raced == 1
+    assert race_capture.out == ""
+    assert race_capture.err.strip().endswith("stage=schema_version")
+    assert not any(
+        query in {race_connection.migration_002, race_connection.migration_003}
+        for query, _, _ in race_connection.calls
+    )
+
+
+def test_remote_migrator_prefers_non_pooling_dsn_without_echoing_it(capsys):
+    specs = check_postgres.registered_migration_specs()
+    connection = _SuccessfulConnection(specs, current_version="003")
+    direct_url = "postgresql://user:secret@direct.invalid/twinops"
+    source_env = {**_env(), "POSTGRES_URL_NON_POOLING": direct_url}
+    connected_with = []
+
+    result = check_postgres.main(
+        _args(expected_current_version="003"),
+        env=source_env,
+        connect=lambda dsn: connected_with.append(dsn) or connection,
+    )
+
+    captured = capsys.readouterr()
+    assert result == 0
+    assert connected_with == [direct_url]
+    assert direct_url not in captured.out + captured.err

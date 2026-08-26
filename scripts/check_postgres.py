@@ -15,11 +15,14 @@ import psycopg
 
 from twinops.contracts.timeline_v1_models import parse_public_utc_millis_v1
 from twinops.storage.collection_policy_v1 import (
+    INITIAL_COLLECTION_POLICY_CONFIGURATION_HASH,
     INITIAL_COLLECTION_POLICY_ID,
+    initial_collection_policy,
     read_collection_policy,
 )
 from twinops.storage.schema_migrations import (
     DeploymentIdentityV1,
+    POSTGRES_SCHEMA_MIGRATION_LOCK_KEY,
     apply_postgres_migrations,
     ensure_deployment_identity,
     postgres_v2_schema_is_current,
@@ -94,9 +97,13 @@ def _parse_args(argv: Sequence[str] | None):
     parser.add_argument(
         "--expected-current-version",
         required=True,
-        choices=("002", "003"),
+        choices=("empty", "002", "003"),
     )
     parser.add_argument("--initial-policy-effective-from", required=True)
+    mode = parser.add_mutually_exclusive_group(required=True)
+    mode.add_argument("--dry-run", action="store_true")
+    mode.add_argument("--apply", action="store_true")
+    parser.add_argument("--expected-plan-sha256")
     parsed = parser.parse_args(argv)
     resolved = tuple(path.resolve() for path in parsed.migrate)
     expected = tuple(path.resolve() for path in _EXPECTED_MIGRATIONS)
@@ -112,6 +119,19 @@ def _parse_args(argv: Sequence[str] | None):
         )
     except Exception as exc:
         raise ValueError("initial policy effective time must be RFC3339 UTC") from exc
+    parsed.mode = "apply" if parsed.apply else "dry-run"
+    if parsed.expected_plan_sha256 is not None and not _SHA256_RE.fullmatch(
+        parsed.expected_plan_sha256
+    ):
+        raise ValueError("expected plan hash must be canonical sha256")
+    if (
+        parsed.expected_current_version == "empty"
+        and parsed.mode == "apply"
+        and parsed.expected_plan_sha256 is None
+    ):
+        raise ValueError("empty apply requires approved dry-run plan hash")
+    if parsed.mode == "dry-run" and parsed.expected_plan_sha256 is not None:
+        raise ValueError("dry-run rejects expected plan hash")
     return parsed
 
 
@@ -137,11 +157,16 @@ def compute_postgres_target_fingerprint(
     return "sha256:" + hashlib.sha256(canonical).hexdigest()
 
 
-def _target_fingerprint(connection, env: Mapping[str, str]) -> str:
+def _target_identity_parts(env: Mapping[str, str]) -> tuple[str, str]:
     project_id = env.get("TWINOPS_TARGET_PROJECT_ID")
     branch_id = env.get("TWINOPS_TARGET_BRANCH_ID")
     if not project_id or not branch_id:
         raise ValueError("target project and branch identity are required")
+    return project_id, branch_id
+
+
+def _target_fingerprint(connection, env: Mapping[str, str]) -> str:
+    project_id, branch_id = _target_identity_parts(env)
     row = connection.execute(
         "SELECT current_database(), current_schema()"
     ).fetchone()
@@ -160,16 +185,35 @@ def _target_fingerprint(connection, env: Mapping[str, str]) -> str:
     )
 
 
-def _preflight_schema_version(connection, expected_version: str) -> None:
+def _preflight_schema_version(connection, expected_version: str):
+    if expected_version == "empty":
+        verification = verify_schema_version(connection, "003")
+        if (
+            verification.current_version is not None
+            or verification.applied_migration_hashes
+            or _public_user_relations(connection)
+            or _catalog_names(
+                connection,
+                kind="tables",
+                expected=POSTGRES_V3_REQUIRED_TABLES,
+            )
+            or _catalog_names(
+                connection,
+                kind="indexes",
+                expected=POSTGRES_V3_REQUIRED_INDEXES,
+            )
+        ):
+            raise PostgresCheckError("schema_version")
+        return verification
     verification = verify_schema_version(connection, expected_version)
     if verification.is_current:
-        return
+        return verification
     if (
         expected_version == "002"
         and verification.current_version is None
         and postgres_v2_schema_is_current(connection)
     ):
-        return
+        return verification
     raise PostgresCheckError("schema_version")
 
 
@@ -191,7 +235,7 @@ def _preflight_deployment_identity(connection, args, fingerprint: str):
         schema_version="003",
     )
     table_exists = _deployment_identity_table_exists(connection)
-    if args.expected_current_version == "002":
+    if args.expected_current_version in {"empty", "002"}:
         if table_exists:
             raise PostgresCheckError("target_identity")
         return expected
@@ -223,21 +267,218 @@ def _catalog_names(connection, *, kind: str, expected: frozenset[str]) -> set[st
     }
 
 
+def _public_user_relations(connection) -> set[tuple[str, str]]:
+    rows = connection.execute(
+        "SELECT c.relname,c.relkind FROM pg_catalog.pg_class AS c "
+        "JOIN pg_catalog.pg_namespace AS n ON n.oid=c.relnamespace "
+        "WHERE n.nspname='public' "
+        "ORDER BY c.relkind,c.relname"
+    ).fetchall()
+    return {
+        (
+            row[0] if not isinstance(row, Mapping) else row["relname"],
+            row[1] if not isinstance(row, Mapping) else row["relkind"],
+        )
+        for row in rows
+    }
+
+
+def _migration_hashes(specs) -> dict[str, str]:
+    hashes: dict[str, str] = {}
+    for spec in specs:
+        try:
+            sql = spec.postgres_path.read_bytes().decode("utf-8")
+        except (OSError, UnicodeDecodeError) as exc:
+            raise PostgresCheckError("migration_identity") from exc
+        if sql.startswith("\ufeff") or "\r" in sql.replace("\r\n", ""):
+            raise PostgresCheckError("migration_identity")
+        canonical = sql.replace("\r\n", "\n").encode("utf-8")
+        digest = "sha256:" + hashlib.sha256(canonical).hexdigest()
+        if digest != spec.postgres_sha256:
+            raise PostgresCheckError("migration_identity")
+        hashes[spec.version] = digest
+    return hashes
+
+
+def _pending_migration_versions(expected_current_version: str) -> list[str]:
+    if expected_current_version == "empty":
+        return ["002", "003"]
+    if expected_current_version == "002":
+        return ["003"]
+    return []
+
+
+def _operation(expected_current_version: str) -> str:
+    if expected_current_version == "empty":
+        return "bootstrap-empty"
+    if expected_current_version == "002":
+        return "upgrade-002"
+    return "verify-003"
+
+
+def _plan_sha256(
+    *,
+    args,
+    fingerprint: str,
+    migration_hashes: Mapping[str, str],
+) -> str:
+    policy = initial_collection_policy(args.initial_policy_effective_from)
+    payload = {
+        "environment": args.environment,
+        "expectedCurrentVersion": args.expected_current_version,
+        "indexes": sorted(POSTGRES_V3_REQUIRED_INDEXES),
+        "migrationSha256s": dict(migration_hashes),
+        "operation": _operation(args.expected_current_version),
+        "policy": policy.model_dump_public(),
+        "tables": sorted(POSTGRES_V3_REQUIRED_TABLES),
+        "targetFingerprint": fingerprint,
+        "targetLabel": args.expected_target_label,
+        "targetSchemaVersion": "003",
+    }
+    canonical = json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    ).encode("utf-8")
+    return "sha256:" + hashlib.sha256(canonical).hexdigest()
+
+
+def _verify_current_database(connection, args):
+    tables = _catalog_names(
+        connection,
+        kind="tables",
+        expected=POSTGRES_V3_REQUIRED_TABLES,
+    )
+    if tables != POSTGRES_V3_REQUIRED_TABLES:
+        raise PostgresCheckError("tables")
+    indexes = _catalog_names(
+        connection,
+        kind="indexes",
+        expected=POSTGRES_V3_REQUIRED_INDEXES,
+    )
+    if indexes != POSTGRES_V3_REQUIRED_INDEXES:
+        raise PostgresCheckError("indexes")
+    expected_policy = initial_collection_policy(args.initial_policy_effective_from)
+    policy = read_collection_policy(connection, INITIAL_COLLECTION_POLICY_ID)
+    if (
+        policy is None
+        or policy.model_dump_public() != expected_policy.model_dump_public()
+    ):
+        raise PostgresCheckError("policy")
+    policy_count_row = connection.execute(
+        "SELECT COUNT(*) FROM collection_policies_v1"
+    ).fetchone()
+    if policy_count_row is None or policy_count_row[0] != 1:
+        raise PostgresCheckError("policy")
+    return len(tables), len(indexes), 1
+
+
+def _result(
+    *,
+    args,
+    fingerprint: str,
+    migration_hashes: Mapping[str, str],
+    pending_versions: list[str],
+    planned_writes: int,
+    plan_sha256: str,
+    writes_performed: int,
+) -> dict[str, object]:
+    policy = initial_collection_policy(args.initial_policy_effective_from)
+    public_policy = policy.model_dump_public()
+    before_schema = (
+        None
+        if args.expected_current_version == "empty"
+        else args.expected_current_version
+    )
+    return {
+        "beforeSchemaVersion": before_schema,
+        "command": "migrate-postgres",
+        "environment": args.environment,
+        "expectedCurrentVersion": args.expected_current_version,
+        "initialPolicyEffectiveFrom": public_policy["effectiveFrom"],
+        "migrationSha256s": dict(migration_hashes),
+        "mode": args.mode,
+        "operation": _operation(args.expected_current_version),
+        "pendingMigrationVersions": pending_versions,
+        "planSha256": plan_sha256,
+        "plannedAdministrativeWriteCount": planned_writes,
+        "policyConfigurationHash": INITIAL_COLLECTION_POLICY_CONFIGURATION_HASH,
+        "policyId": INITIAL_COLLECTION_POLICY_ID,
+        "schemaVersion": "003" if args.mode == "apply" else before_schema,
+        "targetFingerprint": fingerprint,
+        "targetIndexCount": len(POSTGRES_V3_REQUIRED_INDEXES),
+        "targetSchemaVersion": "003",
+        "targetTableCount": len(POSTGRES_V3_REQUIRED_TABLES),
+        "verified": True,
+        "writesPerformed": writes_performed,
+    }
+
+
 def _verify_database(
     database_url: str,
     args,
     env: Mapping[str, str],
     connect,
-) -> tuple[int, int, int, str, str]:
+) -> dict[str, object]:
     specs = registered_migration_specs()
+    migration_hashes = _migration_hashes(specs)
     with connect(database_url) as connection:
         if connection.pgconn.ssl_in_use is not True:
             raise PostgresCheckError("tls")
+        if args.mode == "dry-run":
+            connection.execute("SET TRANSACTION READ ONLY")
         fingerprint = _target_fingerprint(connection, env)
         if fingerprint != args.expected_target_fingerprint:
             raise PostgresCheckError("target_identity")
-        _preflight_schema_version(connection, args.expected_current_version)
+        before = _preflight_schema_version(
+            connection, args.expected_current_version
+        )
         identity = _preflight_deployment_identity(connection, args, fingerprint)
+        plan_sha256 = _plan_sha256(
+            args=args,
+            fingerprint=fingerprint,
+            migration_hashes=migration_hashes,
+        )
+        if (
+            args.expected_current_version == "empty"
+            and args.mode == "apply"
+            and args.expected_plan_sha256 != plan_sha256
+        ):
+            raise PostgresCheckError("plan_identity")
+
+        pending_versions = _pending_migration_versions(
+            args.expected_current_version
+        )
+        missing_registry_rows = sum(
+            spec.version not in before.applied_migration_hashes for spec in specs
+        )
+        planned_writes = missing_registry_rows + (
+            0 if args.expected_current_version == "003" else 2
+        )
+        if args.mode == "dry-run":
+            if args.expected_current_version == "003":
+                _verify_current_database(connection, args)
+            return _result(
+                args=args,
+                fingerprint=fingerprint,
+                migration_hashes=migration_hashes,
+                pending_versions=pending_versions,
+                planned_writes=planned_writes,
+                plan_sha256=plan_sha256,
+                writes_performed=0,
+            )
+
+        if args.expected_current_version == "empty":
+            connection.execute(
+                "SELECT pg_advisory_xact_lock(%s)",
+                (POSTGRES_SCHEMA_MIGRATION_LOCK_KEY,),
+            )
+            if _target_fingerprint(connection, env) != fingerprint:
+                raise PostgresCheckError("target_identity")
+            _preflight_schema_version(connection, "empty")
+            _preflight_deployment_identity(connection, args, fingerprint)
 
         apply_postgres_migrations(
             connection,
@@ -249,36 +490,15 @@ def _verify_database(
             raise PostgresCheckError("target_identity")
         if not verify_schema_version(connection, "003").is_current:
             raise PostgresCheckError("schema_version")
-
-        tables = _catalog_names(
-            connection,
-            kind="tables",
-            expected=POSTGRES_V3_REQUIRED_TABLES,
-        )
-        if tables != POSTGRES_V3_REQUIRED_TABLES:
-            raise PostgresCheckError("tables")
-        indexes = _catalog_names(
-            connection,
-            kind="indexes",
-            expected=POSTGRES_V3_REQUIRED_INDEXES,
-        )
-        if indexes != POSTGRES_V3_REQUIRED_INDEXES:
-            raise PostgresCheckError("indexes")
-        policy = read_collection_policy(connection, INITIAL_COLLECTION_POLICY_ID)
-        if policy is None:
-            raise PostgresCheckError("policy")
-        policy_count_row = connection.execute(
-            "SELECT COUNT(*) FROM collection_policies_v1"
-        ).fetchone()
-        policy_count = policy_count_row[0]
-        if policy_count != 1:
-            raise PostgresCheckError("policy")
-        return (
-            len(tables),
-            len(indexes),
-            policy_count,
-            policy.collection_policy_id,
-            policy.configuration_hash,
+        _verify_current_database(connection, args)
+        return _result(
+            args=args,
+            fingerprint=fingerprint,
+            migration_hashes=migration_hashes,
+            pending_versions=pending_versions,
+            planned_writes=planned_writes,
+            plan_sha256=plan_sha256,
+            writes_performed=planned_writes,
         )
 
 
@@ -290,20 +510,29 @@ def main(
 ) -> int:
     try:
         source_env = os.environ if env is None else env
-        database_url = source_env.get("DATABASE_URL")
+        database_url = source_env.get("POSTGRES_URL_NON_POOLING") or source_env.get(
+            "DATABASE_URL"
+        )
         if not database_url:
             raise ValueError("DATABASE_URL is required")
         args = _parse_args(argv)
-        tables, indexes, policies, policy_id, policy_hash = _verify_database(
+        project_id, branch_id = _target_identity_parts(source_env)
+        if args.expected_target_label != f"{project_id}/{branch_id}":
+            raise PostgresCheckError("target_identity")
+        result = _verify_database(
             database_url,
             args,
             source_env,
             connect,
         )
         print(
-            "postgres_check_ok schema_version=003 "
-            f"tables={tables} indexes={indexes} policies={policies} "
-            f"policy_id={policy_id} policy_hash={policy_hash}"
+            json.dumps(
+                result,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+                allow_nan=False,
+            )
         )
         return 0
     except Exception as exc:
