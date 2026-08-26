@@ -1765,48 +1765,44 @@ body {
   gap: 0.8rem;
 }
 
-.decision-chart__zoom {
+.decision-chart__navigation {
   display: flex;
-  flex-wrap: wrap;
   align-items: center;
-  gap: 0.45rem;
-  padding: 0.55rem 0.65rem;
-  border: 1px solid #263c57;
-  background: #0b1929;
-}
-
-.decision-chart__zoom button {
+  justify-content: space-between;
+  gap: 0.75rem;
   min-height: 34px;
-  padding: 0.35rem 0.55rem;
-  border-radius: 3px;
-  font-size: 0.68rem;
+  padding-inline: 0.15rem;
 }
 
-.decision-chart__zoom button:disabled {
-  cursor: not-allowed;
-  opacity: 0.38;
+.decision-chart__navigation p {
+  display: flex;
+  align-items: baseline;
+  gap: 0.65rem;
+  margin: 0;
 }
 
-.decision-chart__zoom-level {
-  display: grid;
-  grid-template-columns: auto minmax(7rem, 11rem);
-  align-items: center;
-  gap: 0.5rem;
+.decision-chart__navigation strong {
+  color: #bffaf0;
+  font-size: 0.72rem;
+}
+
+.decision-chart__navigation span {
   color: var(--muted);
   font-size: 0.68rem;
 }
 
-.decision-chart__zoom-level input {
-  width: 100%;
-  accent-color: #5eead4;
+.decision-chart__navigation button {
+  min-height: 30px;
+  padding: 0.25rem 0.55rem;
+  border-radius: 3px;
+  background: transparent;
+  color: #bffaf0;
+  font-size: 0.68rem;
 }
 
-.decision-chart__zoom output {
-  min-width: 9rem;
-  color: #bffaf0;
-  font-size: 0.7rem;
-  font-weight: 750;
-  text-align: center;
+.decision-chart__navigation button:disabled {
+  cursor: default;
+  opacity: 0.35;
 }
 
 .decision-chart__section {
@@ -1877,6 +1873,18 @@ body {
   width: 100%;
   overflow-x: hidden;
   overflow-y: hidden;
+  cursor: grab;
+  touch-action: pan-y;
+  user-select: none;
+}
+
+.decision-chart__canvas[data-dragging="true"] {
+  cursor: grabbing;
+}
+
+.decision-chart__canvas:focus-visible {
+  outline: 2px solid #5eead4;
+  outline-offset: -2px;
 }
 
 .decision-chart__canvas svg {
@@ -2272,14 +2280,13 @@ body {
     grid-template-columns: 1fr;
   }
 
-  .decision-chart__zoom-level {
-    width: 100%;
-    grid-template-columns: auto minmax(0, 1fr);
+  .decision-chart__navigation {
+    align-items: flex-start;
   }
 
-  .decision-chart__zoom output {
-    min-width: 0;
-    flex: 1 1 8rem;
+  .decision-chart__navigation p {
+    display: grid;
+    gap: 0.15rem;
   }
 
   .decision-console__range {

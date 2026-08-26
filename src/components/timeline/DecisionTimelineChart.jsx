@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from "react";
+import React, { useMemo, useRef, useState } from "react";
 
 const CHART_WIDTH = 1040;
 const SENSOR_CHART_HEIGHT = 310;
@@ -6,7 +6,6 @@ const SCORE_CHART_HEIGHT = 250;
 const MARGIN = Object.freeze({ top: 18, right: 22, bottom: 34, left: 58 });
 const SENSOR_COLORS = Object.freeze({ s1: "#5eead4", s2: "#fbbf24" });
 const MINUTE = 60 * 1000;
-const ZOOM_FACTORS = Object.freeze([1, 2, 4, 8, 16, 32, 64, 128, 256, 512]);
 const dateFormatter = new Intl.DateTimeFormat("pt-BR", {
   timeZone: "America/Sao_Paulo",
   day: "2-digit",
@@ -70,15 +69,6 @@ const denseDataDomain = (times, fullDomain) => {
     ? [...fullDomain]
     : framed;
 };
-
-const nearestZoomIndex = (factor) => ZOOM_FACTORS.reduce(
-  (bestIndex, candidate, index) => (
-    Math.abs(candidate - factor) < Math.abs(ZOOM_FACTORS[bestIndex] - factor)
-      ? index
-      : bestIndex
-  ),
-  0,
-);
 
 const scaleX = (value, domain) => {
   const span = Math.max(1, domain[1] - domain[0]);
@@ -215,19 +205,100 @@ export default function DecisionTimelineChart({
   const fullSpan = Math.max(1, fullDomain[1] - fullDomain[0]);
   const visibleSpan = Math.max(1, domain[1] - domain[0]);
   const zoomFactor = fullSpan / visibleSpan;
-  const zoomIndex = nearestZoomIndex(zoomFactor);
+  const dragRef = useRef(null);
+  const suppressClickRef = useRef(false);
+  const [dragging, setDragging] = useState(false);
   const setManualDomain = (nextDomain, mode = "manual") => {
     setViewport({ domain: fitDomain(nextDomain, fullDomain), key: domainKey, mode });
   };
-  const applyZoomIndex = (nextIndex) => {
-    const boundedIndex = Math.max(0, Math.min(ZOOM_FACTORS.length - 1, nextIndex));
-    const nextSpan = fullSpan / ZOOM_FACTORS[boundedIndex];
-    const center = (domain[0] + domain[1]) / 2;
-    setManualDomain([center - nextSpan / 2, center + nextSpan / 2]);
+  const resetViewport = () => {
+    setViewport({ domain: null, key: domainKey, mode: "auto" });
   };
-  const pan = (direction) => {
-    const shift = visibleSpan * 0.45 * direction;
-    setManualDomain([domain[0] + shift, domain[1] + shift]);
+  const zoomAround = (ratio, scale) => {
+    const minimumSpan = Math.max(MINUTE / 4, fullSpan / 512);
+    const nextSpan = Math.max(minimumSpan, Math.min(fullSpan, visibleSpan * scale));
+    const anchor = domain[0] + visibleSpan * ratio;
+    setManualDomain([
+      anchor - nextSpan * ratio,
+      anchor + nextSpan * (1 - ratio),
+    ]);
+  };
+  const handleWheel = (event) => {
+    event.preventDefault();
+    const rect = event.currentTarget.getBoundingClientRect();
+    const ratio = Math.max(0, Math.min(1, (event.clientX - rect.left) / Math.max(1, rect.width)));
+    zoomAround(ratio, event.deltaY < 0 ? 0.82 : 1.22);
+  };
+  const handlePointerDown = (event) => {
+    if (event.button !== 0) return;
+    const rect = event.currentTarget.getBoundingClientRect();
+    dragRef.current = {
+      domain: [...domain],
+      moved: false,
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      width: Math.max(1, rect.width),
+    };
+    event.currentTarget.setPointerCapture?.(event.pointerId);
+    setDragging(true);
+  };
+  const handlePointerMove = (event) => {
+    const drag = dragRef.current;
+    if (drag === null || drag.pointerId !== event.pointerId) return;
+    const deltaX = event.clientX - drag.startX;
+    if (Math.abs(deltaX) > 3) drag.moved = true;
+    const span = drag.domain[1] - drag.domain[0];
+    const shift = -(deltaX / drag.width) * span;
+    setManualDomain([drag.domain[0] + shift, drag.domain[1] + shift]);
+  };
+  const handlePointerEnd = (event) => {
+    const drag = dragRef.current;
+    if (drag === null || drag.pointerId !== event.pointerId) return;
+    if (drag.moved) {
+      suppressClickRef.current = true;
+      setTimeout(() => {
+        suppressClickRef.current = false;
+      }, 0);
+    }
+    event.currentTarget.releasePointerCapture?.(event.pointerId);
+    dragRef.current = null;
+    setDragging(false);
+  };
+  const handleClickCapture = (event) => {
+    if (!suppressClickRef.current) return;
+    event.preventDefault();
+    event.stopPropagation();
+    suppressClickRef.current = false;
+  };
+  const handleKeyDown = (event) => {
+    const panStep = visibleSpan * 0.18;
+    if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
+      event.preventDefault();
+      const direction = event.key === "ArrowLeft" ? -1 : 1;
+      setManualDomain([domain[0] + panStep * direction, domain[1] + panStep * direction]);
+    } else if (event.key === "+" || event.key === "=") {
+      event.preventDefault();
+      zoomAround(0.5, 0.82);
+    } else if (event.key === "-") {
+      event.preventDefault();
+      zoomAround(0.5, 1.22);
+    } else if (event.key === "0") {
+      event.preventDefault();
+      resetViewport();
+    }
+  };
+  const interactiveCanvasProps = {
+    "aria-label": "Gráfico interativo: arraste ou use as setas para navegar; use a roda ou mais e menos para zoom",
+    "data-dragging": dragging ? "true" : "false",
+    onClickCapture: handleClickCapture,
+    onKeyDown: handleKeyDown,
+    onPointerCancel: handlePointerEnd,
+    onPointerDown: handlePointerDown,
+    onPointerMove: handlePointerMove,
+    onPointerUp: handlePointerEnd,
+    onWheel: handleWheel,
+    role: "group",
+    tabIndex: 0,
   };
   const visibleSeries = useMemo(
     () => model.series
@@ -299,67 +370,17 @@ export default function DecisionTimelineChart({
     : null;
   const visiblePointCount = visibleSeries.reduce((total, series) => total + series.points.length, 0);
   const pointCountLabel = `${visiblePointCount}/${visibleTimes.length} pontos visíveis`;
-  const zoomModeLabel = viewportMode === "auto"
-    ? `Zoom automático · ${Math.max(1, Math.round(zoomFactor))}×`
-    : viewportMode === "full"
-      ? "Janela completa · 1×"
-      : `Zoom manual · ${Math.max(1, Math.round(zoomFactor))}×`;
-  const zoomLabel = `${zoomModeLabel} · ${pointCountLabel}`;
+  const zoomLabel = `${Math.max(1, Math.round(zoomFactor))}× · ${pointCountLabel}`;
 
   return (
     <div className="decision-chart" data-testid="decision-timeline-chart">
-      <div aria-label="Controle de zoom do gráfico" className="decision-chart__zoom" role="group">
-        <button
-          disabled={domain[0] <= fullDomain[0]}
-          onClick={() => pan(-1)}
-          type="button"
-        >
-          Período anterior
-        </button>
-        <button
-          aria-label="Reduzir zoom"
-          disabled={zoomIndex === 0}
-          onClick={() => applyZoomIndex(zoomIndex - 1)}
-          type="button"
-        >
-          Menos zoom
-        </button>
-        <label className="decision-chart__zoom-level">
-          <span>Nível de zoom</span>
-          <input
-            aria-label="Nível de zoom"
-            max={ZOOM_FACTORS.length - 1}
-            min="0"
-            onChange={(event) => applyZoomIndex(Number(event.target.value))}
-            step="1"
-            type="range"
-            value={zoomIndex}
-          />
-        </label>
-        <output aria-live="polite">{zoomLabel}</output>
-        <button
-          aria-label="Aumentar zoom"
-          disabled={zoomIndex === ZOOM_FACTORS.length - 1}
-          onClick={() => applyZoomIndex(zoomIndex + 1)}
-          type="button"
-        >
-          Mais zoom
-        </button>
-        <button
-          disabled={domain[1] >= fullDomain[1]}
-          onClick={() => pan(1)}
-          type="button"
-        >
-          Período seguinte
-        </button>
-        <button
-          onClick={() => setViewport({ domain: null, key: domainKey, mode: "auto" })}
-          type="button"
-        >
-          Enquadrar dados
-        </button>
-        <button onClick={() => setManualDomain(fullDomain, "full")} type="button">
-          Mostrar janela completa
+      <div aria-label="Navegação do gráfico" className="decision-chart__navigation" role="group">
+        <p>
+          <strong>{zoomLabel}</strong>
+          <span>Arraste para navegar · roda/trackpad para zoom</span>
+        </p>
+        <button disabled={viewportMode === "auto"} onClick={resetViewport} type="button">
+          Reenquadrar
         </button>
       </div>
       <section aria-labelledby="sensor-chart-title" className="decision-chart__section">
@@ -372,7 +393,7 @@ export default function DecisionTimelineChart({
             <span><i data-kind="candidate" />Candidato</span>
           </div>
         </div>
-        <div className="decision-chart__canvas">
+        <div className="decision-chart__canvas" {...interactiveCanvasProps}>
           <svg
             aria-label="Telemetria histórica sincronizada"
             data-domain-from={domain[0]}
@@ -438,7 +459,7 @@ export default function DecisionTimelineChart({
             <span>Nenhum valor foi inferido ou preenchido com zero.</span>
           </div>
         ) : (
-          <div className="decision-chart__canvas">
+          <div className="decision-chart__canvas" {...interactiveCanvasProps}>
             <svg
               aria-label="Scores históricos sincronizados"
               data-domain-from={domain[0]}

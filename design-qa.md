@@ -41,6 +41,13 @@ The source and desktop implementation were inspected together in the same compar
 - Desktop browser probe at the user-reported width found `canvasScrollWidth === canvasClientWidth` and `overflow-x: hidden`; the automatic 24-hour viewport expanded the dense readings across the chart instead of pinning them to the right edge.
 - Responsive browser probes at 960 × 700 and 390 × 844 found no page-level or chart-level horizontal overflow. Controls wrap without covering the chart or inspector.
 
+### Pass 4 — direct chart manipulation
+
+- P1 interaction density: the explicit previous/next, zoom in/out, slider, reframe and full-window controls made a simple chart feel like a form. Removed the entire toolbar.
+- The chart is now the control surface: mouse wheel or trackpad scroll zooms around the pointer; horizontal drag pans the shared telemetry/score time domain; point click remains inspection; keyboard arrows and `+`/`-` provide the same navigation without a mouse.
+- Only a compact zoom/visible-point readout, one-line mouse/trackpad hint and a disabled-until-needed `Reenquadrar` action remain above the plot.
+- Browser-level CUA probes changed the exact domain on wheel and drag, then restored the exact automatic domain through `Reenquadrar`. Desktop and 390 × 844 remained free of horizontal overflow.
+
 ## Interaction and accessibility evidence
 
 - Range `24 horas` returned 91 of 91 real points; `Tudo` restored 93 of 93.

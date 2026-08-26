@@ -38,7 +38,7 @@ const clusteredModel = {
 };
 
 describe("DecisionTimelineChart zoom viewport", () => {
-  it("auto-frames the dense readings and exposes zoom, pan and full-window controls", () => {
+  it("auto-frames dense readings and navigates directly by wheel, drag and reset", () => {
     render(
       <DecisionTimelineChart
         assessmentOverview={null}
@@ -55,20 +55,35 @@ describe("DecisionTimelineChart zoom viewport", () => {
     const autoTo = Number(telemetry.dataset.domainTo);
     expect(autoFrom).toBeGreaterThan(fullDomain[0] + 20 * HOUR);
     expect(autoTo).toBe(fullDomain[1]);
-    expect(screen.getByRole("slider", { name: "Nível de zoom" })).toBeInTheDocument();
-    expect(screen.getByText(/Zoom automático · .* · 5\/6 pontos visíveis/i)).toBeVisible();
+    expect(screen.queryByRole("slider", { name: "Nível de zoom" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Período anterior" })).not.toBeInTheDocument();
+    expect(screen.getByText(/Arraste para navegar · roda\/trackpad para zoom/i)).toBeVisible();
 
-    fireEvent.click(screen.getByRole("button", { name: "Mostrar janela completa" }));
-    expect(Number(telemetry.dataset.domainFrom)).toBe(fullDomain[0]);
-    expect(Number(telemetry.dataset.domainTo)).toBe(fullDomain[1]);
-    expect(screen.getByText(/Janela completa · 1× · 6\/6 pontos visíveis/i)).toBeVisible();
+    const canvas = telemetry.closest(".decision-chart__canvas");
+    vi.spyOn(canvas, "getBoundingClientRect").mockReturnValue({
+      bottom: 310,
+      height: 310,
+      left: 0,
+      right: 1000,
+      top: 0,
+      width: 1000,
+      x: 0,
+      y: 0,
+      toJSON: () => ({}),
+    });
 
-    fireEvent.click(screen.getByRole("button", { name: "Aumentar zoom" }));
+    fireEvent.wheel(canvas, { clientX: 500, deltaY: -100 });
     const zoomedFrom = Number(telemetry.dataset.domainFrom);
     const zoomedTo = Number(telemetry.dataset.domainTo);
-    expect(zoomedTo - zoomedFrom).toBeLessThan(fullDomain[1] - fullDomain[0]);
+    expect(zoomedTo - zoomedFrom).toBeLessThan(autoTo - autoFrom);
 
-    fireEvent.click(screen.getByRole("button", { name: "Período anterior" }));
+    fireEvent(canvas, new MouseEvent("pointerdown", { bubbles: true, button: 0, clientX: 500 }));
+    fireEvent(canvas, new MouseEvent("pointermove", { bubbles: true, clientX: 650 }));
+    fireEvent(canvas, new MouseEvent("pointerup", { bubbles: true, clientX: 650 }));
     expect(Number(telemetry.dataset.domainFrom)).toBeLessThan(zoomedFrom);
+
+    fireEvent.click(screen.getByRole("button", { name: "Reenquadrar" }));
+    expect(Number(telemetry.dataset.domainFrom)).toBe(autoFrom);
+    expect(Number(telemetry.dataset.domainTo)).toBe(autoTo);
   });
 });
