@@ -6,6 +6,7 @@ import receivedSnapshot from "../contracts/v2/fixtures/snapshot-received-now.val
 import lastKnownSnapshot from "../contracts/v2/fixtures/snapshot-last-known.valid.json";
 import overviewFixture from "../contracts/timeline/v1/fixtures/overview-unified.valid.json";
 import pageFixture from "../contracts/timeline/v1/fixtures/page.valid.json";
+import assessmentOverviewFixture from "../contracts/timeline/v1/fixtures/assessment-overview-materialized.valid.json";
 import historicalContextFixture from "../contracts/timeline/v1/fixtures/context-historical-candidate.valid.json";
 import missingChannelContextFixture from "../contracts/timeline/v1/fixtures/context-missing-channel.valid.json";
 import App from "./App.jsx";
@@ -27,9 +28,39 @@ const sourceWithSnapshot = (snapshot = structuredClone(receivedSnapshot)) => ({
   refresh: vi.fn().mockResolvedValue({ refreshAttempted: true, snapshot }),
 });
 
+const activeHistoricalBatchId = historicalContextFixture.provenance.activeHistoricalBatchId;
+
+const overviewForTimeline = () => {
+  const value = structuredClone(overviewFixture);
+  value.activeHistoricalBatchId = activeHistoricalBatchId;
+  value.aggregationSummary = {
+    ...value.aggregationSummary,
+    requestedMaxPoints: 1200,
+    returnedPointCount: value.aggregationSummary.originalPointCount,
+    omittedPointCount: 0,
+    reducedSeriesCount: 0,
+  };
+  value.series.forEach((series, seriesIndex) => {
+    const segment = value.segments.find(({ segmentId }) => segmentId === series.segmentId);
+    series.points = Array.from({ length: series.aggregation.originalPointCount }, (_, pointIndex) => ({
+      pointId: `00000000-0000-5000-8000-${String(300 + (seriesIndex * 20) + pointIndex).padStart(12, "0")}`,
+      eventAt: new Date(Date.parse(segment.startAt) + (pointIndex * 900)).toISOString(),
+      value: 30 + seriesIndex + (pointIndex / 10),
+    }));
+    series.aggregation = {
+      ...series.aggregation,
+      method: "none",
+      requestedMaxPoints: 1200,
+      returnedPointCount: series.aggregation.originalPointCount,
+      omittedPointCount: 0,
+    };
+  });
+  return value;
+};
+
 const pageWithOriginalPoints = () => ({
   ...structuredClone(pageFixture),
-  activeHistoricalBatchId: historicalContextFixture.provenance.activeHistoricalBatchId,
+  activeHistoricalBatchId,
   items: [
     structuredClone(historicalContextFixture.channels.s1),
     structuredClone(historicalContextFixture.channels.s2),
@@ -37,10 +68,24 @@ const pageWithOriginalPoints = () => ({
   limit: 200,
 });
 
+const assessmentOverviewForTimeline = () => ({
+  ...structuredClone(assessmentOverviewFixture),
+  activeHistoricalBatchId,
+  aggregationSummary: {
+    ...assessmentOverviewFixture.aggregationSummary,
+    requestedMaxPoints: 800,
+  },
+  series: assessmentOverviewFixture.series.map((series) => ({
+    ...structuredClone(series),
+    aggregation: { ...series.aggregation, requestedMaxPoints: 800 },
+  })),
+});
+
 const sourceWithTimeline = () => ({
   ...sourceWithSnapshot(),
-  getTimelineOverview: vi.fn().mockResolvedValue(structuredClone(overviewFixture)),
+  getTimelineOverview: vi.fn().mockResolvedValue(overviewForTimeline()),
   getTimelineSamples: vi.fn().mockResolvedValue(pageWithOriginalPoints()),
+  getTimelineAssessments: vi.fn().mockResolvedValue(assessmentOverviewForTimeline()),
   getTimelineContext: vi.fn().mockResolvedValue(structuredClone(historicalContextFixture)),
 });
 

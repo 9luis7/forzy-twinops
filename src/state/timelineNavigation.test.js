@@ -107,6 +107,58 @@ describe("timelineNavigationReducer", () => {
     expect(state.errors).toEqual({ overview: overviewError, page: null, assessments: null, context: null });
   });
 
+  it("commits a complete timeline bundle in one reducer result", () => {
+    const previousOverview = Object.freeze({ marker: "overview-1" });
+    const previousPage = Object.freeze({ marker: "page-1" });
+    const previousAssessments = Object.freeze({ marker: "assessments-1" });
+    const nextOverview = Object.freeze({ marker: "overview-2" });
+    const nextPage = Object.freeze({ marker: "page-2" });
+    const nextAssessments = Object.freeze({ marker: "assessments-2" });
+    const pending = reduce(
+      { type: "OVERVIEW_RESOLVED", overview: previousOverview },
+      { type: "PAGE_RESOLVED", page: previousPage },
+      { type: "ASSESSMENTS_RESOLVED", assessmentOverview: previousAssessments },
+      { type: "OVERVIEW_REQUESTED" },
+      { type: "PAGE_REQUESTED" },
+      { type: "ASSESSMENTS_REQUESTED" },
+    );
+
+    const committed = timelineNavigationReducer(pending, {
+      type: "BUNDLE_RESOLVED",
+      bundle: {
+        overview: nextOverview,
+        page: nextPage,
+        assessmentOverview: nextAssessments,
+      },
+    });
+
+    expect(committed.timelineOverview).toBe(nextOverview);
+    expect(committed.timelinePage).toBe(nextPage);
+    expect(committed.timelineAssessmentOverview).toBe(nextAssessments);
+    expect(committed.loading).toEqual({
+      overview: false,
+      page: false,
+      assessments: false,
+      context: false,
+    });
+    expect(committed.errors).toEqual({
+      overview: null,
+      page: null,
+      assessments: null,
+      context: null,
+    });
+    expect(pending.timelineOverview).toBe(previousOverview);
+    expect(pending.timelinePage).toBe(previousPage);
+    expect(pending.timelineAssessmentOverview).toBe(previousAssessments);
+  });
+
+  it("rejects an incomplete atomic timeline bundle", () => {
+    expect(() => timelineNavigationReducer(initialTimelineNavigationState, {
+      type: "BUNDLE_RESOLVED",
+      bundle: { overview: {}, page: {} },
+    })).toThrow(/bundle/i);
+  });
+
   it("rejects unknown actions", () => {
     expect(() => timelineNavigationReducer(initialTimelineNavigationState, {
       type: "UNKNOWN",

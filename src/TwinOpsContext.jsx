@@ -27,6 +27,9 @@ const defaultDataSource = createGatewayTwinDataSourceV2();
 const defaultClock = () => new Date();
 const TIMELINE_POINT_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const INITIAL_TIMELINE_METRIC = "vibrationVelocityRms";
+const TIMELINE_CACHE_SCHEMA_VERSION = 1;
+const TIMELINE_CACHE_STORAGE_KEY = "twinops:timeline-bundles:v1";
+const DEFAULT_TIMELINE_CACHE_TTL_MS = 600_000;
 const TIMELINE_RANGE_DAYS = Object.freeze({
   "24h": 1,
   "7d": 7,
@@ -86,10 +89,114 @@ const timelineRangeQuery = (preset, now, overview = null) => {
   });
 };
 
-const timelineRangeCacheKey = (rangeQuery) => JSON.stringify([
-  rangeQuery.from ?? null,
-  rangeQuery.to ?? null,
-]);
+const timelineRangeCacheKey = (rangeQuery) => JSON.stringify({
+  schemaVersion: "1.0",
+  assetId: ASSET_ID,
+  sensorId: "all",
+  metric: INITIAL_TIMELINE_METRIC,
+  overviewMaxPoints: 1200,
+  pageLimit: 200,
+  assessmentsMaxPoints: 800,
+  from: rangeQuery.from ?? null,
+  to: rangeQuery.to ?? null,
+});
+
+const isPlainObject = (value) => (
+  value !== null && typeof value === "object" && !Array.isArray(value)
+);
+
+const safeRemoveStoredTimelineCache = (storage) => {
+  try {
+    storage?.removeItem?.(TIMELINE_CACHE_STORAGE_KEY);
+  } catch {
+    // sessionStorage is an optional optimization and may be unavailable.
+  }
+};
+
+const readStoredTimelineCache = (storage) => {
+  if (storage === null) return { entries: {} };
+  try {
+    const raw = storage.getItem(TIMELINE_CACHE_STORAGE_KEY);
+    if (raw === null) return { entries: {} };
+    const parsed = JSON.parse(raw);
+    if (
+      !isPlainObject(parsed)
+      || parsed.schemaVersion !== TIMELINE_CACHE_SCHEMA_VERSION
+      || !isPlainObject(parsed.entries)
+    ) throw new TypeError("TwinOps timeline cache document is invalid");
+    return parsed;
+  } catch {
+    safeRemoveStoredTimelineCache(storage);
+    return { entries: {} };
+  }
+};
+
+const writeStoredTimelineCache = (storage, document) => {
+  if (storage === null) return;
+  try {
+    if (Object.keys(document.entries).length === 0) {
+      storage.removeItem(TIMELINE_CACHE_STORAGE_KEY);
+      return;
+    }
+    storage.setItem(TIMELINE_CACHE_STORAGE_KEY, JSON.stringify({
+      schemaVersion: TIMELINE_CACHE_SCHEMA_VERSION,
+      entries: document.entries,
+    }));
+  } catch {
+    // Quota, privacy, and serialization failures must not break navigation.
+  }
+};
+
+const defaultTimelineCacheStorage = () => {
+  try {
+    return globalThis.sessionStorage ?? null;
+  } catch {
+    return null;
+  }
+};
+
+const assertTimelineBundle = (candidate, rangeQuery = null) => {
+  if (!isPlainObject(candidate)) {
+    throw new TypeError("TwinOps timeline bundle must be an object");
+  }
+  const overview = assertTimelineOverviewV1(candidate.overview);
+  const page = assertTimelinePageV1(candidate.page);
+  const assessmentOverview = assertTimelineAssessmentOverviewV1(candidate.assessmentOverview);
+  if (
+    overview.assetId !== ASSET_ID
+    || page.assetId !== ASSET_ID
+    || assessmentOverview.assetId !== ASSET_ID
+  ) throw new TypeError("TwinOps timeline bundle assetId is inconsistent");
+  if (
+    overview.activeHistoricalBatchId !== page.activeHistoricalBatchId
+    || overview.activeHistoricalBatchId !== assessmentOverview.activeHistoricalBatchId
+  ) throw new TypeError("TwinOps timeline bundle activeHistoricalBatchId is inconsistent");
+  if (
+    overview.aggregationSummary.requestedMaxPoints !== 1200
+    || page.limit !== 200
+    || assessmentOverview.aggregationSummary.requestedMaxPoints !== 800
+  ) throw new TypeError("TwinOps timeline bundle query budget is inconsistent");
+  if (rangeQuery !== null) {
+    const expectedFrom = rangeQuery.from ?? null;
+    const expectedTo = rangeQuery.to ?? null;
+    for (const payload of [overview, assessmentOverview]) {
+      if (
+        payload.requestedRange.from !== expectedFrom
+        || payload.requestedRange.to !== expectedTo
+      ) throw new TypeError("TwinOps timeline bundle requestedRange does not match its cache key");
+    }
+    const fromTime = expectedFrom === null ? null : Date.parse(expectedFrom);
+    const toTime = expectedTo === null ? null : Date.parse(expectedTo);
+    for (const item of page.items) {
+      const eventTime = Date.parse(item.eventAt);
+      if (
+        (fromTime !== null && eventTime < fromTime)
+        || (toTime !== null && eventTime >= toTime)
+      ) throw new TypeError("TwinOps timeline page item is outside the requested range");
+    }
+  }
+  return Object.freeze({ overview, page, assessmentOverview });
+};
 
 export function TwinOpsProvider({
   children,
@@ -97,6 +204,8 @@ export function TwinOpsProvider({
   clock = defaultClock,
   pollMs = 5000,
   documentRef = document,
+  timelineCacheStorage,
+  timelineCacheTtlMs = DEFAULT_TIMELINE_CACHE_TTL_MS,
 }) {
   if (!dataSource || typeof dataSource.getSnapshot !== "function" || typeof dataSource.refresh !== "function") {
     throw new TypeError("TwinOpsProvider dataSource must implement getSnapshot and refresh");
@@ -105,6 +214,12 @@ export function TwinOpsProvider({
   if (!Number.isFinite(pollMs) || pollMs <= 0) {
     throw new TypeError("TwinOpsProvider pollMs must be a positive number");
   }
+  if (!Number.isFinite(timelineCacheTtlMs) || timelineCacheTtlMs <= 0) {
+    throw new TypeError("TwinOpsProvider timelineCacheTtlMs must be a positive number");
+  }
+  const resolvedTimelineCacheStorage = timelineCacheStorage === undefined
+    ? defaultTimelineCacheStorage()
+    : timelineCacheStorage;
 
   const [snapshot, setSnapshot] = useState(null);
   const [error, setError] = useState(null);
@@ -126,9 +241,72 @@ export function TwinOpsProvider({
   const contextRequestRef = useRef(null);
   const timelineDataSourceRef = useRef(dataSource);
   const timelineRangeCacheRef = useRef(new Map());
+  const timelineCacheEpochRef = useRef(0);
   const latestTimelineAvailableToRef = useRef(null);
   const historicalArchiveRangeRef = useRef(null);
   const timelineBundleOwnerRef = useRef(null);
+  const timelineBundleInFlightRef = useRef(new Map());
+
+  const readTimelineBundleCache = useCallback((cacheKey, rangeQuery) => {
+    const now = Date.now();
+    const validateEntry = (entry) => {
+      if (
+        !isPlainObject(entry)
+        || entry.cacheKey !== cacheKey
+        || !Number.isFinite(entry.createdAt)
+        || !Number.isFinite(entry.expiresAt)
+        || entry.createdAt > now
+        || entry.expiresAt <= now
+        || entry.expiresAt - entry.createdAt !== timelineCacheTtlMs
+      ) throw new TypeError("TwinOps timeline cache entry is expired or invalid");
+      return assertTimelineBundle(entry.bundle, rangeQuery);
+    };
+
+    const memoryEntry = timelineRangeCacheRef.current.get(cacheKey);
+    if (memoryEntry !== undefined) {
+      try {
+        return validateEntry(memoryEntry);
+      } catch {
+        timelineRangeCacheRef.current.delete(cacheKey);
+      }
+    }
+
+    const document = readStoredTimelineCache(resolvedTimelineCacheStorage);
+    const storedEntry = document.entries[cacheKey];
+    if (storedEntry === undefined) return null;
+    try {
+      const bundle = validateEntry(storedEntry);
+      timelineRangeCacheRef.current.set(cacheKey, storedEntry);
+      return bundle;
+    } catch {
+      delete document.entries[cacheKey];
+      writeStoredTimelineCache(resolvedTimelineCacheStorage, document);
+      return null;
+    }
+  }, [resolvedTimelineCacheStorage, timelineCacheTtlMs]);
+
+  const writeTimelineBundleCache = useCallback((cacheKey, rangeQuery, candidate) => {
+    const bundle = assertTimelineBundle(candidate, rangeQuery);
+    const createdAt = Date.now();
+    const entry = Object.freeze({
+      cacheKey,
+      createdAt,
+      expiresAt: createdAt + timelineCacheTtlMs,
+      bundle,
+    });
+    timelineRangeCacheRef.current.set(cacheKey, entry);
+    const document = readStoredTimelineCache(resolvedTimelineCacheStorage);
+    document.entries[cacheKey] = entry;
+    writeStoredTimelineCache(resolvedTimelineCacheStorage, document);
+    return bundle;
+  }, [resolvedTimelineCacheStorage, timelineCacheTtlMs]);
+
+  const clearTimelineBundleCache = useCallback(() => {
+    timelineCacheEpochRef.current += 1;
+    timelineRangeCacheRef.current.clear();
+    timelineBundleInFlightRef.current.clear();
+    safeRemoveStoredTimelineCache(resolvedTimelineCacheStorage);
+  }, [resolvedTimelineCacheStorage]);
 
   const isVisible = useCallback(
     () => documentRef?.visibilityState === "visible",
@@ -168,6 +346,7 @@ export function TwinOpsProvider({
 
   const abortAllTimelineRequests = useCallback(() => {
     timelineBundleOwnerRef.current = null;
+    timelineBundleInFlightRef.current.clear();
     abortTimelineRequest(overviewRequestRef);
     abortTimelineRequest(pageRequestRef);
     abortTimelineRequest(assessmentsRequestRef);
@@ -203,16 +382,6 @@ export function TwinOpsProvider({
       .then((value) => assertTimelineOverviewV1(value))
       .then((value) => {
         if (overviewRequestRef.current !== owner || owner.controller.signal.aborted) return null;
-        const availableTo = Date.parse(value.availableRange?.to ?? "");
-        const latestAvailableTo = Date.parse(latestTimelineAvailableToRef.current ?? "");
-        if (Number.isFinite(availableTo)
-          && (!Number.isFinite(latestAvailableTo) || availableTo > latestAvailableTo)) {
-          latestTimelineAvailableToRef.current = value.availableRange.to;
-        }
-        if (value.segments?.some((segment) => segment.sourceKind === "historical_archive")) {
-          historicalArchiveRangeRef.current = historicalArchiveRangeQuery(value);
-        }
-        dispatchTimeline({ type: "OVERVIEW_RESOLVED", overview: value });
         return value;
       })
       .catch((requestError) => {
@@ -251,7 +420,6 @@ export function TwinOpsProvider({
       .then((value) => assertTimelinePageV1(value))
       .then((value) => {
         if (pageRequestRef.current !== owner || owner.controller.signal.aborted) return null;
-        dispatchTimeline({ type: "PAGE_RESOLVED", page: value });
         return value;
       })
       .catch((requestError) => {
@@ -290,7 +458,6 @@ export function TwinOpsProvider({
       .then((value) => assertTimelineAssessmentOverviewV1(value))
       .then((value) => {
         if (assessmentsRequestRef.current !== owner || owner.controller.signal.aborted) return null;
-        dispatchTimeline({ type: "ASSESSMENTS_RESOLVED", assessmentOverview: value });
         return value;
       })
       .catch((requestError) => {
@@ -304,65 +471,90 @@ export function TwinOpsProvider({
       });
   }, [beginTimelineRequest, dataSource]);
 
-  const restoreTimelineBundle = useCallback((bundle) => {
-    timelineBundleOwnerRef.current = null;
-    abortTimelineRequest(overviewRequestRef);
-    abortTimelineRequest(pageRequestRef);
-    abortTimelineRequest(assessmentsRequestRef);
-    dispatchTimeline({ type: "OVERVIEW_RESOLVED", overview: bundle.overview });
-    dispatchTimeline({ type: "PAGE_RESOLVED", page: bundle.page });
-    dispatchTimeline({
-      type: "ASSESSMENTS_RESOLVED",
-      assessmentOverview: bundle.assessmentOverview,
-    });
+  const observeTimelineOverview = useCallback((overview) => {
+    const availableTo = Date.parse(overview.availableRange?.to ?? "");
+    const latestAvailableTo = Date.parse(latestTimelineAvailableToRef.current ?? "");
+    if (Number.isFinite(availableTo)
+      && (!Number.isFinite(latestAvailableTo) || availableTo > latestAvailableTo)) {
+      latestTimelineAvailableToRef.current = overview.availableRange.to;
+    }
+    if (overview.segments?.some((segment) => segment.sourceKind === "historical_archive")) {
+      historicalArchiveRangeRef.current = historicalArchiveRangeQuery(overview);
+    }
+  }, []);
+
+  const restoreTimelineBundle = useCallback((candidate, rangeQuery) => {
+    const bundle = assertTimelineBundle(candidate, rangeQuery);
+    observeTimelineOverview(bundle.overview);
+    dispatchTimeline({ type: "BUNDLE_RESOLVED", bundle });
     return [bundle.overview, bundle.page, bundle.assessmentOverview];
-  }, [abortTimelineRequest]);
+  }, [observeTimelineOverview]);
 
   const loadTimelineBundle = useCallback((rangeQuery, { readCache = true } = {}) => {
     const cacheKey = timelineRangeCacheKey(rangeQuery);
-    if (readCache) {
-      const cached = timelineRangeCacheRef.current.get(cacheKey);
-      if (cached !== undefined) return Promise.resolve(restoreTimelineBundle(cached));
-    }
+    const cached = readCache ? readTimelineBundleCache(cacheKey, rangeQuery) : null;
+    if (cached !== null) restoreTimelineBundle(cached, rangeQuery);
+    const existingRequest = timelineBundleInFlightRef.current.get(cacheKey);
+    if (existingRequest !== undefined) return existingRequest;
+    timelineBundleInFlightRef.current.clear();
 
     const bundleOwner = {};
+    const cacheEpoch = timelineCacheEpochRef.current;
     timelineBundleOwnerRef.current = bundleOwner;
     const overviewPromise = loadTimelineOverview(rangeQuery);
     const pagePromise = loadTimelinePage(rangeQuery);
-    return Promise.all([overviewPromise, pagePromise])
-      .then(([overview, page]) => {
-        if (timelineBundleOwnerRef.current !== bundleOwner) return [overview, page, null];
-        return loadTimelineAssessments(rangeQuery)
-          .then((assessmentOverview) => [overview, page, assessmentOverview]);
-      })
+    const assessmentPromise = loadTimelineAssessments(rangeQuery);
+    const promise = Promise.all([overviewPromise, pagePromise, assessmentPromise])
       .then(([overview, page, assessmentOverview]) => {
-        if (timelineBundleOwnerRef.current === bundleOwner
-          && overview !== null
-          && page !== null
-          && assessmentOverview !== null) {
-          timelineRangeCacheRef.current.set(cacheKey, Object.freeze({
-            overview,
-            page,
-            assessmentOverview,
-          }));
+        if (timelineBundleOwnerRef.current !== bundleOwner) {
+          return [overview, page, assessmentOverview];
+        }
+        if (overview !== null && page !== null && assessmentOverview !== null) {
+          let bundle;
+          try {
+            bundle = assertTimelineBundle({ overview, page, assessmentOverview }, rangeQuery);
+          } catch (bundleError) {
+            dispatchTimeline({ type: "OVERVIEW_FAILED", error: bundleError });
+            dispatchTimeline({ type: "PAGE_FAILED", error: bundleError });
+            dispatchTimeline({ type: "ASSESSMENTS_FAILED", error: bundleError });
+            return [null, null, null];
+          }
+          restoreTimelineBundle(bundle, rangeQuery);
+          if (timelineCacheEpochRef.current === cacheEpoch) {
+            writeTimelineBundleCache(cacheKey, rangeQuery, bundle);
+          }
+          return [bundle.overview, bundle.page, bundle.assessmentOverview];
+        }
+
+        if (overview !== null) dispatchTimeline({ type: "OVERVIEW_FAILED", error: null });
+        if (page !== null) dispatchTimeline({ type: "PAGE_FAILED", error: null });
+        if (assessmentOverview !== null) {
+          dispatchTimeline({ type: "ASSESSMENTS_FAILED", error: null });
         }
         return [overview, page, assessmentOverview];
       })
       .finally(() => {
+        if (timelineBundleInFlightRef.current.get(cacheKey) === promise) {
+          timelineBundleInFlightRef.current.delete(cacheKey);
+        }
         if (timelineBundleOwnerRef.current === bundleOwner) {
           timelineBundleOwnerRef.current = null;
         }
       });
+    timelineBundleInFlightRef.current.set(cacheKey, promise);
+    return promise;
   }, [
     loadTimelineAssessments,
     loadTimelineOverview,
     loadTimelinePage,
+    readTimelineBundleCache,
     restoreTimelineBundle,
+    writeTimelineBundleCache,
   ]);
 
   const loadHistoricalRange = useCallback((preset) => {
     const rangeQuery = timelineRangeQuery(preset, clock(), timelineState.timelineOverview);
-    return loadTimelineBundle(rangeQuery, { readCache: false });
+    return loadTimelineBundle(rangeQuery);
   }, [
     clock,
     loadTimelineBundle,
@@ -443,13 +635,13 @@ export function TwinOpsProvider({
   useEffect(() => {
     if (timelineDataSourceRef.current !== dataSource) {
       timelineDataSourceRef.current = dataSource;
-      timelineRangeCacheRef.current.clear();
+      clearTimelineBundleCache();
       latestTimelineAvailableToRef.current = null;
       historicalArchiveRangeRef.current = null;
       dispatchTimeline({ type: "RESET" });
     }
     return abortAllTimelineRequests;
-  }, [abortAllTimelineRequests, dataSource]);
+  }, [abortAllTimelineRequests, clearTimelineBundleCache, dataSource]);
 
   const request = useCallback((kind, generation = effectGenerationRef.current) => {
     if (!mountedRef.current || effectGenerationRef.current !== generation) {
@@ -468,8 +660,8 @@ export function TwinOpsProvider({
     const controller = new AbortController();
     const requestOwner = { kind, controller, generation, promise: null };
     const isManualRequest = kind === "refresh" || kind === "manual-snapshot";
+    if (kind === "refresh") timelineCacheEpochRef.current += 1;
     if (isManualRequest) {
-      timelineRangeCacheRef.current.clear();
       refreshingOwnerRef.current = requestOwner;
       setRefreshing(true);
       const attemptedAt = clock();

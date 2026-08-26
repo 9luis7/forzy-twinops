@@ -17,10 +17,69 @@ const snapshot = {
   },
 };
 const overview = structuredClone(overviewFixture);
+overview.aggregationSummary.requestedMaxPoints = 1200;
+overview.aggregationSummary.returnedPointCount = overview.aggregationSummary.originalPointCount;
+overview.aggregationSummary.omittedPointCount = 0;
+overview.aggregationSummary.reducedSeriesCount = 0;
+overview.series.forEach((series, seriesIndex) => {
+  const segment = overview.segments.find(({ segmentId }) => segmentId === series.segmentId);
+  series.points = Array.from({ length: series.aggregation.originalPointCount }, (_, pointIndex) => ({
+    pointId: `00000000-0000-5000-8000-${String(300 + (seriesIndex * 20) + pointIndex).padStart(12, "0")}`,
+    eventAt: new Date(Date.parse(segment.startAt) + (pointIndex * 900)).toISOString(),
+    value: 30 + seriesIndex + (pointIndex / 10),
+  }));
+  series.aggregation = {
+    ...series.aggregation,
+    method: "none",
+    requestedMaxPoints: 1200,
+    returnedPointCount: series.aggregation.originalPointCount,
+    omittedPointCount: 0,
+  };
+});
 const timelinePage = structuredClone(pageFixture);
+timelinePage.activeHistoricalBatchId = overview.activeHistoricalBatchId;
+timelinePage.limit = 200;
 const historicalContext = structuredClone(historicalContextFixture);
 const missingChannelContext = structuredClone(missingChannelContextFixture);
 const assessmentOverview = structuredClone(assessmentOverviewFixture);
+assessmentOverview.activeHistoricalBatchId = overview.activeHistoricalBatchId;
+assessmentOverview.aggregationSummary.requestedMaxPoints = 800;
+assessmentOverview.series.forEach((series) => {
+  series.aggregation.requestedMaxPoints = 800;
+});
+
+const requestedRangeFor = (options = {}) => ({
+  from: options.from ?? null,
+  to: options.to ?? null,
+});
+
+const overviewFor = (options = {}) => {
+  const requestedRange = requestedRangeFor(options);
+  if (requestedRange.from === null && requestedRange.to === null) return overview;
+  return {
+    ...overview,
+    requestedRange,
+    effectiveRange: requestedRange,
+  };
+};
+
+const assessmentOverviewFor = (options = {}) => {
+  const requestedRange = requestedRangeFor(options);
+  if (requestedRange.from === null && requestedRange.to === null) return assessmentOverview;
+  return {
+    ...assessmentOverview,
+    requestedRange,
+    effectiveRange: null,
+    aggregationSummary: {
+      ...assessmentOverview.aggregationSummary,
+      originalAssessmentCount: 0,
+      returnedAssessmentCount: 0,
+      omittedAssessmentCount: 0,
+      reducedSeriesCount: 0,
+    },
+    series: [],
+  };
+};
 
 const flush = async () => {
   await act(async () => {
@@ -46,9 +105,9 @@ const visibleDocument = () => {
 const sourceStub = () => ({
   getSnapshot: vi.fn().mockResolvedValue(snapshot),
   refresh: vi.fn().mockResolvedValue({ refreshAttempted: true, snapshot }),
-  getTimelineOverview: vi.fn().mockResolvedValue(overview),
+  getTimelineOverview: vi.fn((_, options) => Promise.resolve(overviewFor(options))),
   getTimelineSamples: vi.fn().mockResolvedValue(timelinePage),
-  getTimelineAssessments: vi.fn().mockResolvedValue(assessmentOverview),
+  getTimelineAssessments: vi.fn((_, options) => Promise.resolve(assessmentOverviewFor(options))),
   getTimelineContext: vi.fn().mockResolvedValue(historicalContext),
 });
 
@@ -94,6 +153,7 @@ function TwinOpsHarness({ dataSource, clock, documentRef, pollMs = 5000 }) {
 
 afterEach(() => {
   cleanup();
+  window.sessionStorage.clear();
   vi.useRealTimers();
 });
 
@@ -342,6 +402,8 @@ it("makes a manual GET visibly pending outside the window", async () => {
   });
   await flush();
 
+  window.sessionStorage.setItem("twinops:timeline-bundles:v1", "unchanged-by-get");
+
   let requestPromise;
   act(() => {
     requestPromise = result.current.refreshNow();
@@ -351,6 +413,8 @@ it("makes a manual GET visibly pending outside the window", async () => {
   expect(source.refresh).not.toHaveBeenCalled();
   expect(result.current.refreshing).toBe(true);
   expect(result.current.lastRefreshAttemptAt).toBe("2026-08-13T15:30:00.000Z");
+  expect(window.sessionStorage.getItem("twinops:timeline-bundles:v1"))
+    .toBe("unchanged-by-get");
 
   await act(async () => {
     pendingSnapshot.resolve(snapshot);
@@ -412,7 +476,7 @@ describe("historical navigation", () => {
     expect(result.current.timelineLoading).toEqual({
       overview: true,
       page: true,
-      assessments: false,
+      assessments: true,
       context: false,
     });
 
@@ -444,7 +508,484 @@ describe("historical navigation", () => {
     ]);
   });
 
-  it("reuses a loaded historical range without another network roundtrip", async () => {
+  it("shares one in-flight bundle promise for the same canonical range", async () => {
+    const source = sourceStub();
+    const overviewRequest = deferred();
+    const pageRequest = deferred();
+    const assessmentsRequest = deferred();
+    source.getTimelineOverview.mockReturnValue(overviewRequest.promise);
+    source.getTimelineSamples.mockReturnValue(pageRequest.promise);
+    source.getTimelineAssessments.mockReturnValue(assessmentsRequest.promise);
+    const doc = visibleDocument();
+    const { result } = renderHook(() => useTwinOps(), {
+      wrapper: wrapperFor({
+        dataSource: source,
+        clock: outsideWindowClock,
+        documentRef: doc.target,
+      }),
+    });
+    await flush();
+
+    let firstRequest;
+    let duplicateRequest;
+    act(() => {
+      firstRequest = result.current.showHistory();
+      duplicateRequest = result.current.showHistory();
+    });
+    await flush();
+
+    expect(duplicateRequest).toBe(firstRequest);
+    expect(source.getTimelineOverview).toHaveBeenCalledTimes(1);
+    expect(source.getTimelineSamples).toHaveBeenCalledTimes(1);
+    expect(source.getTimelineAssessments).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      overviewRequest.resolve(overview);
+      pageRequest.resolve(timelinePage);
+      assessmentsRequest.resolve(assessmentOverview);
+      await firstRequest;
+    });
+  });
+
+  it("does not reuse an obsolete promise after another range supersedes it", async () => {
+    const source = sourceStub();
+    const obsoleteAll = [deferred(), deferred(), deferred()];
+    const obsoleteDay = [deferred(), deferred(), deferred()];
+    source.getTimelineOverview
+      .mockReturnValueOnce(obsoleteAll[0].promise)
+      .mockReturnValueOnce(obsoleteDay[0].promise)
+      .mockResolvedValueOnce(overview);
+    source.getTimelineSamples
+      .mockReturnValueOnce(obsoleteAll[1].promise)
+      .mockReturnValueOnce(obsoleteDay[1].promise)
+      .mockResolvedValueOnce(timelinePage);
+    source.getTimelineAssessments
+      .mockReturnValueOnce(obsoleteAll[2].promise)
+      .mockReturnValueOnce(obsoleteDay[2].promise)
+      .mockResolvedValueOnce(assessmentOverview);
+    const doc = visibleDocument();
+    const { result } = renderHook(() => useTwinOps(), {
+      wrapper: wrapperFor({
+        dataSource: source,
+        clock: outsideWindowClock,
+        documentRef: doc.target,
+      }),
+    });
+    await flush();
+
+    let firstAll;
+    let day;
+    let freshAll;
+    act(() => { firstAll = result.current.showHistory(); });
+    await flush();
+    act(() => { day = result.current.selectTimelineRange("24h"); });
+    await flush();
+    act(() => { freshAll = result.current.selectTimelineRange("all"); });
+    await flush();
+
+    expect(freshAll).not.toBe(firstAll);
+    expect(source.getTimelineOverview).toHaveBeenCalledTimes(3);
+    expect(source.getTimelineSamples).toHaveBeenCalledTimes(3);
+    expect(source.getTimelineAssessments).toHaveBeenCalledTimes(3);
+
+    await act(async () => {
+      obsoleteAll.forEach((request, index) => request.resolve(
+        [overview, timelinePage, assessmentOverview][index],
+      ));
+      obsoleteDay.forEach((request, index) => request.resolve(
+        [overview, timelinePage, assessmentOverview][index],
+      ));
+      await Promise.all([firstAll, day, freshAll]);
+    });
+  });
+
+  it("restores a valid session bundle immediately and revalidates it in background", async () => {
+    const initialSource = sourceStub();
+    const doc = visibleDocument();
+    const first = renderHook(() => useTwinOps(), {
+      wrapper: wrapperFor({
+        dataSource: initialSource,
+        clock: outsideWindowClock,
+        documentRef: doc.target,
+      }),
+    });
+    await flush();
+    await act(async () => {
+      await first.result.current.showHistory();
+    });
+    first.unmount();
+
+    const revalidationSource = sourceStub();
+    const overviewRequest = deferred();
+    const pageRequest = deferred();
+    const assessmentsRequest = deferred();
+    revalidationSource.getTimelineOverview.mockReturnValue(overviewRequest.promise);
+    revalidationSource.getTimelineSamples.mockReturnValue(pageRequest.promise);
+    revalidationSource.getTimelineAssessments.mockReturnValue(assessmentsRequest.promise);
+    const second = renderHook(() => useTwinOps(), {
+      wrapper: wrapperFor({
+        dataSource: revalidationSource,
+        clock: outsideWindowClock,
+        documentRef: doc.target,
+      }),
+    });
+    await flush();
+
+    let revalidation;
+    act(() => {
+      revalidation = second.result.current.showHistory();
+    });
+    await flush();
+
+    expect(second.result.current.timelineOverview).toEqual(overview);
+    expect(second.result.current.timelinePage).toEqual(timelinePage);
+    expect(second.result.current.timelineAssessmentOverview).toEqual(assessmentOverview);
+    expect(second.result.current.timelineLoading).toEqual({
+      overview: true,
+      page: true,
+      assessments: true,
+      context: false,
+    });
+    expect(revalidationSource.getTimelineOverview).toHaveBeenCalledTimes(1);
+    expect(revalidationSource.getTimelineSamples).toHaveBeenCalledTimes(1);
+    expect(revalidationSource.getTimelineAssessments).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      overviewRequest.resolve(overview);
+      pageRequest.resolve(timelinePage);
+      assessmentsRequest.resolve(assessmentOverview);
+      await revalidation;
+    });
+  });
+
+  it("keeps an injected TTL entry fresh through the millisecond before expiry", async () => {
+    vi.useFakeTimers();
+    const startedAt = new Date("2026-08-26T12:00:00.000Z");
+    vi.setSystemTime(startedAt);
+    const doc = visibleDocument();
+    const first = renderHook(() => useTwinOps(), {
+      wrapper: wrapperFor({
+        dataSource: sourceStub(),
+        clock: outsideWindowClock,
+        documentRef: doc.target,
+        timelineCacheTtlMs: 1_000,
+      }),
+    });
+    await flush();
+    await act(async () => { await first.result.current.showHistory(); });
+    first.unmount();
+    vi.setSystemTime(new Date(startedAt.getTime() + 999));
+
+    const networkSource = sourceStub();
+    const requests = [deferred(), deferred(), deferred()];
+    networkSource.getTimelineOverview.mockReturnValue(requests[0].promise);
+    networkSource.getTimelineSamples.mockReturnValue(requests[1].promise);
+    networkSource.getTimelineAssessments.mockReturnValue(requests[2].promise);
+    const second = renderHook(() => useTwinOps(), {
+      wrapper: wrapperFor({
+        dataSource: networkSource,
+        clock: outsideWindowClock,
+        documentRef: doc.target,
+        timelineCacheTtlMs: 1_000,
+      }),
+    });
+    await flush();
+
+    let request;
+    act(() => { request = second.result.current.showHistory(); });
+    await flush();
+
+    expect(second.result.current.timelineOverview).toEqual(overview);
+    expect(second.result.current.timelineLoading).toMatchObject({
+      overview: true,
+      page: true,
+      assessments: true,
+    });
+
+    await act(async () => {
+      requests.forEach((pending, index) => pending.resolve(
+        [overview, timelinePage, assessmentOverview][index],
+      ));
+      await request;
+    });
+  });
+
+  it("removes a session bundle whose payload range does not match its cache key", async () => {
+    const initialSource = sourceStub();
+    const doc = visibleDocument();
+    const first = renderHook(() => useTwinOps(), {
+      wrapper: wrapperFor({
+        dataSource: initialSource,
+        clock: outsideWindowClock,
+        documentRef: doc.target,
+      }),
+    });
+    await flush();
+    await act(async () => {
+      await first.result.current.showHistory();
+    });
+    first.unmount();
+
+    const storageKey = window.sessionStorage.key(0);
+    const cacheDocument = JSON.parse(window.sessionStorage.getItem(storageKey));
+    const [entryKey] = Object.keys(cacheDocument.entries);
+    const poisonedRange = {
+      from: "2026-08-22T12:00:00.000Z",
+      to: "2026-08-22T13:00:00.001Z",
+    };
+    cacheDocument.entries[entryKey].bundle.overview.requestedRange = poisonedRange;
+    cacheDocument.entries[entryKey].bundle.overview.effectiveRange = poisonedRange;
+    cacheDocument.entries[entryKey].bundle.assessmentOverview.requestedRange = poisonedRange;
+    window.sessionStorage.setItem(storageKey, JSON.stringify(cacheDocument));
+
+    const networkSource = sourceStub();
+    const requests = [deferred(), deferred(), deferred()];
+    networkSource.getTimelineOverview.mockReturnValue(requests[0].promise);
+    networkSource.getTimelineSamples.mockReturnValue(requests[1].promise);
+    networkSource.getTimelineAssessments.mockReturnValue(requests[2].promise);
+    const second = renderHook(() => useTwinOps(), {
+      wrapper: wrapperFor({
+        dataSource: networkSource,
+        clock: outsideWindowClock,
+        documentRef: doc.target,
+      }),
+    });
+    await flush();
+
+    let revalidation;
+    act(() => { revalidation = second.result.current.showHistory(); });
+    await flush();
+
+    expect(second.result.current.timelineOverview).toBeNull();
+    expect(second.result.current.timelinePage).toBeNull();
+    expect(second.result.current.timelineAssessmentOverview).toBeNull();
+    expect(window.sessionStorage.getItem(storageKey)).toBeNull();
+
+    await act(async () => {
+      requests.forEach((request, index) => request.resolve(
+        [overview, timelinePage, assessmentOverview][index],
+      ));
+      await revalidation;
+    });
+  });
+
+  it.each([
+    ["corrupt JSON", () => "{"],
+    ["exact-expired timestamp", (document) => {
+      const entry = document.entries[Object.keys(document.entries)[0]];
+      entry.createdAt = Date.now() - 1_000;
+      entry.expiresAt = Date.now();
+      return JSON.stringify(document);
+    }],
+    ["future timestamp", (document) => {
+      const entry = document.entries[Object.keys(document.entries)[0]];
+      entry.createdAt = Date.now() + 1;
+      entry.expiresAt = Date.now() + 1_001;
+      return JSON.stringify(document);
+    }],
+    ["cross-batch identity", (document) => {
+      const entry = document.entries[Object.keys(document.entries)[0]];
+      entry.bundle.page.activeHistoricalBatchId = null;
+      return JSON.stringify(document);
+    }],
+  ])("removes %s from session cache and falls back to network", async (_, poison) => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-26T12:00:00.000Z"));
+    const doc = visibleDocument();
+    const first = renderHook(() => useTwinOps(), {
+      wrapper: wrapperFor({
+        dataSource: sourceStub(),
+        clock: outsideWindowClock,
+        documentRef: doc.target,
+        timelineCacheTtlMs: 1_000,
+      }),
+    });
+    await flush();
+    await act(async () => { await first.result.current.showHistory(); });
+    first.unmount();
+
+    const storageKey = window.sessionStorage.key(0);
+    const document = JSON.parse(window.sessionStorage.getItem(storageKey));
+    window.sessionStorage.setItem(storageKey, poison(document));
+
+    const networkSource = sourceStub();
+    const requests = [deferred(), deferred(), deferred()];
+    networkSource.getTimelineOverview.mockReturnValue(requests[0].promise);
+    networkSource.getTimelineSamples.mockReturnValue(requests[1].promise);
+    networkSource.getTimelineAssessments.mockReturnValue(requests[2].promise);
+    const second = renderHook(() => useTwinOps(), {
+      wrapper: wrapperFor({
+        dataSource: networkSource,
+        clock: outsideWindowClock,
+        documentRef: doc.target,
+        timelineCacheTtlMs: 1_000,
+      }),
+    });
+    await flush();
+
+    let request;
+    act(() => { request = second.result.current.showHistory(); });
+    await flush();
+
+    expect(second.result.current.timelineOverview).toBeNull();
+    expect(second.result.current.timelinePage).toBeNull();
+    expect(second.result.current.timelineAssessmentOverview).toBeNull();
+    expect(window.sessionStorage.getItem(storageKey)).toBeNull();
+
+    await act(async () => {
+      requests.forEach((pending, index) => pending.resolve(
+        [overview, timelinePage, assessmentOverview][index],
+      ));
+      await request;
+    });
+  });
+
+  it("rejects a cross-batch bundle before committing or caching it", async () => {
+    const source = sourceStub();
+    source.getTimelineSamples.mockResolvedValue({
+      ...timelinePage,
+      activeHistoricalBatchId: null,
+    });
+    const doc = visibleDocument();
+    const { result } = renderHook(() => useTwinOps(), {
+      wrapper: wrapperFor({
+        dataSource: source,
+        clock: outsideWindowClock,
+        documentRef: doc.target,
+      }),
+    });
+    await flush();
+
+    await act(async () => {
+      await result.current.showHistory();
+    });
+
+    expect(result.current.timelineOverview).toBeNull();
+    expect(result.current.timelinePage).toBeNull();
+    expect(result.current.timelineAssessmentOverview).toBeNull();
+    expect(result.current.timelineErrors.overview).toBeInstanceOf(TypeError);
+    expect(result.current.timelineErrors.page).toBeInstanceOf(TypeError);
+    expect(result.current.timelineErrors.assessments).toBeInstanceOf(TypeError);
+    expect(window.sessionStorage).toHaveLength(0);
+  });
+
+  it.each([
+    ["an overview budget different from the request", (source) => {
+      const wrongBudget = structuredClone(overview);
+      wrongBudget.aggregationSummary.requestedMaxPoints = 1199;
+      wrongBudget.series.forEach((series) => { series.aggregation.requestedMaxPoints = 1199; });
+      source.getTimelineOverview.mockResolvedValue(wrongBudget);
+    }, "all"],
+    ["a page item at the exclusive range end", (source) => {
+      source.getTimelineSamples
+        .mockResolvedValueOnce(timelinePage)
+        .mockImplementationOnce((_, options) => Promise.resolve({
+          ...timelinePage,
+          items: [{
+            ...structuredClone(historicalContext.channels.s1),
+            eventAt: options.to,
+          }],
+        }));
+    }, "historical"],
+  ])("rejects a bundle containing %s", async (_, poison, rangePreset) => {
+    const source = sourceStub();
+    poison(source);
+    const doc = visibleDocument();
+    const { result } = renderHook(() => useTwinOps(), {
+      wrapper: wrapperFor({ dataSource: source, clock: outsideWindowClock, documentRef: doc.target }),
+    });
+    await flush();
+
+    let committed = null;
+    if (rangePreset === "all") {
+      await act(async () => { await result.current.showHistory(); });
+    } else {
+      await act(async () => {
+        await result.current.showHistory();
+      });
+      committed = {
+        overview: result.current.timelineOverview,
+        page: result.current.timelinePage,
+        assessmentOverview: result.current.timelineAssessmentOverview,
+      };
+      await act(async () => { await result.current.selectTimelineRange(rangePreset); });
+    }
+
+    expect(result.current.timelineOverview).toBe(committed?.overview ?? null);
+    expect(result.current.timelinePage).toBe(committed?.page ?? null);
+    expect(result.current.timelineAssessmentOverview).toBe(committed?.assessmentOverview ?? null);
+    expect(window.sessionStorage).toHaveLength(committed === null ? 0 : 1);
+  });
+
+  it("keeps cache and in-flight ownership on POST refresh while blocking stale persistence", async () => {
+    const source = sourceStub();
+    const doc = visibleDocument();
+    const { result } = renderHook(() => useTwinOps(), {
+      wrapper: wrapperFor({
+        dataSource: source,
+        clock: () => new Date("2026-08-12T15:30:00.000Z"),
+        documentRef: doc.target,
+      }),
+    });
+    await flush();
+    await act(async () => { await result.current.showHistory(); });
+    const committed = {
+      overview: result.current.timelineOverview,
+      page: result.current.timelinePage,
+      assessmentOverview: result.current.timelineAssessmentOverview,
+    };
+    expect(window.sessionStorage).toHaveLength(1);
+    const cachedBeforeRefresh = window.sessionStorage.getItem(window.sessionStorage.key(0));
+
+    const requests = [deferred(), deferred(), deferred()];
+    const timelineSignals = [];
+    source.getTimelineOverview.mockImplementationOnce((_, { signal }) => {
+      timelineSignals.push(signal);
+      return requests[0].promise;
+    });
+    source.getTimelineSamples.mockImplementationOnce((_, { signal }) => {
+      timelineSignals.push(signal);
+      return requests[1].promise;
+    });
+    source.getTimelineAssessments.mockImplementationOnce((_, __, { signal }) => {
+      timelineSignals.push(signal);
+      return requests[2].promise;
+    });
+    let obsolete;
+    act(() => { obsolete = result.current.showHistory(); });
+    await flush();
+
+    await act(async () => { await result.current.refreshNow(); });
+    expect(window.sessionStorage).toHaveLength(1);
+    expect(window.sessionStorage.getItem(window.sessionStorage.key(0))).toBe(cachedBeforeRefresh);
+    expect(timelineSignals).toHaveLength(3);
+    expect(timelineSignals.every((signal) => !signal.aborted)).toBe(true);
+
+    let deduplicated;
+    act(() => { deduplicated = result.current.showHistory(); });
+    expect(deduplicated).toBe(obsolete);
+
+    const refreshed = [
+      {
+        ...structuredClone(overview),
+        queryFingerprint: "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      },
+      structuredClone(timelinePage),
+      structuredClone(assessmentOverview),
+    ];
+    await act(async () => {
+      requests.forEach((pending, index) => pending.resolve(refreshed[index]));
+      await obsolete;
+    });
+
+    expect(result.current.timelineOverview).toBe(refreshed[0]);
+    expect(result.current.timelinePage).toBe(refreshed[1]);
+    expect(result.current.timelineAssessmentOverview).toBe(refreshed[2]);
+    expect(result.current.timelineOverview).not.toBe(committed.overview);
+    expect(window.sessionStorage.getItem(window.sessionStorage.key(0))).toBe(cachedBeforeRefresh);
+  });
+
+  it("restores loaded ranges while revalidating every later selection", async () => {
     const source = sourceStub();
     const doc = visibleDocument();
     const { result } = renderHook(() => useTwinOps(), {
@@ -473,9 +1014,9 @@ describe("historical navigation", () => {
     });
 
     expect(result.current.timelineRangePreset).toBe("historical");
-    expect(source.getTimelineOverview).toHaveBeenCalledTimes(2);
-    expect(source.getTimelineSamples).toHaveBeenCalledTimes(2);
-    expect(source.getTimelineAssessments).toHaveBeenCalledTimes(2);
+    expect(source.getTimelineOverview).toHaveBeenCalledTimes(4);
+    expect(source.getTimelineSamples).toHaveBeenCalledTimes(4);
+    expect(source.getTimelineAssessments).toHaveBeenCalledTimes(4);
   });
 
   it("queries the dense immutable archive when Lote histórico is selected", async () => {
@@ -636,7 +1177,7 @@ describe("historical navigation", () => {
     expect(result.current.timelineLoading.context).toBe(false);
   });
 
-  it("keeps overview and page outcomes independent", async () => {
+  it("does not commit successful slices from an incomplete cold bundle", async () => {
     const source = sourceStub();
     const overviewFailure = new Error("overview unavailable");
     source.getTimelineOverview.mockRejectedValue(overviewFailure);
@@ -655,7 +1196,14 @@ describe("historical navigation", () => {
     });
 
     expect(result.current.timelineOverview).toBeNull();
-    expect(result.current.timelinePage).toBe(timelinePage);
+    expect(result.current.timelinePage).toBeNull();
+    expect(result.current.timelineAssessmentOverview).toBeNull();
+    expect(result.current.timelineLoading).toEqual({
+      overview: false,
+      page: false,
+      assessments: false,
+      context: false,
+    });
     expect(result.current.timelineErrors).toEqual({
       overview: overviewFailure,
       page: null,
@@ -688,7 +1236,7 @@ describe("historical navigation", () => {
     expect(result.current.displayContext).toBe(snapshot);
   });
 
-  it("surfaces an active page AbortError as retryable failure", async () => {
+  it("surfaces an active page AbortError without committing a partial bundle", async () => {
     const source = sourceStub();
     const abortFailure = new DOMException("upstream mislabeled failure", "AbortError");
     source.getTimelineSamples.mockRejectedValue(abortFailure);
@@ -708,7 +1256,7 @@ describe("historical navigation", () => {
 
     expect(result.current.timelineErrors.page).toBe(abortFailure);
     expect(result.current.timelineLoading.page).toBe(false);
-    expect(result.current.timelineOverview).toBe(overview);
+    expect(result.current.timelineOverview).toBeNull();
     expect(result.current.displayContext).toBe(snapshot);
   });
 
@@ -744,7 +1292,7 @@ describe("historical navigation", () => {
     expect(result.current.displayContext).toBe(committed);
   });
 
-  it("surfaces an active non-abort page error independently", async () => {
+  it("surfaces an active non-abort page error without committing a partial bundle", async () => {
     const source = sourceStub();
     const pageFailure = new Error("samples unavailable");
     source.getTimelineSamples.mockRejectedValue(pageFailure);
@@ -764,17 +1312,16 @@ describe("historical navigation", () => {
 
     expect(result.current.timelineErrors.page).toBe(pageFailure);
     expect(result.current.timelineLoading.page).toBe(false);
-    expect(result.current.timelineOverview).toBe(overview);
+    expect(result.current.timelineOverview).toBeNull();
   });
 
   it.each([
-    ["overview", "getTimelineOverview", "timelineOverview", overview],
-    ["page", "getTimelineSamples", "timelinePage", timelinePage],
+    ["overview", "getTimelineOverview", "timelineOverview"],
+    ["page", "getTimelineSamples", "timelinePage"],
   ])("ignores any failure from an obsolete %s owner", async (
     errorKey,
     method,
     valueKey,
-    expectedValue,
   ) => {
     const source = sourceStub();
     const obsolete = deferred();
@@ -787,7 +1334,7 @@ describe("historical navigation", () => {
     const { result } = renderHook(() => useTwinOps(), {
       wrapper: wrapperFor({
         dataSource: source,
-        clock: outsideWindowClock,
+        clock: () => new Date("2026-08-23T15:30:00.000Z"),
         documentRef: doc.target,
       }),
     });
@@ -799,7 +1346,7 @@ describe("historical navigation", () => {
     });
     await flush();
     await act(async () => {
-      await result.current.showHistory();
+      await result.current.selectTimelineRange("7d");
     });
 
     expect(obsoleteSignal.aborted).toBe(true);
@@ -812,7 +1359,7 @@ describe("historical navigation", () => {
 
     expect(result.current.timelineErrors[errorKey]).toBeNull();
     expect(result.current[valueKey]).toBe(committedValue);
-    expect(result.current[valueKey]).toBe(expectedValue);
+    expect(result.current[valueKey]).not.toBeNull();
   });
 
   it("ignores any failure from an obsolete context owner", async () => {
@@ -908,6 +1455,72 @@ describe("historical navigation", () => {
       context: false,
     });
     expect(result.current.viewMode).toBe("now");
+  });
+
+  it("starts a fresh bundle after showNow even when an aborted transport stays pending", async () => {
+    const source = sourceStub();
+    const obsoleteOverview = deferred();
+    const obsoletePage = deferred();
+    const obsoleteAssessments = deferred();
+    const signals = [];
+    source.getTimelineOverview
+      .mockImplementationOnce((_, { signal }) => {
+        signals.push(signal);
+        return obsoleteOverview.promise;
+      })
+      .mockResolvedValueOnce(overview);
+    source.getTimelineSamples
+      .mockImplementationOnce((_, { signal }) => {
+        signals.push(signal);
+        return obsoletePage.promise;
+      })
+      .mockResolvedValueOnce(timelinePage);
+    source.getTimelineAssessments
+      .mockImplementationOnce((_, __, { signal }) => {
+        signals.push(signal);
+        return obsoleteAssessments.promise;
+      })
+      .mockResolvedValueOnce(assessmentOverview);
+    const doc = visibleDocument();
+    const { result } = renderHook(() => useTwinOps(), {
+      wrapper: wrapperFor({
+        dataSource: source,
+        clock: outsideWindowClock,
+        documentRef: doc.target,
+      }),
+    });
+    await flush();
+
+    let obsoleteRequest;
+    act(() => {
+      obsoleteRequest = result.current.showHistory();
+    });
+    await flush();
+    act(() => result.current.showNow());
+
+    let freshRequest;
+    act(() => {
+      freshRequest = result.current.showHistory();
+    });
+    await flush();
+
+    expect(freshRequest).not.toBe(obsoleteRequest);
+    expect(source.getTimelineOverview).toHaveBeenCalledTimes(2);
+    expect(source.getTimelineSamples).toHaveBeenCalledTimes(2);
+    expect(source.getTimelineAssessments).toHaveBeenCalledTimes(2);
+    expect(signals).toHaveLength(3);
+    expect(signals.every((signal) => signal.aborted)).toBe(true);
+
+    await act(async () => {
+      await freshRequest;
+    });
+
+    await act(async () => {
+      obsoleteOverview.resolve(overview);
+      obsoletePage.resolve(timelinePage);
+      obsoleteAssessments.resolve(assessmentOverview);
+      await obsoleteRequest;
+    });
   });
 
   it("rejects an invalid context response without replacing the prior commit", async () => {
@@ -1059,7 +1672,7 @@ describe("historical navigation", () => {
       void result.current.selectTimelinePoint(historicalContext.anchor.pointId);
     });
     await flush();
-    expect(signals).toHaveLength(3);
+    expect(signals).toHaveLength(4);
 
     unmount();
     await flush();
@@ -1071,7 +1684,7 @@ describe("historical navigation", () => {
 describe("historical assessment overview ownership", () => {
   const outsideWindowClock = () => new Date("2026-08-13T15:30:00.000Z");
 
-  it("starts assessment evidence after overview and samples release the backend", async () => {
+  it("starts overview, samples, and assessment evidence before any response resolves", async () => {
     const source = sourceStub();
     const overviewRequest = deferred();
     const pageRequest = deferred();
@@ -1091,29 +1704,21 @@ describe("historical assessment overview ownership", () => {
 
     expect(source.getTimelineOverview).toHaveBeenCalledTimes(1);
     expect(source.getTimelineSamples).toHaveBeenCalledTimes(1);
-    expect(source.getTimelineAssessments).not.toHaveBeenCalled();
+    expect(source.getTimelineAssessments).toHaveBeenCalledTimes(1);
     expect(result.current.timelineLoading).toMatchObject({
       overview: true,
       page: true,
-      assessments: false,
+      assessments: true,
       context: false,
     });
-
-    await act(async () => {
-      overviewRequest.resolve(overview);
-      pageRequest.resolve(timelinePage);
-      await Promise.all([overviewRequest.promise, pageRequest.promise]);
-    });
-    await flush();
-
-    expect(source.getTimelineAssessments).toHaveBeenCalledTimes(1);
-    expect(result.current.timelineLoading.assessments).toBe(true);
     const assessmentCall = source.getTimelineAssessments.mock.calls[0];
     expect(assessmentCall[0]).toBe("forzy-motor-01");
     expect(assessmentCall[1]).toEqual({ sensorId: "all", maxPoints: 800 });
     expect(assessmentCall[2].signal).toBeInstanceOf(AbortSignal);
 
     await act(async () => {
+      overviewRequest.resolve(overview);
+      pageRequest.resolve(timelinePage);
       assessmentsRequest.resolve(assessmentOverview);
       await historyPromise;
     });
@@ -1154,8 +1759,7 @@ describe("historical assessment overview ownership", () => {
       .mockImplementationOnce((_, __, { signal }) => {
         obsoleteSignal = signal;
         return obsolete.promise;
-      })
-      .mockResolvedValueOnce(assessmentOverview);
+      });
     const doc = visibleDocument();
     const { result } = renderHook(() => useTwinOps(), {
       wrapper: wrapperFor({ dataSource: source, clock: outsideWindowClock, documentRef: doc.target }),
@@ -1165,7 +1769,7 @@ describe("historical assessment overview ownership", () => {
     let obsoleteHistory;
     act(() => { obsoleteHistory = result.current.showHistory(); });
     await flush();
-    await act(async () => { await result.current.showHistory(); });
+    await act(async () => { await result.current.selectTimelineRange("24h"); });
     expect(obsoleteSignal.aborted).toBe(true);
 
     const committed = result.current.timelineAssessmentOverview;

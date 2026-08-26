@@ -89,6 +89,36 @@ export function timelineNavigationReducer(state, action) {
       };
     case "ASSESSMENTS_FAILED":
       return withRequestState(state, "assessments", false, action.error);
+    case "BUNDLE_RESOLVED": {
+      const bundle = action.bundle;
+      const keys = bundle !== null && typeof bundle === "object" && !Array.isArray(bundle)
+        ? Object.keys(bundle).sort()
+        : [];
+      if (
+        keys.join(",") !== "assessmentOverview,overview,page"
+        || [bundle?.overview, bundle?.page, bundle?.assessmentOverview].some(
+          (value) => value === null || typeof value !== "object" || Array.isArray(value),
+        )
+      ) throw new TypeError("BUNDLE_RESOLVED bundle must contain overview, page, and assessmentOverview objects");
+      return {
+        ...state,
+        timelineOverview: bundle.overview,
+        timelinePage: bundle.page,
+        timelineAssessmentOverview: bundle.assessmentOverview,
+        loading: {
+          ...state.loading,
+          overview: false,
+          page: false,
+          assessments: false,
+        },
+        errors: {
+          ...state.errors,
+          overview: null,
+          page: null,
+          assessments: null,
+        },
+      };
+    }
     case "CONTEXT_REQUESTED":
       return {
         ...withRequestState(state, "context", true, null),
