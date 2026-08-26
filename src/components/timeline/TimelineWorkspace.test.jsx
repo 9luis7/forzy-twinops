@@ -16,6 +16,92 @@ import HistoricalContextEvidence from "./HistoricalContextEvidence.jsx";
 afterEach(cleanup);
 
 describe("TimelineWorkspace", () => {
+  it("presents range controls and keeps technical evidence collapsed", async () => {
+    const { default: TimelineWorkspace } = await import("./TimelineWorkspace.jsx");
+    const onRangePresetChange = vi.fn();
+
+    render(
+      <TimelineWorkspace
+        assessmentOverview={structuredClone(assessmentOverviewFixture)}
+        context={null}
+        errors={{ overview: null, page: null, assessments: null, context: null }}
+        loading={{ overview: false, page: false, assessments: false, context: false }}
+        onRangePresetChange={onRangePresetChange}
+        overview={structuredClone(overviewFixture)}
+        page={structuredClone(pageFixture)}
+        pendingSelection={null}
+        rangePreset="7d"
+        selectTimelinePoint={vi.fn()}
+      >
+        <section>Contexto técnico detalhado</section>
+      </TimelineWorkspace>,
+    );
+
+    const rangeControls = screen.getByRole("group", { name: "Período exibido" });
+    expect(within(rangeControls).getByRole("button", { name: "7 dias" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+    fireEvent.click(within(rangeControls).getByRole("button", { name: "14 dias" }));
+    expect(onRangePresetChange).toHaveBeenCalledWith("14d");
+
+    const evidenceSummary = screen.getByText("Evidência técnica e leituras originais");
+    expect(evidenceSummary.closest("details")).not.toHaveAttribute("open");
+    expect(screen.getByRole("complementary", { name: "Ponto selecionado" })).toBeInTheDocument();
+  });
+
+  it("selects an original point directly from the synchronized chart", async () => {
+    const { default: TimelineWorkspace } = await import("./TimelineWorkspace.jsx");
+    const selectTimelinePoint = vi.fn();
+    const timelineOverview = structuredClone(overviewFixture);
+    const pointId = timelineOverview.series[0].points[0].pointId;
+
+    render(
+      <TimelineWorkspace
+        assessmentOverview={structuredClone(assessmentOverviewFixture)}
+        context={null}
+        errors={{ overview: null, page: null, assessments: null, context: null }}
+        loading={{ overview: false, page: false, assessments: false, context: false }}
+        onRangePresetChange={vi.fn()}
+        overview={timelineOverview}
+        page={structuredClone(pageFixture)}
+        pendingSelection={null}
+        rangePreset="7d"
+        selectTimelinePoint={selectTimelinePoint}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: `Inspecionar ponto ${pointId}` }));
+    expect(selectTimelinePoint).toHaveBeenCalledWith(pointId);
+  });
+
+  it("keeps selected sensor and model evidence in a persistent decision inspector", async () => {
+    const { default: TimelineWorkspace } = await import("./TimelineWorkspace.jsx");
+
+    render(
+      <TimelineWorkspace
+        assessmentOverview={structuredClone(assessmentOverviewFixture)}
+        context={structuredClone(contextFixture)}
+        errors={{ overview: null, page: null, assessments: null, context: null }}
+        loading={{ overview: false, page: false, assessments: false, context: false }}
+        onRangePresetChange={vi.fn()}
+        overview={structuredClone(overviewFixture)}
+        page={structuredClone(pageFixture)}
+        pendingSelection={null}
+        rangePreset="7d"
+        selectTimelinePoint={vi.fn()}
+      />,
+    );
+
+    const inspector = screen.getByRole("complementary", { name: "Ponto selecionado" });
+    expect(within(inspector).getByText("S1 · Velocidade RMS")).toBeInTheDocument();
+    expect(within(inspector).getByText("S2 · Velocidade RMS")).toBeInTheDocument();
+    expect(within(inspector).getByText("Score relativo ao baseline histórico")).toBeInTheDocument();
+    expect(within(inspector).getByText("Não é probabilidade de falha")).toBeInTheDocument();
+    expect(within(inspector).getByText("Candidato não confirmado")).toBeInTheDocument();
+    expect(within(inspector).getByText("robust-baseline 1.0")).toBeInTheDocument();
+  });
+
   it("renders broken evidence coverage and selects only an original point", async () => {
     const { default: TimelineWorkspace } = await import("./TimelineWorkspace.jsx");
     const timelinePage = {
@@ -78,7 +164,12 @@ describe("TimelineWorkspace", () => {
       "Atualizando os pontos; a última lista válida continua visível.",
     )).toBeInTheDocument();
     expect(screen.getAllByTestId("timeline-segment")).toHaveLength(4);
-    expect(screen.getAllByRole("button", { name: /inspecionar ponto/i })).toHaveLength(2);
+    const refreshedSamples = screen.getByRole("table", {
+      name: "Pontos originais disponíveis para inspeção histórica",
+    });
+    expect(within(refreshedSamples).getAllByRole("button", {
+      name: /inspecionar ponto/i,
+    })).toHaveLength(2);
   });
 
   it("keeps the original action focused and inert while its context is pending", async () => {
@@ -104,7 +195,10 @@ describe("TimelineWorkspace", () => {
     const { rerender } = render(
       <TimelineWorkspace {...props} pendingSelection={null} />,
     );
-    const originalAction = screen.getAllByRole("button", {
+    const samplesTable = screen.getByRole("table", {
+      name: "Pontos originais disponíveis para inspeção histórica",
+    });
+    const originalAction = within(samplesTable).getAllByRole("button", {
       name: /inspecionar ponto/i,
     })[0];
     originalAction.focus();
@@ -119,7 +213,7 @@ describe("TimelineWorkspace", () => {
         pendingSelection={{ pointId: timelinePage.items[0].pointId }}
       />,
     );
-    const pendingAction = screen.getByRole("button", { name: /sincronizando/i });
+    const pendingAction = within(samplesTable).getByRole("button", { name: /sincronizando/i });
     expect(pendingAction).not.toBeDisabled();
     expect(pendingAction).toHaveAttribute("aria-disabled", "true");
     expect(pendingAction).toHaveAttribute("aria-busy", "true");
@@ -161,12 +255,12 @@ describe("TimelineWorkspace", () => {
     );
 
     expect(screen.queryByText(/Contexto histórico confirmado para/i)).not.toBeInTheDocument();
-    expect(screen.getAllByRole("button", { name: /inspecionar ponto/i })).toHaveLength(200);
     const overview = screen.getByRole("img", { name: /cobertura temporal proporcional/i });
     const panels = screen.getByTestId("contextual-panels");
     const samples = screen.getByRole("table", {
       name: "Pontos originais disponíveis para inspeção histórica",
     });
+    expect(within(samples).getAllByRole("button", { name: /inspecionar ponto/i })).toHaveLength(200);
     expect(overview.compareDocumentPosition(panels) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
     expect(panels.compareDocumentPosition(samples) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
 

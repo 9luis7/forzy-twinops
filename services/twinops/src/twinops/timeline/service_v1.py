@@ -458,7 +458,6 @@ def _context_channels(
         )
     shared = {
         (
-            point.event_at,
             point.source_kind,
             point.operating_cycle_id,
             point.asset_id,
@@ -467,9 +466,13 @@ def _context_channels(
     }
     if len(shared) != 1:
         raise TimelineContextRepositoryErrorV1(
-            "exact pair crosses event or source evidence"
+            "exact pair crosses source or cycle evidence"
         )
     if anchor.source_kind == "historical_archive":
+        if len({point.event_at for point in by_sensor.values()}) != 1:
+            raise TimelineContextRepositoryErrorV1(
+                "exact historical pair crosses event evidence"
+            )
         batches = {
             point.provenance.batch_id for point in by_sensor.values()
         }
@@ -478,6 +481,15 @@ def _context_channels(
                 "exact pair crosses active archive evidence"
             )
     else:
+        if len(
+            {
+                point.provenance.scheduled_at
+                for point in by_sensor.values()
+            }
+        ) != 1:
+            raise TimelineContextRepositoryErrorV1(
+                "exact live pair crosses scheduled evidence"
+            )
         policies = {
             point.provenance.collection_policy_id
             for point in by_sensor.values()

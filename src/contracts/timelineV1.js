@@ -867,19 +867,27 @@ const assertContext = (value) => {
 
   if (paired) {
     const [left, right] = returnedChannels;
-    for (const key of ["samplePairId", "eventAt", "sourceKind", "operatingCycleId", "assetId"]) {
+    for (const key of ["samplePairId", "sourceKind", "operatingCycleId", "assetId"]) {
       if (left[key] !== right[key]) fail("paired context channels must share original pair facts");
     }
     if (left.provenance.sourceSystem !== right.provenance.sourceSystem) {
       fail("paired context channels cannot cross source systems");
     }
-    if (left.sourceKind === "historical_archive"
-      && left.provenance.batchId !== right.provenance.batchId) {
-      fail("paired historical channels cannot cross batches");
+    if (left.sourceKind === "historical_archive") {
+      if (left.eventAt !== right.eventAt) {
+        fail("paired historical channels cannot cross events");
+      }
+      if (left.provenance.batchId !== right.provenance.batchId) {
+        fail("paired historical channels cannot cross batches");
+      }
     }
-    if (left.sourceKind === "live_collection"
-      && left.provenance.collectionPolicyId !== right.provenance.collectionPolicyId) {
-      fail("paired live channels cannot cross collection policies");
+    if (left.sourceKind === "live_collection") {
+      if (left.provenance.scheduledAt !== right.provenance.scheduledAt) {
+        fail("paired live channels cannot cross scheduled samples");
+      }
+      if (left.provenance.collectionPolicyId !== right.provenance.collectionPolicyId) {
+        fail("paired live channels cannot cross collection policies");
+      }
     }
   }
 

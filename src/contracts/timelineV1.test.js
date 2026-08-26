@@ -761,6 +761,26 @@ describe("Timeline v1 composed runtime contract", () => {
     reject(assertTimelineContextV1, wrongBatch);
   });
 
+  it("accepts live pair channels received at distinct instants for one scheduled sample", () => {
+    const payload = fixture("context-missing-channel.valid.json");
+    const second = structuredClone(payload.channels.s1);
+    second.sensorId = "s2";
+    second.pointId = "00000000-0000-5000-8000-000000000005";
+    second.eventAt = "2026-08-22T12:00:00.278Z";
+    second.provenance.readingId = "00000000-0000-5000-8000-000000000006";
+    second.provenance.receivedAt = second.eventAt;
+    payload.channels.s2 = second;
+    payload.decisionFacts.dataAvailability = "complete";
+    payload.decisionFacts.dataTrust = "sufficient";
+    payload.capabilities.pairedChannels = true;
+
+    expect(() => assertTimelineContextV1(payload)).not.toThrow();
+
+    const crossedSchedule = structuredClone(payload);
+    crossedSchedule.channels.s2.provenance.scheduledAt = "2026-08-22T12:00:00.001Z";
+    reject(assertTimelineContextV1, crossedSchedule);
+  });
+
   it("resolves the unchanged v2 assessment schema through timeline context", () => {
     const payload = liveAssessmentContext();
     expect(assertTimelineContextV1(payload)).toBe(payload);

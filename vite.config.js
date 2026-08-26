@@ -7,7 +7,7 @@ export default defineConfig({
     proxy: {
       "/api": {
         target: process.env.TWINOPS_API_PROXY_TARGET || "http://127.0.0.1:8000",
-        changeOrigin: false,
+        changeOrigin: process.env.TWINOPS_API_PROXY_CHANGE_ORIGIN === "true",
       },
     },
   },

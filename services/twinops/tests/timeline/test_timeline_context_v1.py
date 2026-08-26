@@ -11,7 +11,12 @@ from twinops.contracts.timeline_v1_models import (
 from twinops.timeline import service_v1
 from twinops.timeline.repository_v1 import timeline_order_key_v1
 
-from overview_fixtures_v1 import FakeTimelineRepositoryV1, make_point, uuid5_text
+from overview_fixtures_v1 import (
+    FakeTimelineRepositoryV1,
+    make_point,
+    make_policy,
+    uuid5_text,
+)
 
 
 BASE = datetime(2026, 8, 25, 15, 0, tzinfo=timezone.utc)
@@ -484,3 +489,46 @@ def test_crossed_exact_pair_evidence_fails_closed() -> None:
         service_v1.TimelineServiceV1(
             FakeTimelineRepositoryV1(archive=points)
         ).context(_query_for_point(str(s1.point_id)))
+
+
+def test_live_pair_allows_distinct_receipt_instants_for_one_scheduled_sample() -> None:
+    scheduled_at = BASE
+    s1_payload = make_point(
+        30,
+        event_at=BASE + timedelta(seconds=5, milliseconds=201),
+        sensor_id="s1",
+        source_kind="live_collection",
+        pair_key="live-receipt-skew",
+    ).model_dump_public()
+    s2_payload = make_point(
+        31,
+        event_at=BASE + timedelta(seconds=5, milliseconds=278),
+        sensor_id="s2",
+        source_kind="live_collection",
+        pair_key="live-receipt-skew",
+    ).model_dump_public()
+    scheduled_text = service_v1.serialize_public_utc_millis_v1(scheduled_at)
+    s1_payload["provenance"]["scheduledAt"] = scheduled_text
+    s2_payload["provenance"]["scheduledAt"] = scheduled_text
+    points = tuple(
+        sorted(
+            (
+                TimelinePointV1.model_validate(s1_payload),
+                TimelinePointV1.model_validate(s2_payload),
+            ),
+            key=timeline_order_key_v1,
+        )
+    )
+
+    context = service_v1.TimelineServiceV1(
+        FakeTimelineRepositoryV1(
+            live=points,
+            policies=(make_policy(),),
+            batch_id=None,
+        )
+    ).context(_query_for_point(str(points[0].point_id)))
+
+    assert context.channels.s1 is not None
+    assert context.channels.s2 is not None
+    assert context.channels.s1.event_at != context.channels.s2.event_at
+    assert context.selected_at == points[0].event_at

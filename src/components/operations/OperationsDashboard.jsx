@@ -98,7 +98,9 @@ export default function OperationsDashboard({ Twin3DComponent = null }) {
     refreshNow,
     viewMode,
     timelineOverview,
+    timelineAssessmentOverview,
     timelinePage,
+    timelineRangePreset,
     pendingSelection,
     historicalContext,
     displayContext,
@@ -106,6 +108,7 @@ export default function OperationsDashboard({ Twin3DComponent = null }) {
     timelineErrors,
     showNow,
     showHistory,
+    selectTimelineRange,
     selectTimelinePoint,
   } = useTwinOps();
   const announcementContext = viewMode === "historical"
@@ -199,9 +202,27 @@ export default function OperationsDashboard({ Twin3DComponent = null }) {
       ) : null}
     </section>
   );
+  const twinPanel = (
+    <section className="panel twin-panel" aria-labelledby="twin-title">
+      <div className="panel-heading">
+        <div>
+          <p className="eyebrow">Geometria do conjunto fornecido</p>
+          <h2 id="twin-title">Gêmeo 3D</h2>
+        </div>
+      </div>
+      {Twin3DComponent ? (
+        <Twin3DComponent
+          snapshot={snapshot}
+          fallback={fallback}
+          viewMode={displayViewMode}
+          displayContext={committedHistoricalContext ?? snapshot}
+        />
+      ) : fallback}
+    </section>
+  );
 
   return (
-    <main className="operations-shell">
+    <main className={`operations-shell${viewMode === "historical" ? " operations-shell--decision" : ""}`}>
       <AssetHeader
         asset={snapshot.asset}
         onShowHistory={showHistory}
@@ -229,6 +250,7 @@ export default function OperationsDashboard({ Twin3DComponent = null }) {
 
       {viewMode === "historical" ? (
         <TimelineWorkspace
+          assessmentOverview={timelineAssessmentOverview}
           commitAnnouncement={historicalCommitAnnouncement}
           context={committedHistoricalContext}
           errors={timelineErrors}
@@ -236,6 +258,8 @@ export default function OperationsDashboard({ Twin3DComponent = null }) {
           overview={timelineOverview}
           page={timelinePage}
           pendingSelection={pendingSelection}
+          rangePreset={timelineRangePreset}
+          onRangePresetChange={selectTimelineRange}
           selectTimelinePoint={selectTimelinePoint}
         >
           {contextualPanels}
@@ -244,22 +268,12 @@ export default function OperationsDashboard({ Twin3DComponent = null }) {
         contextualPanels
       )}
 
-      <section className="panel twin-panel" aria-labelledby="twin-title">
-        <div className="panel-heading">
-          <div>
-            <p className="eyebrow">Geometria do conjunto fornecido</p>
-            <h2 id="twin-title">Gêmeo 3D</h2>
-          </div>
-        </div>
-        {Twin3DComponent ? (
-          <Twin3DComponent
-            snapshot={snapshot}
-            fallback={fallback}
-            viewMode={displayViewMode}
-            displayContext={committedHistoricalContext ?? snapshot}
-          />
-        ) : fallback}
-      </section>
+      {viewMode === "historical" ? (
+        <details className="historical-3d-disclosure">
+          <summary>Modelo 3D (opcional)</summary>
+          {twinPanel}
+        </details>
+      ) : twinPanel}
 
       <footer className="operations-footer">
         <p>

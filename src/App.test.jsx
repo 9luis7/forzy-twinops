@@ -44,6 +44,10 @@ const sourceWithTimeline = () => ({
   getTimelineContext: vi.fn().mockResolvedValue(structuredClone(historicalContextFixture)),
 });
 
+const originalPointActions = () => within(screen.getByRole("table", {
+  name: "Pontos originais disponíveis para inspeção histórica",
+})).getAllByRole("button", { name: /inspecionar ponto/i });
+
 const deferred = () => {
   let resolve;
   let reject;
@@ -282,7 +286,7 @@ it("loads proportional coverage and original points only after Histórico is sel
   const workspace = screen.getByTestId("timeline-workspace");
   expect(within(workspace).getAllByTestId("timeline-segment")).toHaveLength(4);
   expect(within(workspace).getAllByTestId("timeline-gap")).toHaveLength(3);
-  expect(within(workspace).getAllByRole("button", { name: /inspecionar ponto/i })).toHaveLength(2);
+  expect(originalPointActions()).toHaveLength(2);
   expect(source.getTimelineOverview).toHaveBeenCalledTimes(1);
   expect(source.getTimelineSamples).toHaveBeenCalledTimes(1);
   expect(source.refresh).not.toHaveBeenCalled();
@@ -305,17 +309,17 @@ it("switches both channels and assessment only after one historical context comm
   fireEvent.click(screen.getByRole("radio", { name: "Histórico" }));
   await flush();
 
-  expect(within(screen.getByTestId("sensor-card-s1")).getByText("34,00")).toBeVisible();
-  expect(within(screen.getByTestId("sensor-card-s2")).getByText("35,00")).toBeVisible();
+  expect(within(screen.getByRole("complementary", { name: "Ponto selecionado" })).getByText(
+    "Selecione um ponto no gráfico",
+  )).toBeVisible();
   expect(screen.getByTestId("twin-presentation-probe")).toHaveAttribute("data-view-mode", "now");
 
-  const workspace = screen.getByTestId("timeline-workspace");
-  fireEvent.click(within(workspace).getAllByRole("button", { name: /inspecionar ponto/i })[0]);
+  fireEvent.click(originalPointActions()[0]);
   await flush();
 
-  expect(within(screen.getByTestId("sensor-card-s1")).getByText("34,00")).toBeVisible();
-  expect(within(screen.getByTestId("sensor-card-s2")).getByText("35,00")).toBeVisible();
-  expect(screen.queryByTestId("historical-context-evidence")).not.toBeInTheDocument();
+  expect(within(screen.getByRole("complementary", { name: "Ponto selecionado" })).getByText(
+    "Selecione um ponto no gráfico",
+  )).toBeVisible();
   expect(screen.getByTestId("twin-presentation-probe")).toHaveAttribute("data-view-mode", "now");
 
   await act(async () => {
@@ -324,10 +328,11 @@ it("switches both channels and assessment only after one historical context comm
   });
   await flush();
 
-  expect(within(screen.getByTestId("sensor-card-s1")).getByText("30,00")).toBeVisible();
-  expect(within(screen.getByTestId("sensor-card-s2")).getByText("30,20")).toBeVisible();
-  expect(screen.getByText("Atenção")).toBeVisible();
-  expect(screen.getByTestId("historical-context-evidence")).toHaveTextContent("forzy-csv");
+  const inspector = within(screen.getByRole("complementary", { name: "Ponto selecionado" }));
+  expect(inspector.getByText("1,10 mm/s")).toBeVisible();
+  expect(inspector.getByText("1,20 mm/s")).toBeVisible();
+  expect(inspector.getByText("Candidato não confirmado")).toBeVisible();
+  expect(inspector.getByText("Arquivo histórico")).toBeVisible();
   expect(screen.getByTestId("twin-presentation-probe")).toHaveAttribute(
     "data-context-at",
     historicalContextFixture.selectedAt,
@@ -344,7 +349,9 @@ it("switches both channels and assessment only after one historical context comm
 
   fireEvent.click(screen.getByRole("radio", { name: "Histórico" }));
   await flush();
-  expect(within(screen.getByTestId("sensor-card-s1")).getByText("30,00")).toBeVisible();
+  expect(within(screen.getByRole("complementary", { name: "Ponto selecionado" })).getByText(
+    "1,10 mm/s",
+  )).toBeVisible();
   expect(screen.getByTestId("twin-presentation-probe")).toHaveAttribute(
     "data-context-at",
     historicalContextFixture.selectedAt,
@@ -379,9 +386,7 @@ it("announces only transitions to a new committed historical context", async () 
   await flush();
 
   expect(commitAnnouncement()).not.toBeInTheDocument();
-  const originalAction = screen.getAllByRole("button", {
-    name: /inspecionar ponto/i,
-  })[0];
+  const originalAction = originalPointActions()[0];
   fireEvent.click(originalAction);
   await flush();
   expect(commitAnnouncement()).not.toBeInTheDocument();
@@ -402,12 +407,16 @@ it("announces only transitions to a new committed historical context", async () 
   fireEvent.click(screen.getByRole("radio", { name: "Hist\u00f3rico" }));
   await flush();
   expect(commitAnnouncement()).not.toBeInTheDocument();
-  expect(within(screen.getByTestId("sensor-card-s1")).getByText("30,00")).toBeVisible();
+  expect(within(screen.getByRole("complementary", { name: "Ponto selecionado" })).getByText(
+    "1,10 mm/s",
+  )).toBeVisible();
 
-  fireEvent.click(screen.getAllByRole("button", { name: /inspecionar ponto/i })[0]);
+  fireEvent.click(originalPointActions()[0]);
   await flush();
   expect(commitAnnouncement()).not.toBeInTheDocument();
-  expect(within(screen.getByTestId("sensor-card-s1")).getByText("30,00")).toBeVisible();
+  expect(within(screen.getByRole("complementary", { name: "Ponto selecionado" })).getByText(
+    "1,10 mm/s",
+  )).toBeVisible();
 
   await act(async () => {
     failedCommit.reject(new Error("context unavailable"));
@@ -415,12 +424,12 @@ it("announces only transitions to a new committed historical context", async () 
   });
   await flush();
   expect(commitAnnouncement()).not.toBeInTheDocument();
-  expect(screen.getByText(
-    /O ponto n\u00e3o p\u00f4de ser sincronizado.*\u00faltimo contexto hist\u00f3rico v\u00e1lido/i,
-  )).toBeInTheDocument();
-  expect(within(screen.getByTestId("sensor-card-s1")).getByText("30,00")).toBeVisible();
+  expect(screen.getByText("Não foi possível carregar este ponto.")).toBeInTheDocument();
+  expect(within(screen.getByRole("complementary", { name: "Ponto selecionado" })).getByText(
+    "1,10 mm/s",
+  )).toBeVisible();
 
-  fireEvent.click(screen.getAllByRole("button", { name: /inspecionar ponto/i })[0]);
+  fireEvent.click(originalPointActions()[0]);
   await flush();
   expect(commitAnnouncement()).not.toBeInTheDocument();
 
@@ -443,18 +452,13 @@ it("never carries a missing historical channel or absent assessment forward", as
 
   fireEvent.click(screen.getByRole("radio", { name: "Histórico" }));
   await flush();
-  const workspace = screen.getByTestId("timeline-workspace");
-  fireEvent.click(within(workspace).getAllByRole("button", { name: /inspecionar ponto/i })[0]);
+  fireEvent.click(originalPointActions()[0]);
   await flush();
 
-  expect(within(screen.getByTestId("sensor-card-s1")).getByText("30,00")).toBeVisible();
-  const s2 = within(screen.getByTestId("sensor-card-s2"));
-  expect(s2.getAllByText("Indisponível")).toHaveLength(3);
-  expect(s2.queryByText("35,00")).not.toBeInTheDocument();
-
-  const assessment = within(screen.getByTestId("assessment-panel"));
-  expect(assessment.getByText("Avaliação causal indisponível para este ponto")).toBeVisible();
-  expect(assessment.queryByText(/score|diagnóstico|probabilidade|\bRUL\b|\bcausa\b|checklist|recomendação/i)).not.toBeInTheDocument();
-  expect(screen.getByTestId("historical-context-evidence")).toHaveTextContent("forzy-api");
-  expect(screen.getByTestId("historical-context-evidence")).toHaveTextContent("forzy-live-window-v1");
+  const inspector = within(screen.getByRole("complementary", { name: "Ponto selecionado" }));
+  expect(inspector.getByText("1,10 mm/s")).toBeVisible();
+  expect(inspector.getAllByText("Indisponível").length).toBeGreaterThanOrEqual(3);
+  expect(inspector.queryByText("35,00 mm/s")).not.toBeInTheDocument();
+  expect(inspector.getByText("Sem score materializado neste ponto")).toBeVisible();
+  expect(inspector.getByText("Coleta ao vivo persistida")).toBeVisible();
 });

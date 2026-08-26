@@ -1,9 +1,19 @@
-import React, { useMemo } from "react";
+import React, { useMemo, useRef, useState } from "react";
 import { useOptionalTwinOps } from "../../TwinOpsContext.jsx";
 import AssessmentTrend from "./AssessmentTrend.jsx";
+import DecisionInspector from "./DecisionInspector.jsx";
+import DecisionTimelineChart from "./DecisionTimelineChart.jsx";
 import OriginalSamplesTable from "./OriginalSamplesTable.jsx";
 import TimelineOverview from "./TimelineOverview.jsx";
 import { buildTimelineViewModel } from "./timelineViewModel.js";
+
+const RANGE_PRESETS = Object.freeze([
+  ["24h", "24 horas"],
+  ["7d", "7 dias"],
+  ["14d", "14 dias"],
+  ["30d", "30 dias"],
+  ["all", "Tudo"],
+]);
 
 export default function TimelineWorkspace({
   overview,
@@ -14,10 +24,15 @@ export default function TimelineWorkspace({
   errors,
   pendingSelection,
   selectTimelinePoint,
+  rangePreset = "7d",
+  onRangePresetChange = () => undefined,
   commitAnnouncement = null,
   children,
 }) {
   const twinOps = useOptionalTwinOps();
+  const evidenceDetailsRef = useRef(null);
+  const [requestedPointId, setRequestedPointId] = useState(null);
+  const [visibleSensors, setVisibleSensors] = useState(() => new Set(["s1", "s2"]));
   const resolvedAssessmentOverview = assessmentOverview === undefined
     ? twinOps?.timelineAssessmentOverview ?? null
     : assessmentOverview;
@@ -33,63 +48,127 @@ export default function TimelineWorkspace({
   );
   const selectedPointId = context?.anchor?.pointId ?? null;
   const aggregation = overview?.aggregationSummary ?? null;
+  const selectPoint = (pointId) => {
+    setRequestedPointId(pointId);
+    void selectTimelinePoint(pointId);
+  };
+  const openEvidence = () => {
+    if (evidenceDetailsRef.current !== null) {
+      evidenceDetailsRef.current.open = true;
+      evidenceDetailsRef.current.querySelector("summary")?.focus();
+    }
+  };
+  const toggleSensor = (sensorId) => {
+    setVisibleSensors((current) => {
+      const next = new Set(current);
+      if (next.has(sensorId)) next.delete(sensorId);
+      else next.add(sensorId);
+      return next;
+    });
+  };
 
   return (
-    <section className="timeline-workspace" data-testid="timeline-workspace" aria-labelledby="timeline-title">
-      <div className="timeline-workspace__heading">
-        <div>
+    <section className="timeline-workspace decision-console" data-testid="timeline-workspace" aria-labelledby="timeline-title">
+      <header className="decision-console__toolbar">
+        <div className="decision-console__title">
           <p className="eyebrow">Histórico operacional</p>
-          <h2 id="timeline-title">Linha temporal original</h2>
+          <h2 id="timeline-title">Console de decisão</h2>
+          <p>Telemetria, scores persistidos e evidência do ponto no mesmo eixo temporal.</p>
         </div>
-        {aggregation === null ? null : (
-          <p className="timeline-aggregation">
-            <strong>{aggregation.returnedPointCount}</strong> de {aggregation.originalPointCount} pontos · {aggregation.reducedSeriesCount} séries reduzidas
-          </p>
-        )}
+
+        <div className="decision-console__summary" aria-label="Resumo da consulta">
+          <span data-status={errors?.overview ? "warning" : "ready"}>
+            {errors?.overview ? "Cobertura parcial" : "Histórico validado"}
+          </span>
+          {aggregation === null ? null : (
+            <small>
+              {aggregation.returnedPointCount} exibidos de {aggregation.originalPointCount} pontos
+            </small>
+          )}
+        </div>
+
+        <div aria-label="Período exibido" className="decision-console__range" role="group">
+          {RANGE_PRESETS.map(([value, label]) => (
+            <button
+              aria-pressed={rangePreset === value}
+              key={value}
+              onClick={() => { void onRangePresetChange(value); }}
+              type="button"
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+
+        <fieldset className="decision-console__sensors">
+          <legend>Sensores visíveis</legend>
+          {["s1", "s2"].map((sensorId) => (
+            <label key={sensorId}>
+              <input
+                checked={visibleSensors.has(sensorId)}
+                onChange={() => toggleSensor(sensorId)}
+                type="checkbox"
+              />
+              <span data-sensor={sensorId}>{sensorId.toUpperCase()}</span>
+            </label>
+          ))}
+        </fieldset>
+      </header>
+
+      <div className="decision-console__workspace">
+        <div className="decision-console__charts">
+          {loading?.overview ? (
+            <p className="timeline-inline-status" role="status">
+              {overview === null
+                ? "Carregando cobertura histórica…"
+                : "Atualizando a cobertura; a última linha válida continua visível."}
+            </p>
+          ) : null}
+          {errors?.overview ? (
+            <p className="timeline-inline-warning" role="alert">
+              {overview === null
+                ? "A cobertura histórica está indisponível para esta consulta."
+                : "A cobertura não pôde ser atualizada. O último gráfico válido continua visível."}
+            </p>
+          ) : null}
+          {assessmentsLoading ? (
+            <p className="timeline-inline-status" role="status">
+              {resolvedAssessmentOverview === null
+                ? "Carregando scores persistidos…"
+                : "Atualizando os scores; a última série válida continua visível."}
+            </p>
+          ) : null}
+          {assessmentsError ? (
+            <p className="timeline-inline-warning" role="alert">
+              {resolvedAssessmentOverview === null
+                ? "Os scores persistidos estão indisponíveis para esta consulta."
+                : "As avaliações não puderam ser atualizadas. A última série válida continua visível."}
+            </p>
+          ) : null}
+          {model === null && !loading?.overview && !errors?.overview ? (
+            <p className="timeline-empty">Cobertura histórica indisponível para esta consulta.</p>
+          ) : null}
+          {model === null ? null : (
+            <DecisionTimelineChart
+              assessmentOverview={resolvedAssessmentOverview}
+              model={model}
+              onSelectPoint={selectPoint}
+              selectedAt={context?.selectedAt ?? null}
+              selectedPointId={selectedPointId}
+              visibleSensors={visibleSensors}
+            />
+          )}
+        </div>
+
+        <DecisionInspector
+          context={context}
+          error={errors?.context ?? null}
+          loading={loading?.context ?? false}
+          onOpenEvidence={openEvidence}
+          onRetry={selectPoint}
+          requestedPointId={requestedPointId}
+        />
       </div>
-
-      {loading.overview ? (
-        <p className="timeline-inline-status" role="status">
-          {overview === null ? "Carregando cobertura histórica…" : "Atualizando a cobertura; a última linha válida continua visível."}
-        </p>
-      ) : null}
-      {errors.overview ? (
-        <p className="timeline-inline-warning" role="alert">
-          {overview === null
-            ? "A cobertura histórica está indisponível para esta consulta."
-            : "A cobertura não pôde ser atualizada. A última linha válida continua visível."}
-        </p>
-      ) : null}
-      {model === null && !loading.overview && !errors.overview ? (
-        <p className="timeline-empty">Cobertura histórica indisponível para esta consulta.</p>
-      ) : null}
-      {model === null ? null : <TimelineOverview model={model} />}
-
-      {assessmentsLoading ? (
-        <p className="timeline-inline-status" role="status">
-          {resolvedAssessmentOverview === null
-            ? "Carregando avalia\u00e7\u00f5es causais\u2026"
-            : "Atualizando as avalia\u00e7\u00f5es; a \u00faltima s\u00e9rie v\u00e1lida continua vis\u00edvel."}
-        </p>
-      ) : null}
-      {assessmentsError ? (
-        <p className="timeline-inline-warning" role="alert">
-          {resolvedAssessmentOverview === null
-            ? "As avalia\u00e7\u00f5es causais est\u00e3o indispon\u00edveis para esta consulta."
-            : "As avalia\u00e7\u00f5es n\u00e3o puderam ser atualizadas. A \u00faltima s\u00e9rie v\u00e1lida continua vis\u00edvel."}
-        </p>
-      ) : null}
-      {resolvedAssessmentOverview === null ? null : (
-        <AssessmentTrend overview={resolvedAssessmentOverview} />
-      )}
-
-      {errors.context ? (
-        <p className="timeline-inline-warning" role="alert">
-          {context === null
-            ? "O ponto não pôde ser sincronizado. O contexto Agora continua visível."
-            : "O ponto não pôde ser sincronizado. O último contexto histórico válido continua visível."}
-        </p>
-      ) : null}
 
       {commitAnnouncement === null ? null : (
         <p
@@ -102,16 +181,28 @@ export default function TimelineWorkspace({
         </p>
       )}
 
-      {children}
-
-      <OriginalSamplesTable
-        error={errors.page}
-        loading={loading.page}
-        page={page}
-        pendingSelection={pendingSelection}
-        selectedPointId={selectedPointId}
-        selectTimelinePoint={selectTimelinePoint}
-      />
+      <details className="decision-console__evidence" ref={evidenceDetailsRef}>
+        <summary>Evidência técnica e leituras originais</summary>
+        <div className="decision-console__evidence-body">
+          <p>
+            Esta área preserva segmentos, lacunas, metadados do modelo e as leituras originais
+            para auditoria. Ela não altera o ponto selecionado no console.
+          </p>
+          {model === null ? null : <TimelineOverview model={model} />}
+          {resolvedAssessmentOverview === null ? null : (
+            <AssessmentTrend overview={resolvedAssessmentOverview} />
+          )}
+          {children}
+          <OriginalSamplesTable
+            error={errors?.page ?? null}
+            loading={loading?.page ?? false}
+            page={page}
+            pendingSelection={pendingSelection}
+            selectedPointId={selectedPointId}
+            selectTimelinePoint={selectPoint}
+          />
+        </div>
+      </details>
     </section>
   );
 }

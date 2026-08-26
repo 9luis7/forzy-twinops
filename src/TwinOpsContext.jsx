@@ -27,6 +27,12 @@ const defaultDataSource = createGatewayTwinDataSourceV2();
 const defaultClock = () => new Date();
 const TIMELINE_POINT_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const INITIAL_TIMELINE_METRIC = "vibrationVelocityRms";
+const TIMELINE_RANGE_DAYS = Object.freeze({
+  "24h": 1,
+  "7d": 7,
+  "14d": 14,
+  "30d": 30,
+});
 const forzyTime = new Intl.DateTimeFormat("en-US", {
   timeZone: "America/Sao_Paulo",
   weekday: "short",
@@ -48,6 +54,19 @@ export function isForzyWindowOpen(value) {
 
 const isAbortError = (error) => error?.name === "AbortError";
 
+const timelineRangeQuery = (preset, now) => {
+  if (preset === "all") return Object.freeze({});
+  const days = TIMELINE_RANGE_DAYS[preset];
+  if (days === undefined) throw new TypeError("TwinOps timeline range preset is invalid");
+  if (!(now instanceof Date) || Number.isNaN(now.getTime())) {
+    throw new TypeError("TwinOps timeline range clock must return a valid Date");
+  }
+  return Object.freeze({
+    from: new Date(now.getTime() - days * 24 * 60 * 60 * 1000).toISOString(),
+    to: now.toISOString(),
+  });
+};
+
 export function TwinOpsProvider({
   children,
   dataSource = defaultDataSource,
@@ -67,6 +86,7 @@ export function TwinOpsProvider({
   const [error, setError] = useState(null);
   const [refreshing, setRefreshing] = useState(false);
   const [lastRefreshAttemptAt, setLastRefreshAttemptAt] = useState(null);
+  const [timelineRangePreset, setTimelineRangePreset] = useState("all");
   const [timelineState, dispatchTimeline] = useReducer(
     timelineNavigationReducer,
     initialTimelineNavigationState
@@ -132,7 +152,7 @@ export function TwinOpsProvider({
     return owner;
   }, [abortTimelineRequest]);
 
-  const loadTimelineOverview = useCallback(() => {
+  const loadTimelineOverview = useCallback((rangeQuery = {}) => {
     const owner = beginTimelineRequest(overviewRequestRef);
     dispatchTimeline({ type: "OVERVIEW_REQUESTED" });
     let operation;
@@ -141,6 +161,7 @@ export function TwinOpsProvider({
         throw new TypeError("TwinOpsProvider dataSource must implement getTimelineOverview");
       }
       operation = dataSource.getTimelineOverview(ASSET_ID, {
+        ...rangeQuery,
         sensorId: "all",
         metric: INITIAL_TIMELINE_METRIC,
         maxPoints: 1200,
@@ -170,7 +191,7 @@ export function TwinOpsProvider({
       });
   }, [beginTimelineRequest, dataSource]);
 
-  const loadTimelinePage = useCallback(() => {
+  const loadTimelinePage = useCallback((rangeQuery = {}) => {
     const owner = beginTimelineRequest(pageRequestRef);
     dispatchTimeline({ type: "PAGE_REQUESTED" });
     let operation;
@@ -179,6 +200,7 @@ export function TwinOpsProvider({
         throw new TypeError("TwinOpsProvider dataSource must implement getTimelineSamples");
       }
       operation = dataSource.getTimelineSamples(ASSET_ID, {
+        ...rangeQuery,
         sensorId: "all",
         metric: INITIAL_TIMELINE_METRIC,
         limit: 200,
@@ -208,7 +230,7 @@ export function TwinOpsProvider({
       });
   }, [beginTimelineRequest, dataSource]);
 
-  const loadTimelineAssessments = useCallback(() => {
+  const loadTimelineAssessments = useCallback((rangeQuery = {}) => {
     const owner = beginTimelineRequest(assessmentsRequestRef);
     dispatchTimeline({ type: "ASSESSMENTS_REQUESTED" });
     let operation;
@@ -217,6 +239,7 @@ export function TwinOpsProvider({
         throw new TypeError("TwinOpsProvider dataSource must implement getTimelineAssessments");
       }
       operation = dataSource.getTimelineAssessments(ASSET_ID, {
+        ...rangeQuery,
         sensorId: "all",
         maxPoints: 4000,
       }, {
@@ -243,13 +266,39 @@ export function TwinOpsProvider({
       });
   }, [beginTimelineRequest, dataSource]);
 
+  const loadHistoricalRange = useCallback((preset) => {
+    const rangeQuery = timelineRangeQuery(preset, clock());
+    const overviewPromise = loadTimelineOverview(rangeQuery);
+    const pagePromise = loadTimelinePage(rangeQuery);
+    const assessmentsPromise = loadTimelineAssessments(rangeQuery);
+    return Promise.all([overviewPromise, pagePromise, assessmentsPromise]);
+  }, [clock, loadTimelineAssessments, loadTimelineOverview, loadTimelinePage]);
+
   const showHistory = useCallback(() => {
     dispatchTimeline({ type: "SHOW_HISTORY" });
-    const overviewPromise = loadTimelineOverview();
-    const pagePromise = loadTimelinePage();
-    const assessmentsPromise = loadTimelineAssessments();
+    return loadHistoricalRange(timelineRangePreset);
+  }, [loadHistoricalRange, timelineRangePreset]);
+
+  const selectTimelineRange = useCallback((preset) => {
+    const availableTo = timelineState.timelineOverview?.availableRange?.to ?? null;
+    const anchor = availableTo === null ? clock() : new Date(availableTo);
+    timelineRangeQuery(preset, anchor);
+    abortTimelineRequest(contextRequestRef);
+    setTimelineRangePreset(preset);
+    dispatchTimeline({ type: "SHOW_HISTORY" });
+    const rangeQuery = timelineRangeQuery(preset, anchor);
+    const overviewPromise = loadTimelineOverview(rangeQuery);
+    const pagePromise = loadTimelinePage(rangeQuery);
+    const assessmentsPromise = loadTimelineAssessments(rangeQuery);
     return Promise.all([overviewPromise, pagePromise, assessmentsPromise]);
-  }, [loadTimelineAssessments, loadTimelineOverview, loadTimelinePage]);
+  }, [
+    abortTimelineRequest,
+    clock,
+    loadTimelineAssessments,
+    loadTimelineOverview,
+    loadTimelinePage,
+    timelineState.timelineOverview,
+  ]);
 
   const selectTimelinePoint = useCallback((pointId) => {
     if (typeof pointId !== "string" || !TIMELINE_POINT_ID_RE.test(pointId)) {
@@ -466,8 +515,10 @@ export function TwinOpsProvider({
     timelineLoading: timelineState.loading,
     timelineErrors: timelineState.errors,
     timelineState,
+    timelineRangePreset,
     showNow,
     showHistory,
+    selectTimelineRange,
     selectTimelinePoint,
   }), [
     displayContext,
@@ -476,10 +527,12 @@ export function TwinOpsProvider({
     refreshNow,
     refreshing,
     selectTimelinePoint,
+    selectTimelineRange,
     showHistory,
     showNow,
     snapshot,
     timelineState,
+    timelineRangePreset,
   ]);
 
   return <TwinOpsContext.Provider value={value}>{children}</TwinOpsContext.Provider>;

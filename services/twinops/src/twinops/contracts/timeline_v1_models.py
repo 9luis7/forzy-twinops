@@ -1340,19 +1340,23 @@ def _assert_context(value: dict[str, object]) -> None:
 
     if paired:
         left, right = returned_channels
-        for key in ("samplePairId", "eventAt", "sourceKind", "operatingCycleId", "assetId"):
+        for key in ("samplePairId", "sourceKind", "operatingCycleId", "assetId"):
             if left[key] != right[key]:
                 raise ValueError("paired context channels must share original pair facts")
         if left["provenance"]["sourceSystem"] != right["provenance"]["sourceSystem"]:
             raise ValueError("paired context channels cannot cross source systems")
-        if left["sourceKind"] == "historical_archive" and left["provenance"][
-            "batchId"
-        ] != right["provenance"]["batchId"]:
-            raise ValueError("paired historical channels cannot cross batches")
-        if left["sourceKind"] == "live_collection" and left["provenance"][
-            "collectionPolicyId"
-        ] != right["provenance"]["collectionPolicyId"]:
-            raise ValueError("paired live channels cannot cross collection policies")
+        if left["sourceKind"] == "historical_archive":
+            if left["eventAt"] != right["eventAt"]:
+                raise ValueError("paired historical channels cannot cross events")
+            if left["provenance"]["batchId"] != right["provenance"]["batchId"]:
+                raise ValueError("paired historical channels cannot cross batches")
+        if left["sourceKind"] == "live_collection":
+            if left["provenance"]["scheduledAt"] != right["provenance"]["scheduledAt"]:
+                raise ValueError("paired live channels cannot cross scheduled samples")
+            if left["provenance"]["collectionPolicyId"] != right["provenance"][
+                "collectionPolicyId"
+            ]:
+                raise ValueError("paired live channels cannot cross collection policies")
 
     point_kind = provenance["pointSourceKind"]
     point_system = provenance["pointSourceSystem"]
