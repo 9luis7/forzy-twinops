@@ -238,7 +238,8 @@ export default function DecisionTimelineChart({
   const fullSpan = Math.max(1, fullDomain[1] - fullDomain[0]);
   const visibleSpan = Math.max(1, domain[1] - domain[0]);
   const zoomFactor = fullSpan / visibleSpan;
-  const showRawScoreTraces = !frameFullDomain || zoomFactor >= RAW_SCORE_TRACE_MIN_ZOOM;
+  const showRawScoreTraces = zoomFactor >= RAW_SCORE_TRACE_MIN_ZOOM;
+  const showCoverageGaps = zoomFactor >= RAW_SCORE_TRACE_MIN_ZOOM;
   const chartRootRef = useRef(null);
   const dragRef = useRef(null);
   const suppressClickRef = useRef(false);
@@ -446,6 +447,9 @@ export default function DecisionTimelineChart({
   const visiblePointCount = visibleSeries.reduce((total, series) => total + series.points.length, 0);
   const pointCountLabel = `${visiblePointCount}/${visibleTimes.length} pontos visíveis`;
   const zoomLabel = `${Math.max(1, Math.round(zoomFactor))}× · ${pointCountLabel}`;
+  const gapSummary = model.gaps.length === 1
+    ? "1 intervalo sem coleta oculto até aproximar"
+    : `${model.gaps.length} intervalos sem coleta ocultos até aproximar`;
 
   return (
     <div className="decision-chart" data-testid="decision-timeline-chart" ref={chartRootRef}>
@@ -453,6 +457,7 @@ export default function DecisionTimelineChart({
         <p>
           <strong>{zoomLabel}</strong>
           <span>Arraste para navegar · Ctrl + roda/trackpad para zoom</span>
+          {!showCoverageGaps && model.gaps.length > 0 ? <span>{gapSummary}</span> : null}
         </p>
         <button disabled={viewportMode === "auto"} onClick={resetViewport} type="button">
           Reenquadrar
@@ -482,7 +487,9 @@ export default function DecisionTimelineChart({
               height={SENSOR_CHART_HEIGHT}
               valueDomain={sensorDomain}
             />
-            <GapAreas domain={domain} gaps={model.gaps} height={SENSOR_CHART_HEIGHT} />
+            {showCoverageGaps ? (
+              <GapAreas domain={domain} gaps={model.gaps} height={SENSOR_CHART_HEIGHT} />
+            ) : null}
             {visibleSeries.map((series) => (
               <polyline
                 aria-hidden="true"
@@ -563,7 +570,9 @@ export default function DecisionTimelineChart({
                 viewBox={`0 0 ${CHART_WIDTH} ${SCORE_CHART_HEIGHT}`}
               >
               <Grid domain={domain} height={SCORE_CHART_HEIGHT} valueDomain={[0, 100]} />
-              <GapAreas domain={domain} gaps={model.gaps} height={SCORE_CHART_HEIGHT} />
+              {showCoverageGaps ? (
+                <GapAreas domain={domain} gaps={model.gaps} height={SCORE_CHART_HEIGHT} />
+              ) : null}
               {showRawScoreTraces ? scoreRuns.map((run, index) => (
                 <polyline
                   aria-hidden="true"

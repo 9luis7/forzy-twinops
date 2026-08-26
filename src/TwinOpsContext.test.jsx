@@ -444,7 +444,7 @@ describe("historical navigation", () => {
     ]);
   });
 
-  it("reloads every historical evidence source for a selected time preset", async () => {
+  it("reuses a loaded historical range without another network roundtrip", async () => {
     const source = sourceStub();
     const doc = visibleDocument();
     const { result } = renderHook(() => useTwinOps(), {
@@ -460,22 +460,22 @@ describe("historical navigation", () => {
       await result.current.showHistory();
     });
     await act(async () => {
-      await result.current.selectTimelineRange("14d");
+      await result.current.selectTimelineRange("historical");
     });
 
-    expect(result.current.timelineRangePreset).toBe("14d");
-    expect(source.getTimelineOverview.mock.calls[1][1]).toMatchObject({
-      from: "2026-08-08T12:03:09.001Z",
-      to: "2026-08-22T12:03:09.001Z",
+    expect(source.getTimelineOverview).toHaveBeenCalledTimes(2);
+    expect(source.getTimelineSamples).toHaveBeenCalledTimes(2);
+    expect(source.getTimelineAssessments).toHaveBeenCalledTimes(2);
+
+    await act(async () => {
+      await result.current.selectTimelineRange("all");
+      await result.current.selectTimelineRange("historical");
     });
-    expect(source.getTimelineSamples.mock.calls[1][1]).toMatchObject({
-      from: "2026-08-08T12:03:09.001Z",
-      to: "2026-08-22T12:03:09.001Z",
-    });
-    expect(source.getTimelineAssessments.mock.calls[1][1]).toMatchObject({
-      from: "2026-08-08T12:03:09.001Z",
-      to: "2026-08-22T12:03:09.001Z",
-    });
+
+    expect(result.current.timelineRangePreset).toBe("historical");
+    expect(source.getTimelineOverview).toHaveBeenCalledTimes(2);
+    expect(source.getTimelineSamples).toHaveBeenCalledTimes(2);
+    expect(source.getTimelineAssessments).toHaveBeenCalledTimes(2);
   });
 
   it("queries the dense immutable archive when Lote histórico is selected", async () => {
@@ -1027,7 +1027,7 @@ describe("historical navigation", () => {
     expect(result.current.historicalContext).toBe(historicalContext);
   });
 
-  it("aborts all timeline request classes on unmount", async () => {
+  it("aborts every active timeline request on unmount", async () => {
     const source = sourceStub();
     const signals = [];
     const untilAbort = (_, { signal }) => {
@@ -1059,7 +1059,7 @@ describe("historical navigation", () => {
       void result.current.selectTimelinePoint(historicalContext.anchor.pointId);
     });
     await flush();
-    expect(signals).toHaveLength(4);
+    expect(signals).toHaveLength(3);
 
     unmount();
     await flush();
@@ -1071,7 +1071,7 @@ describe("historical navigation", () => {
 describe("historical assessment overview ownership", () => {
   const outsideWindowClock = () => new Date("2026-08-13T15:30:00.000Z");
 
-  it("starts assessment evidence with overview and samples under an independent owner", async () => {
+  it("starts assessment evidence after overview and samples release the backend", async () => {
     const source = sourceStub();
     const overviewRequest = deferred();
     const pageRequest = deferred();
@@ -1091,21 +1091,29 @@ describe("historical assessment overview ownership", () => {
 
     expect(source.getTimelineOverview).toHaveBeenCalledTimes(1);
     expect(source.getTimelineSamples).toHaveBeenCalledTimes(1);
-    expect(source.getTimelineAssessments).toHaveBeenCalledTimes(1);
+    expect(source.getTimelineAssessments).not.toHaveBeenCalled();
     expect(result.current.timelineLoading).toMatchObject({
       overview: true,
       page: true,
-      assessments: true,
+      assessments: false,
       context: false,
     });
-    const assessmentCall = source.getTimelineAssessments.mock.calls[0];
-    expect(assessmentCall[0]).toBe("forzy-motor-01");
-    expect(assessmentCall[1]).toEqual({ sensorId: "all", maxPoints: 4000 });
-    expect(assessmentCall[2].signal).toBeInstanceOf(AbortSignal);
 
     await act(async () => {
       overviewRequest.resolve(overview);
       pageRequest.resolve(timelinePage);
+      await Promise.all([overviewRequest.promise, pageRequest.promise]);
+    });
+    await flush();
+
+    expect(source.getTimelineAssessments).toHaveBeenCalledTimes(1);
+    expect(result.current.timelineLoading.assessments).toBe(true);
+    const assessmentCall = source.getTimelineAssessments.mock.calls[0];
+    expect(assessmentCall[0]).toBe("forzy-motor-01");
+    expect(assessmentCall[1]).toEqual({ sensorId: "all", maxPoints: 800 });
+    expect(assessmentCall[2].signal).toBeInstanceOf(AbortSignal);
+
+    await act(async () => {
       assessmentsRequest.resolve(assessmentOverview);
       await historyPromise;
     });

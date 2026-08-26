@@ -86,6 +86,11 @@ const timelineRangeQuery = (preset, now, overview = null) => {
   });
 };
 
+const timelineRangeCacheKey = (rangeQuery) => JSON.stringify([
+  rangeQuery.from ?? null,
+  rangeQuery.to ?? null,
+]);
+
 export function TwinOpsProvider({
   children,
   dataSource = defaultDataSource,
@@ -120,6 +125,10 @@ export function TwinOpsProvider({
   const assessmentsRequestRef = useRef(null);
   const contextRequestRef = useRef(null);
   const timelineDataSourceRef = useRef(dataSource);
+  const timelineRangeCacheRef = useRef(new Map());
+  const latestTimelineAvailableToRef = useRef(null);
+  const historicalArchiveRangeRef = useRef(null);
+  const timelineBundleOwnerRef = useRef(null);
 
   const isVisible = useCallback(
     () => documentRef?.visibilityState === "visible",
@@ -158,6 +167,7 @@ export function TwinOpsProvider({
   }, []);
 
   const abortAllTimelineRequests = useCallback(() => {
+    timelineBundleOwnerRef.current = null;
     abortTimelineRequest(overviewRequestRef);
     abortTimelineRequest(pageRequestRef);
     abortTimelineRequest(assessmentsRequestRef);
@@ -193,6 +203,15 @@ export function TwinOpsProvider({
       .then((value) => assertTimelineOverviewV1(value))
       .then((value) => {
         if (overviewRequestRef.current !== owner || owner.controller.signal.aborted) return null;
+        const availableTo = Date.parse(value.availableRange?.to ?? "");
+        const latestAvailableTo = Date.parse(latestTimelineAvailableToRef.current ?? "");
+        if (Number.isFinite(availableTo)
+          && (!Number.isFinite(latestAvailableTo) || availableTo > latestAvailableTo)) {
+          latestTimelineAvailableToRef.current = value.availableRange.to;
+        }
+        if (value.segments?.some((segment) => segment.sourceKind === "historical_archive")) {
+          historicalArchiveRangeRef.current = historicalArchiveRangeQuery(value);
+        }
         dispatchTimeline({ type: "OVERVIEW_RESOLVED", overview: value });
         return value;
       })
@@ -260,7 +279,7 @@ export function TwinOpsProvider({
       operation = dataSource.getTimelineAssessments(ASSET_ID, {
         ...rangeQuery,
         sensorId: "all",
-        maxPoints: 4000,
+        maxPoints: 800,
       }, {
         signal: owner.controller.signal,
       });
@@ -285,17 +304,68 @@ export function TwinOpsProvider({
       });
   }, [beginTimelineRequest, dataSource]);
 
-  const loadHistoricalRange = useCallback((preset) => {
-    const rangeQuery = timelineRangeQuery(preset, clock(), timelineState.timelineOverview);
+  const restoreTimelineBundle = useCallback((bundle) => {
+    timelineBundleOwnerRef.current = null;
+    abortTimelineRequest(overviewRequestRef);
+    abortTimelineRequest(pageRequestRef);
+    abortTimelineRequest(assessmentsRequestRef);
+    dispatchTimeline({ type: "OVERVIEW_RESOLVED", overview: bundle.overview });
+    dispatchTimeline({ type: "PAGE_RESOLVED", page: bundle.page });
+    dispatchTimeline({
+      type: "ASSESSMENTS_RESOLVED",
+      assessmentOverview: bundle.assessmentOverview,
+    });
+    return [bundle.overview, bundle.page, bundle.assessmentOverview];
+  }, [abortTimelineRequest]);
+
+  const loadTimelineBundle = useCallback((rangeQuery, { readCache = true } = {}) => {
+    const cacheKey = timelineRangeCacheKey(rangeQuery);
+    if (readCache) {
+      const cached = timelineRangeCacheRef.current.get(cacheKey);
+      if (cached !== undefined) return Promise.resolve(restoreTimelineBundle(cached));
+    }
+
+    const bundleOwner = {};
+    timelineBundleOwnerRef.current = bundleOwner;
     const overviewPromise = loadTimelineOverview(rangeQuery);
     const pagePromise = loadTimelinePage(rangeQuery);
-    const assessmentsPromise = loadTimelineAssessments(rangeQuery);
-    return Promise.all([overviewPromise, pagePromise, assessmentsPromise]);
+    return Promise.all([overviewPromise, pagePromise])
+      .then(([overview, page]) => {
+        if (timelineBundleOwnerRef.current !== bundleOwner) return [overview, page, null];
+        return loadTimelineAssessments(rangeQuery)
+          .then((assessmentOverview) => [overview, page, assessmentOverview]);
+      })
+      .then(([overview, page, assessmentOverview]) => {
+        if (timelineBundleOwnerRef.current === bundleOwner
+          && overview !== null
+          && page !== null
+          && assessmentOverview !== null) {
+          timelineRangeCacheRef.current.set(cacheKey, Object.freeze({
+            overview,
+            page,
+            assessmentOverview,
+          }));
+        }
+        return [overview, page, assessmentOverview];
+      })
+      .finally(() => {
+        if (timelineBundleOwnerRef.current === bundleOwner) {
+          timelineBundleOwnerRef.current = null;
+        }
+      });
   }, [
-    clock,
     loadTimelineAssessments,
     loadTimelineOverview,
     loadTimelinePage,
+    restoreTimelineBundle,
+  ]);
+
+  const loadHistoricalRange = useCallback((preset) => {
+    const rangeQuery = timelineRangeQuery(preset, clock(), timelineState.timelineOverview);
+    return loadTimelineBundle(rangeQuery, { readCache: false });
+  }, [
+    clock,
+    loadTimelineBundle,
     timelineState.timelineOverview,
   ]);
 
@@ -305,22 +375,21 @@ export function TwinOpsProvider({
   }, [loadHistoricalRange, timelineRangePreset]);
 
   const selectTimelineRange = useCallback((preset) => {
-    const availableTo = timelineState.timelineOverview?.availableRange?.to ?? null;
+    const availableTo = latestTimelineAvailableToRef.current
+      ?? timelineState.timelineOverview?.availableRange?.to
+      ?? null;
     const anchor = availableTo === null ? clock() : new Date(availableTo);
-    const rangeQuery = timelineRangeQuery(preset, anchor, timelineState.timelineOverview);
+    const rangeQuery = preset === "historical" && historicalArchiveRangeRef.current !== null
+      ? historicalArchiveRangeRef.current
+      : timelineRangeQuery(preset, anchor, timelineState.timelineOverview);
     abortTimelineRequest(contextRequestRef);
     setTimelineRangePreset(preset);
     dispatchTimeline({ type: "SHOW_HISTORY" });
-    const overviewPromise = loadTimelineOverview(rangeQuery);
-    const pagePromise = loadTimelinePage(rangeQuery);
-    const assessmentsPromise = loadTimelineAssessments(rangeQuery);
-    return Promise.all([overviewPromise, pagePromise, assessmentsPromise]);
+    return loadTimelineBundle(rangeQuery);
   }, [
     abortTimelineRequest,
     clock,
-    loadTimelineAssessments,
-    loadTimelineOverview,
-    loadTimelinePage,
+    loadTimelineBundle,
     timelineState.timelineOverview,
   ]);
 
@@ -374,6 +443,9 @@ export function TwinOpsProvider({
   useEffect(() => {
     if (timelineDataSourceRef.current !== dataSource) {
       timelineDataSourceRef.current = dataSource;
+      timelineRangeCacheRef.current.clear();
+      latestTimelineAvailableToRef.current = null;
+      historicalArchiveRangeRef.current = null;
       dispatchTimeline({ type: "RESET" });
     }
     return abortAllTimelineRequests;
@@ -397,6 +469,7 @@ export function TwinOpsProvider({
     const requestOwner = { kind, controller, generation, promise: null };
     const isManualRequest = kind === "refresh" || kind === "manual-snapshot";
     if (isManualRequest) {
+      timelineRangeCacheRef.current.clear();
       refreshingOwnerRef.current = requestOwner;
       setRefreshing(true);
       const attemptedAt = clock();

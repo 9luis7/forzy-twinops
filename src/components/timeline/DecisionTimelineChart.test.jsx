@@ -37,6 +37,15 @@ const clusteredModel = {
   }],
 };
 
+const gappedModel = {
+  ...clusteredModel,
+  gaps: [{
+    gapId: "00000000-0000-5000-8000-000000000099",
+    startMs: fullDomain[0] + 8 * HOUR,
+    endMs: fullDomain[0] + 9 * HOUR,
+  }],
+};
+
 const assessmentPoint = (index, hour, status) => ({
   assessmentId: `00000000-0000-5000-8000-${String(index + 100).padStart(12, "0")}`,
   anchorPointId: `00000000-0000-5000-8000-${String(index + 200).padStart(12, "0")}`,
@@ -69,6 +78,24 @@ const assessmentOverview = {
 };
 
 describe("DecisionTimelineChart zoom viewport", () => {
+  it("summarizes coverage gaps instead of painting a barcode at overview scale", () => {
+    render(
+      <DecisionTimelineChart
+        assessmentOverview={null}
+        frameFullDomain
+        model={gappedModel}
+        onSelectPoint={vi.fn()}
+        selectedAt={null}
+        selectedPointId={null}
+        visibleSensors={new Set(["s1", "s2"])}
+      />,
+    );
+
+    const telemetry = screen.getByRole("img", { name: "Telemetria histórica sincronizada" });
+    expect(telemetry.querySelectorAll(".decision-chart__gaps rect")).toHaveLength(0);
+    expect(screen.getByText(/1 intervalo sem coleta oculto até aproximar/i)).toBeVisible();
+  });
+
   it("shows candidate episodes instead of raw score traces in the full-range overview", () => {
     render(
       <DecisionTimelineChart

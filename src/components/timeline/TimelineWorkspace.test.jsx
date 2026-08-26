@@ -69,17 +69,19 @@ describe("TimelineWorkspace", () => {
     );
 
     const rangeControls = screen.getByRole("group", { name: "Período exibido" });
-    expect(within(rangeControls).getByRole("button", { name: "7 dias" })).toHaveAttribute(
+    expect(within(rangeControls).getByRole("button", { name: "Coletas recentes" })).toHaveAttribute(
       "aria-pressed",
       "true",
     );
-    expect(within(rangeControls).getByRole("button", { name: "Lote histórico" })).toBeVisible();
-    expect(within(rangeControls).getByRole("button", { name: "Tudo + live" })).toBeVisible();
-    expect(screen.getByText("4 pontos representativos de 44 leituras persistidas")).toBeVisible();
-    fireEvent.click(within(rangeControls).getByRole("button", { name: "Lote histórico" }));
+    expect(within(rangeControls).getByRole("button", { name: "Histórico avaliado" })).toBeVisible();
+    expect(within(rangeControls).getByRole("button", { name: "Visão completa" })).toBeVisible();
+    expect(within(rangeControls).getAllByRole("button")).toHaveLength(3);
+    expect(screen.getByText("4 pontos representativos no gráfico · 44 leituras persistidas")).toBeVisible();
+    expect(screen.getByText(/scores pertencem ao lote histórico avaliado/i)).toBeVisible();
+    fireEvent.click(within(rangeControls).getByRole("button", { name: "Histórico avaliado" }));
     expect(onRangePresetChange).toHaveBeenCalledWith("historical");
-    fireEvent.click(within(rangeControls).getByRole("button", { name: "14 dias" }));
-    expect(onRangePresetChange).toHaveBeenCalledWith("14d");
+    fireEvent.click(within(rangeControls).getByRole("button", { name: "Coletas recentes" }));
+    expect(onRangePresetChange).toHaveBeenCalledWith("7d");
 
     const evidenceSummary = screen.getByText("Evidência técnica e leituras originais");
     expect(evidenceSummary.closest("details")).not.toHaveAttribute("open");
@@ -103,7 +105,34 @@ describe("TimelineWorkspace", () => {
       />,
     );
 
-    expect(screen.getByRole("button", { name: "Lote histórico" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Histórico avaliado" })).toBeDisabled();
+  });
+
+  it("keeps historical navigation available while a recent-only slice is visible", async () => {
+    const { default: TimelineWorkspace } = await import("./TimelineWorkspace.jsx");
+    const recentOverview = structuredClone(overviewFixture);
+    recentOverview.segments = recentOverview.segments.map((segment) => ({
+      ...segment,
+      sourceKind: "live_collection",
+    }));
+
+    render(
+      <TimelineWorkspace
+        assessmentOverview={null}
+        context={null}
+        errors={{ overview: null, page: null, assessments: null, context: null }}
+        loading={{ overview: false, page: false, assessments: false, context: false }}
+        onRangePresetChange={vi.fn()}
+        overview={recentOverview}
+        page={structuredClone(pageFixture)}
+        pendingSelection={null}
+        rangePreset="7d"
+        selectTimelinePoint={vi.fn()}
+      />,
+    );
+
+    expect(recentOverview.capabilities.historical).toBe(true);
+    expect(screen.getByRole("button", { name: "Histórico avaliado" })).toBeEnabled();
   });
 
   it("frames the complete published domain when Tudo is selected", async () => {
@@ -157,8 +186,31 @@ describe("TimelineWorkspace", () => {
     expect(Number(telemetry.dataset.domainTo)).toBe(Date.parse(domainTo));
     expect(screen.getByText("1× · 6/6 pontos visíveis")).toBeVisible();
     expect(screen.getByRole("button", { name: "Reenquadrar" })).toBeDisabled();
-    expect(screen.getByText(/Tudo \+ live comprime a janela histórica/i)).toBeVisible();
-    expect(screen.getByText(/Selecione Lote histórico/i)).toBeVisible();
+    expect(screen.getByText(/Visão completa comprime meses sem coleta/i)).toBeVisible();
+    expect(screen.getByText(/Selecione Histórico avaliado/i)).toBeVisible();
+  });
+
+  it("keeps the evaluated historical overview readable until the operator zooms", async () => {
+    const { default: TimelineWorkspace } = await import("./TimelineWorkspace.jsx");
+    render(
+      <TimelineWorkspace
+        assessmentOverview={structuredClone(assessmentOverviewFixture)}
+        context={null}
+        errors={{ overview: null, page: null, assessments: null, context: null }}
+        loading={{ overview: false, page: false, assessments: false, context: false }}
+        onRangePresetChange={vi.fn()}
+        overview={structuredClone(overviewFixture)}
+        page={structuredClone(pageFixture)}
+        pendingSelection={null}
+        rangePreset="historical"
+        selectTimelinePoint={vi.fn()}
+      />,
+    );
+
+    const scores = screen.getByRole("img", { name: /Scores hist.*sincronizados/i });
+    expect(scores).toHaveAttribute("data-detail-level", "episodes");
+    expect(scores.querySelectorAll("polyline[data-score]")).toHaveLength(0);
+    expect(screen.getByText(/Aproxime para revelar as curvas brutas/i)).toBeVisible();
   });
 
   it("selects an original point directly from the synchronized chart", async () => {

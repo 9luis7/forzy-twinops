@@ -8,12 +8,9 @@ import TimelineOverview from "./TimelineOverview.jsx";
 import { buildTimelineViewModel } from "./timelineViewModel.js";
 
 const RANGE_PRESETS = Object.freeze([
-  ["historical", "Lote histórico"],
-  ["24h", "24 horas"],
-  ["7d", "7 dias"],
-  ["14d", "14 dias"],
-  ["30d", "30 dias"],
-  ["all", "Tudo + live"],
+  ["historical", "Histórico avaliado"],
+  ["7d", "Coletas recentes"],
+  ["all", "Visão completa"],
 ]);
 
 export default function TimelineWorkspace({
@@ -48,6 +45,7 @@ export default function TimelineWorkspace({
     [overview],
   );
   const liveOnly = overview?.capabilities?.historical === false;
+  const historicalNavigationAvailable = overview?.capabilities?.historical === true;
   const sourceKinds = new Set(overview?.segments?.map((segment) => segment.sourceKind) ?? []);
   const hasHistoricalArchive = sourceKinds.has("historical_archive");
   const spansHistoricalAndLive = hasHistoricalArchive
@@ -100,7 +98,7 @@ export default function TimelineWorkspace({
             <small>
               {liveOnly
                 ? `${aggregation.originalPointCount} leituras ao vivo disponíveis`
-                : `${aggregation.returnedPointCount} pontos representativos de ${aggregation.originalPointCount} leituras persistidas`}
+                : `${aggregation.returnedPointCount} pontos representativos no gráfico · ${aggregation.originalPointCount} leituras persistidas`}
             </small>
           )}
         </div>
@@ -115,7 +113,7 @@ export default function TimelineWorkspace({
             {RANGE_PRESETS.map(([value, label]) => (
               <button
                 aria-pressed={rangePreset === value}
-                disabled={value === "historical" && !hasHistoricalArchive}
+                disabled={value === "historical" && !historicalNavigationAvailable}
                 key={value}
                 onClick={() => { void onRangePresetChange(value); }}
                 type="button"
@@ -126,10 +124,17 @@ export default function TimelineWorkspace({
           </div>
         )}
 
+        {!liveOnly && rangePreset === "7d" ? (
+          <div className="decision-console__availability">
+            <strong>Coletas recentes sem avaliação histórica</strong>
+            <span>Os scores pertencem ao lote histórico avaliado; nenhum valor recente foi inventado ou preenchido com zero.</span>
+          </div>
+        ) : null}
+
         {!liveOnly && rangePreset === "all" && spansHistoricalAndLive ? (
           <div className="decision-console__availability">
-            <strong>Tudo + live comprime a janela histórica</strong>
-            <span>Selecione Lote histórico para ver a telemetria e os scores no período denso.</span>
+            <strong>Visão completa comprime meses sem coleta</strong>
+            <span>Selecione Histórico avaliado para analisar a telemetria e os scores no período denso.</span>
           </div>
         ) : null}
 
@@ -189,7 +194,7 @@ export default function TimelineWorkspace({
           {model === null ? null : (
             <DecisionTimelineChart
               assessmentOverview={resolvedAssessmentOverview}
-              frameFullDomain={rangePreset === "all"}
+              frameFullDomain={rangePreset !== "7d"}
               model={model}
               onSelectPoint={selectPoint}
               pendingPointId={pendingSelection?.pointId
