@@ -185,6 +185,76 @@ h3 {
   background: #422006;
 }
 
+.panel.snapshot-loading-panel {
+  padding: 0;
+  overflow: hidden;
+}
+
+.snapshot-loading-panel > .loading-state,
+.progressive-panel-loading > .loading-state {
+  width: 100%;
+  max-width: none;
+  border: 0;
+  border-radius: 0 0 calc(var(--radius) - 1px) calc(var(--radius) - 1px);
+  box-shadow: none;
+}
+
+.dashboard-skeleton-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1rem;
+  margin-top: 1rem;
+}
+
+.panel.dashboard-skeleton-panel {
+  min-height: 12rem;
+  margin-top: 0;
+  overflow: hidden;
+}
+
+.dashboard-skeleton-panel--wide {
+  grid-column: 1 / -1;
+}
+
+.dashboard-skeleton-lines {
+  display: grid;
+  gap: 0.75rem;
+  margin-top: 1.5rem;
+}
+
+.dashboard-skeleton-lines span {
+  display: block;
+  width: 100%;
+  height: 0.85rem;
+  border-radius: 999px;
+  background: linear-gradient(
+    90deg,
+    rgb(38 60 87 / 72%) 0%,
+    rgb(75 102 133 / 72%) 50%,
+    rgb(38 60 87 / 72%) 100%
+  );
+  background-size: 200% 100%;
+  animation: dashboard-skeleton-shift 1.8s ease-in-out infinite;
+}
+
+.dashboard-skeleton-lines span:nth-child(2) {
+  width: 78%;
+}
+
+.dashboard-skeleton-lines span:nth-child(3) {
+  width: 55%;
+}
+
+@keyframes dashboard-skeleton-shift {
+  from {
+    background-position: 100% 0;
+  }
+
+  to {
+    background-position: -100% 0;
+  }
+}
+
 .panel {
   margin-top: 1rem;
   padding: clamp(1rem, 2.5vw, 1.5rem);
@@ -604,9 +674,14 @@ h3 {
 
   .sensor-grid,
   .details-grid,
+  .dashboard-skeleton-grid,
   .health-grid,
   .trend-series-grid {
     grid-template-columns: 1fr;
+  }
+
+  .dashboard-skeleton-panel--wide {
+    grid-column: auto;
   }
 
   .operational-state {

@@ -68,8 +68,14 @@ it("shows an honest loading state before the first real snapshot", () => {
   });
   expect(loading).toHaveAttribute("aria-live", "polite");
   expect(loading).toHaveTextContent(
-    /Conectando ao snapshot operacional|Validando telemetria S1 e S2|Preparando o painel operacional|Sincronizando o gêmeo digital/,
+    /Conectando ao snapshot operacional|Validando telemetria S1 e S2|Preparando o painel operacional|Reservando o 3D para a etapa final/,
   );
+  const shell = screen.getByTestId("dashboard-loading-shell");
+  expect(shell).not.toHaveClass("operations-shell--centered");
+  expect(screen.getByText("Os dados reais aparecerão por etapas assim que o snapshot responder.")).toBeVisible();
+  expect(screen.getByText("Canais S1 e S2")).toBeVisible();
+  expect(screen.getByText("Avaliação e integração")).toBeVisible();
+  expect(screen.getByText("O 3D entra por último")).toBeVisible();
 });
 
 it("starts a fresh bootstrap after StrictMode aborts the first setup outside the window", async () => {
@@ -144,6 +150,43 @@ it("uses read-only refresh outside the Forzy window", async () => {
   expect(source.refresh).not.toHaveBeenCalled();
 });
 
+it("completes the full real graph before secondary data and mounts the 3D twin last", async () => {
+  const snapshot = structuredClone(receivedSnapshot);
+  snapshot.history = snapshot.channels.map((channel, index) => ({
+    ...structuredClone(channel),
+    frameId: `10000000-0000-4000-8000-00000000000${index + 1}`,
+  }));
+  const Twin3DProbe = vi.fn(() => <div data-testid="twin3d-probe" />);
+
+  render(<App dataSource={sourceWithSnapshot(snapshot)} Twin3DComponent={Twin3DProbe} />);
+  await flush();
+  await act(async () => vi.dynamicImportSettled());
+  await flush();
+
+  expect(screen.getByText("Conjunto motor-bomba monitorado")).toBeInTheDocument();
+  expect(screen.getByTestId("telemetry-trend")).toBeInTheDocument();
+  expect(screen.getAllByRole("listitem")).toHaveLength(snapshot.history.length);
+  expect(screen.queryByRole("heading", { name: "S1", level: 2 })).not.toBeInTheDocument();
+  expect(screen.queryByRole("heading", { name: "S2", level: 2 })).not.toBeInTheDocument();
+  expect(screen.queryByRole("heading", { name: "Avaliação do modelo" })).not.toBeInTheDocument();
+  expect(screen.queryByRole("heading", { name: "Saúde da integração" })).not.toBeInTheDocument();
+  expect(Twin3DProbe).not.toHaveBeenCalled();
+
+  await act(async () => vi.advanceTimersToNextTimerAsync());
+  await flush();
+
+  expect(screen.getByRole("heading", { name: "S1", level: 2 })).toBeInTheDocument();
+  expect(screen.getByRole("heading", { name: "S2", level: 2 })).toBeInTheDocument();
+  expect(screen.getByRole("heading", { name: "Avaliação do modelo" })).toBeInTheDocument();
+  expect(screen.getByRole("heading", { name: "Saúde da integração" })).toBeInTheDocument();
+  expect(Twin3DProbe).not.toHaveBeenCalled();
+
+  await act(async () => vi.advanceTimersToNextTimerAsync());
+  await flush();
+
+  expect(screen.getByTestId("twin3d-probe")).toBeInTheDocument();
+});
+
 it("exposes a testable Twin3D component seam with an honest fallback", async () => {
   const Twin3DProbe = vi.fn(({ snapshot, fallback }) => (
     <div data-testid="twin3d-probe">
@@ -153,6 +196,15 @@ it("exposes a testable Twin3D component seam with an honest fallback", async () 
   ));
 
   render(<App dataSource={sourceWithSnapshot()} Twin3DComponent={Twin3DProbe} />);
+  await flush();
+  await act(async () => vi.dynamicImportSettled());
+  await flush();
+
+  expect(Twin3DProbe).not.toHaveBeenCalled();
+  await act(async () => vi.advanceTimersToNextTimerAsync());
+  await flush();
+  expect(Twin3DProbe).not.toHaveBeenCalled();
+  await act(async () => vi.advanceTimersToNextTimerAsync());
   await flush();
 
   expect(screen.getByTestId("twin3d-probe")).toHaveTextContent("forzy-motor-01");
