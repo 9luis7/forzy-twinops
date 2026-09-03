@@ -23,6 +23,16 @@ const sourceWithSnapshot = (snapshot = structuredClone(receivedSnapshot)) => ({
   refresh: vi.fn().mockResolvedValue({ refreshAttempted: true, snapshot }),
 });
 
+const ragSource = () => ({
+  query: vi.fn(),
+  createDraft: vi.fn(),
+  uploadDocument: vi.fn(),
+  getCorpus: vi.fn(),
+  testRetrieval: vi.fn(),
+  publish: vi.fn(),
+  reactivate: vi.fn(),
+});
+
 beforeAll(() => {
   vi.stubGlobal("ResizeObserver", class {
     observe() {}
@@ -173,4 +183,60 @@ it("mounts the real Twin3D shell by default", async () => {
   await flush();
 
   expect(await screen.findByText("canvas-3d-real:forzy-motor-01")).toBeInTheDocument();
+});
+
+it("integrates the public assistant only from the backend copilot capability", async () => {
+  const snapshot = structuredClone(receivedSnapshot);
+  snapshot.capabilities.copilot = true;
+  const ragDataSource = ragSource();
+
+  render(<App dataSource={sourceWithSnapshot(snapshot)} ragDataSource={ragDataSource} />);
+  await flush();
+
+  expect(screen.getByRole("heading", { name: "Assistente técnico" })).toBeInTheDocument();
+  expect(screen.getByRole("form", { name: "Consultar o assistente técnico" })).toBeInTheDocument();
+  expect(screen.queryByRole("link", { name: /admin/i })).not.toBeInTheDocument();
+  expect(ragDataSource.query).not.toHaveBeenCalled();
+});
+
+it.each(["/rag-admin", "/rag-admin/"])(
+  "renders the protected admin surface only for the exact enabled pathname %s",
+  (pathname) => {
+    const dataSource = sourceWithSnapshot();
+    const ragDataSource = ragSource();
+
+    render(
+      <App
+        dataSource={dataSource}
+        ragDataSource={ragDataSource}
+        pathname={pathname}
+        ragAdminEnabled
+      />
+    );
+
+    expect(screen.getByRole("heading", { name: "Administração do RAG" })).toBeInTheDocument();
+    expect(screen.queryByText("Conjunto motor-bomba monitorado")).not.toBeInTheDocument();
+    expect(dataSource.getSnapshot).not.toHaveBeenCalled();
+  }
+);
+
+it.each([
+  ["/rag-admin", false],
+  ["/rag-admin/extra", true],
+  ["/operations", true],
+])("keeps the public operations app for pathname %s with admin flag %s", async (pathname, ragAdminEnabled) => {
+  const dataSource = sourceWithSnapshot();
+
+  render(
+    <App
+      dataSource={dataSource}
+      ragDataSource={ragSource()}
+      pathname={pathname}
+      ragAdminEnabled={ragAdminEnabled}
+    />
+  );
+  await flush();
+
+  expect(screen.getByText("Conjunto motor-bomba monitorado")).toBeInTheDocument();
+  expect(screen.queryByRole("heading", { name: "Administração do RAG" })).not.toBeInTheDocument();
 });
