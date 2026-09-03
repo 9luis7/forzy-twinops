@@ -142,15 +142,50 @@ def _parse_outcomes(value: str | None) -> dict[str, SensorRefreshOutcomeV2] | No
 
 
 class PostgresTelemetryRepository:
-    def __init__(self, database_url: str):
+    def __init__(
+        self,
+        database_url: str,
+        *,
+        connection_factory: Callable[[], object] | None = None,
+        connect_timeout_seconds: int = 5,
+        statement_timeout_ms: int = 5_000,
+    ):
+        if (
+            not isinstance(connect_timeout_seconds, int)
+            or connect_timeout_seconds <= 0
+        ):
+            raise ValueError("connect timeout must be a positive integer")
+        if not isinstance(statement_timeout_ms, int) or statement_timeout_ms <= 0:
+            raise ValueError("statement timeout must be a positive integer")
         self.database_url = database_url
+        self._connection_factory = connection_factory
+        self._connect_timeout_seconds = connect_timeout_seconds
+        self._statement_timeout_ms = statement_timeout_ms
 
     @contextmanager
     def _connection(self):
-        with psycopg.connect(
-            self.database_url,
-            row_factory=dict_row,
-        ) as connection:
+        resource = (
+            self._connection_factory()
+            if self._connection_factory is not None
+            else psycopg.connect(
+                self.database_url,
+                row_factory=dict_row,
+                connect_timeout=self._connect_timeout_seconds,
+            )
+        )
+        with resource as connection:
+            yield connection
+
+    @contextmanager
+    def _read_connection(self):
+        """Bound snapshot reads inside PostgreSQL, independent of ASGI cancellation."""
+
+        with self._connection() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    "SELECT set_config('statement_timeout', %s, true)",
+                    (str(self._statement_timeout_ms),),
+                )
             yield connection
 
     def initialize(self) -> None:
@@ -293,12 +328,13 @@ class PostgresTelemetryRepository:
             raise ValueError("sample and attempt sensor ids must match")
 
     def latest(self, asset_id: str) -> list[CanonicalSensorReadingV2]:
-        with self._connection() as connection:
-            rows = connection.execute(
-                "SELECT canonical_json FROM latest_readings_v2 "
-                "WHERE asset_id=%s ORDER BY sensor_id",
-                (asset_id,),
-            ).fetchall()
+        with self._read_connection() as connection:
+            with connection.cursor() as cursor:
+                rows = cursor.execute(
+                    "SELECT canonical_json FROM latest_readings_v2 "
+                    "WHERE asset_id=%s ORDER BY sensor_id",
+                    (asset_id,),
+                ).fetchall()
         return [
             CanonicalSensorReadingV2.model_validate(json.loads(row["canonical_json"]))
             for row in rows
@@ -325,38 +361,40 @@ class PostgresTelemetryRepository:
                 where.append(clause)
                 parameters.append(value)
         parameters.append(query.limit)
-        with self._connection() as connection:
-            rows = connection.execute(
-                "SELECT canonical_json FROM telemetry_samples_v2 WHERE "
-                + " AND ".join(where)
-                + " ORDER BY observed_at DESC, received_at DESC, reading_id DESC "
-                "LIMIT %s",
-                parameters,
-            ).fetchall()
+        with self._read_connection() as connection:
+            with connection.cursor() as cursor:
+                rows = cursor.execute(
+                    "SELECT canonical_json FROM telemetry_samples_v2 WHERE "
+                    + " AND ".join(where)
+                    + " ORDER BY observed_at DESC, received_at DESC, reading_id DESC "
+                    "LIMIT %s",
+                    parameters,
+                ).fetchall()
         return [
             CanonicalSensorReadingV2.model_validate(json.loads(row["canonical_json"]))
             for row in rows
         ]
 
     def health(self, sensor_id: str) -> RepositorySensorHealthV2 | None:
-        with self._connection() as connection:
-            latest = connection.execute(
-                "SELECT attempted_at, latency_ms, error_code "
-                "FROM collection_attempts_v2 WHERE sensor_id=%s "
-                "ORDER BY attempted_at DESC, attempt_id DESC LIMIT 1",
-                (sensor_id,),
-            ).fetchone()
-            last_success = connection.execute(
-                "SELECT MAX(attempted_at) AS attempted_at "
-                "FROM collection_attempts_v2 "
-                "WHERE sensor_id=%s AND succeeded=TRUE",
-                (sensor_id,),
-            ).fetchone()["attempted_at"]
-            sample_count = connection.execute(
-                "SELECT COUNT(*) AS sample_count FROM telemetry_samples_v2 "
-                "WHERE sensor_id=%s",
-                (sensor_id,),
-            ).fetchone()["sample_count"]
+        with self._read_connection() as connection:
+            with connection.cursor() as cursor:
+                latest = cursor.execute(
+                    "SELECT attempted_at, latency_ms, error_code "
+                    "FROM collection_attempts_v2 WHERE sensor_id=%s "
+                    "ORDER BY attempted_at DESC, attempt_id DESC LIMIT 1",
+                    (sensor_id,),
+                ).fetchone()
+                last_success = cursor.execute(
+                    "SELECT MAX(attempted_at) AS attempted_at "
+                    "FROM collection_attempts_v2 "
+                    "WHERE sensor_id=%s AND succeeded=TRUE",
+                    (sensor_id,),
+                ).fetchone()["attempted_at"]
+                sample_count = cursor.execute(
+                    "SELECT COUNT(*) AS sample_count FROM telemetry_samples_v2 "
+                    "WHERE sensor_id=%s",
+                    (sensor_id,),
+                ).fetchone()["sample_count"]
         if latest is None and sample_count == 0:
             return None
         return RepositorySensorHealthV2(

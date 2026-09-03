@@ -38,6 +38,7 @@ def build_snapshot_v2(
         "retrieval_time", "last_received", "schedule", "none"
     ],
     twin3d_enabled: bool,
+    copilot_enabled: bool = False,
 ) -> DigitalTwinSnapshotV2:
     """Read current telemetry and return a snapshot without mutating dependencies."""
 
@@ -143,7 +144,7 @@ def build_snapshot_v2(
             "capabilities": {
                 "liveUpdates": True,
                 "replayControls": False,
-                "copilot": False,
+                "copilot": copilot_enabled,
                 "twin3d": twin3d_enabled,
             },
         }

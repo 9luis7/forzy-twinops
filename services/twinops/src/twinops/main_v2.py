@@ -20,8 +20,14 @@ from twinops.ml.scorer import AssessmentScorer
 from twinops.rag.admin_routes import create_rag_admin_router
 from twinops.rag.admin_service import RagAdminService
 from twinops.rag.embeddings import EmbeddingGatewayClient
+from twinops.rag.generation import ChatGatewayClient
+from twinops.rag.public_service import RagAssistantService
 from twinops.rag.repository import PostgresRagRepository, RagRepository
-from twinops.rag.request_limits import RagAdminUploadLimitMiddleware
+from twinops.rag.request_limits import (
+    RagAdminUploadLimitMiddleware,
+    RagPublicQueryLimitMiddleware,
+)
+from twinops.rag.retrieval import HybridRetriever
 from twinops.storage.postgres_repository import PostgresTelemetryRepository
 from twinops.storage.sqlite_v2_repository import SQLiteTelemetryRepositoryV2
 from twinops.storage.v2_repository import TelemetryRepositoryV2
@@ -49,6 +55,7 @@ def create_app_v2(
     assessment_scorer: AssessmentScorer | None,
     clock: Callable[[], datetime],
     rag_admin_service: RagAdminService | None = None,
+    rag_assistant_service: RagAssistantService | None = None,
 ) -> FastAPI:
     app = FastAPI(title="Forzy TwinOps API", version="2.0.0")
     app.state.repository = repository
@@ -57,7 +64,9 @@ def create_app_v2(
     app.state.assessment_scorer = assessment_scorer or _UnavailableAssessmentScorer()
     app.state.clock = clock
     app.state.rag_admin_service = rag_admin_service
+    app.state.rag_assistant_service = rag_assistant_service
     app.include_router(create_v2_router())
+    app.add_middleware(RagPublicQueryLimitMiddleware)
     if settings.vercel_environment == "preview" and settings.rag_admin_enabled:
         app.add_middleware(RagAdminUploadLimitMiddleware)
         app.include_router(create_rag_admin_router())
@@ -88,8 +97,22 @@ def create_app_v2_from_env(
     repository: TelemetryRepositoryV2
     rag_repository: RagRepository | None = None
     if settings.database_url is not None:
-        repository = PostgresTelemetryRepository(settings.database_url)
-        rag_repository = PostgresRagRepository(settings.database_url)
+        connect_timeout_seconds = max(
+            1, int(settings.rag_query_timeout_seconds)
+        )
+        statement_timeout_ms = max(
+            1, int(settings.rag_query_timeout_seconds * 1_000)
+        )
+        repository = PostgresTelemetryRepository(
+            settings.database_url,
+            connect_timeout_seconds=connect_timeout_seconds,
+            statement_timeout_ms=statement_timeout_ms,
+        )
+        rag_repository = PostgresRagRepository(
+            settings.database_url,
+            connect_timeout_seconds=connect_timeout_seconds,
+            statement_timeout_ms=statement_timeout_ms,
+        )
     else:
         repository = SQLiteTelemetryRepositoryV2(settings.database_path)
 
@@ -129,23 +152,51 @@ def _runtime_lifespan(
                 clock=app.state.clock,
             )
             app.state.assessment_scorer = scorer or _UnavailableAssessmentScorer()
+            embedding_client = None
+            if (
+                rag_repository is not None
+                and settings.ai_gateway_api_key is not None
+            ):
+                embedding_client = EmbeddingGatewayClient(
+                    http,
+                    api_key=settings.ai_gateway_api_key,
+                    model=settings.rag_embedding_model,
+                    dimensions=settings.rag_embedding_dimensions,
+                    timeout_seconds=settings.rag_gateway_timeout_seconds,
+                )
+            if (
+                settings.rag_enabled
+                and rag_repository is not None
+                and embedding_client is not None
+            ):
+                assert settings.rag_manufacturer is not None
+                assert settings.rag_equipment_model is not None
+                app.state.rag_assistant_service = RagAssistantService(
+                    HybridRetriever(
+                        rag_repository,
+                        embedding_client,
+                        manufacturer=settings.rag_manufacturer,
+                        equipment_model=settings.rag_equipment_model,
+                    ),
+                    ChatGatewayClient(
+                        http,
+                        api_key=settings.ai_gateway_api_key or "",
+                        model=settings.rag_generation_model,
+                        timeout_seconds=settings.rag_gateway_timeout_seconds,
+                    ),
+                    query_timeout_seconds=settings.rag_query_timeout_seconds,
+                )
             if (
                 rag_repository is not None
                 and settings.vercel_environment == "preview"
                 and settings.rag_admin_enabled
-                and settings.ai_gateway_api_key is not None
+                and embedding_client is not None
             ):
                 assert settings.rag_manufacturer is not None
                 assert settings.rag_equipment_model is not None
                 app.state.rag_admin_service = RagAdminService(
                     rag_repository,
-                    EmbeddingGatewayClient(
-                        http,
-                        api_key=settings.ai_gateway_api_key,
-                        model=settings.rag_embedding_model,
-                        dimensions=settings.rag_embedding_dimensions,
-                        timeout_seconds=settings.rag_gateway_timeout_seconds,
-                    ),
+                    embedding_client,
                     manufacturer=settings.rag_manufacturer,
                     equipment_model=settings.rag_equipment_model,
                 )
@@ -155,6 +206,7 @@ def _runtime_lifespan(
                 app.state.refresh_service = _UnavailableRefreshService()
                 app.state.assessment_scorer = _UnavailableAssessmentScorer()
                 app.state.rag_admin_service = None
+                app.state.rag_assistant_service = None
 
     return lifespan
 

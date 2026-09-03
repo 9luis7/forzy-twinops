@@ -29,6 +29,16 @@ describe("contracts/v2", () => {
     expect(snapshot(json("../../contracts/v2/fixtures/snapshot-asset-tag.invalid.json"))).toBe(false);
   });
 
+  it("accepts true and false for the v2 copilot capability", () => {
+    const { snapshot } = validators();
+    const disabled = json("../../contracts/v2/fixtures/snapshot-received-now.valid.json");
+    const enabled = structuredClone(disabled);
+    enabled.capabilities.copilot = true;
+
+    expect(snapshot(disabled)).toBe(true);
+    expect(snapshot(enabled)).toBe(true);
+  });
+
   it("isolates the schema-enforceable Forzy source-time claims", () => {
     const { canonical } = validators();
     const valid = json("../../contracts/v2/fixtures/canonical-live-s1.valid.json");

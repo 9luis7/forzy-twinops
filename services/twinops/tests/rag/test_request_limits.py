@@ -1,5 +1,6 @@
 import pytest
 
+from twinops.rag import request_limits
 from twinops.rag.request_limits import RagAdminUploadLimitMiddleware
 
 
@@ -118,3 +119,56 @@ async def test_stream_limit_cannot_be_masked_by_downstream_exception_handling():
     )
 
     assert sent[0]["status"] == 413
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "headers",
+    [[], [(b"content-length", b"6")]],
+)
+async def test_public_query_limit_rejects_streamed_and_declared_oversize_without_echo(
+    headers,
+):
+    reached_handler = False
+    body_reads = 0
+
+    async def downstream(scope, receive, send):
+        nonlocal reached_handler
+        reached_handler = True
+
+    messages = iter(
+        [
+            {"type": "http.request", "body": b"sec", "more_body": True},
+            {"type": "http.request", "body": b"ret!", "more_body": False},
+        ]
+    )
+
+    async def receive():
+        nonlocal body_reads
+        body_reads += 1
+        return next(messages)
+
+    sent = []
+
+    async def send(message):
+        sent.append(message)
+
+    middleware = request_limits.RagPublicQueryLimitMiddleware(
+        downstream, max_bytes=5
+    )
+    await middleware(
+        {
+            "type": "http",
+            "method": "POST",
+            "path": "/api/v2/assets/forzy-motor-01/assistant/query",
+            "headers": headers,
+        },
+        receive,
+        send,
+    )
+
+    assert reached_handler is False
+    assert sent[0]["status"] == 413
+    assert b"assistant_request_too_large" in sent[1]["body"]
+    assert b"secret" not in sent[1]["body"]
+    assert body_reads == (0 if headers else 2)

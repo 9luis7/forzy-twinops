@@ -137,10 +137,13 @@ class SettingsV2:
     ml_model_hash: str | None = None
     vercel_environment: str | None = None
     rag_admin_enabled: bool = False
+    rag_enabled: bool = False
     ai_gateway_api_key: str | None = field(default=None, repr=False)
     rag_embedding_model: str = "google/text-multilingual-embedding-002"
     rag_embedding_dimensions: int = 768
+    rag_generation_model: str = "openai/gpt-5.6-luna"
     rag_gateway_timeout_seconds: float = 10.0
+    rag_query_timeout_seconds: float = 10.0
     rag_manufacturer: str | None = None
     rag_equipment_model: str | None = None
 
@@ -172,11 +175,23 @@ class SettingsV2:
         if self.rag_embedding_dimensions <= 0:
             raise ValueError("RAG embedding dimensions must be positive")
         if (
+            not self.rag_embedding_model.strip()
+            or self.rag_embedding_model != self.rag_embedding_model.strip()
+            or not self.rag_generation_model.strip()
+            or self.rag_generation_model != self.rag_generation_model.strip()
+        ):
+            raise ValueError("RAG model identifiers must not be empty")
+        if (
             not math.isfinite(self.rag_gateway_timeout_seconds)
             or self.rag_gateway_timeout_seconds <= 0
         ):
             raise ValueError("RAG Gateway timeout must be positive and finite")
-        if self.rag_admin_enabled and (
+        if (
+            not math.isfinite(self.rag_query_timeout_seconds)
+            or not 1 <= self.rag_query_timeout_seconds <= 11
+        ):
+            raise ValueError("RAG query timeout must be in [1, 11]")
+        if (self.rag_enabled or self.rag_admin_enabled) and (
             self.rag_manufacturer is None
             or not self.rag_manufacturer.strip()
             or self.rag_manufacturer != self.rag_manufacturer.strip()
@@ -185,7 +200,7 @@ class SettingsV2:
             or self.rag_equipment_model != self.rag_equipment_model.strip()
         ):
             raise ValueError(
-                "RAG admin requires approved manufacturer and equipment model"
+                "RAG requires approved manufacturer and equipment model"
             )
 
     @classmethod
@@ -211,6 +226,9 @@ class SettingsV2:
         rag_admin_raw = env.get("RAG_ADMIN_ENABLED", "false").lower()
         if rag_admin_raw not in {"true", "false"}:
             raise ValueError("RAG_ADMIN_ENABLED must be true or false")
+        rag_enabled_raw = env.get("TWINOPS_RAG_ENABLED", "false").lower()
+        if rag_enabled_raw not in {"true", "false"}:
+            raise ValueError("TWINOPS_RAG_ENABLED must be true or false")
 
         return cls(
             upstream_base_url=upstream_base_url,
@@ -229,6 +247,7 @@ class SettingsV2:
             ml_model_hash=env.get("TWINOPS_ML_MODEL_HASH") or None,
             vercel_environment=env.get("VERCEL_ENV") or None,
             rag_admin_enabled=rag_admin_raw == "true",
+            rag_enabled=rag_enabled_raw == "true",
             ai_gateway_api_key=env.get("AI_GATEWAY_API_KEY") or None,
             rag_embedding_model=env.get(
                 "TWINOPS_RAG_EMBEDDING_MODEL",
@@ -237,8 +256,14 @@ class SettingsV2:
             rag_embedding_dimensions=int(
                 env.get("TWINOPS_RAG_EMBEDDING_DIMENSIONS", "768")
             ),
+            rag_generation_model=env.get(
+                "TWINOPS_RAG_GENERATION_MODEL", "openai/gpt-5.6-luna"
+            ),
             rag_gateway_timeout_seconds=float(
                 env.get("TWINOPS_RAG_GATEWAY_TIMEOUT_SECONDS", "10")
+            ),
+            rag_query_timeout_seconds=float(
+                env.get("TWINOPS_RAG_QUERY_TIMEOUT_SECONDS", "10")
             ),
             rag_manufacturer=env.get("TWINOPS_RAG_MANUFACTURER") or None,
             rag_equipment_model=(

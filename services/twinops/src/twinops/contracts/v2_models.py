@@ -289,7 +289,7 @@ class IntegrationV2(ContractModelV2):
 class CapabilitiesV2(ContractModelV2):
     live_updates: Literal[True] = Field(alias="liveUpdates")
     replay_controls: Literal[False] = Field(alias="replayControls")
-    copilot: Literal[False]
+    copilot: bool
     twin_3d: bool = Field(alias="twin3d")
 
 

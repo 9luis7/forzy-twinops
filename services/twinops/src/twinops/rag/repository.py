@@ -1,6 +1,7 @@
 """Repository protocol plus in-memory and PostgreSQL implementations."""
 
 from collections.abc import Callable, Sequence
+from contextlib import contextmanager
 from datetime import datetime, timezone
 import json
 import math
@@ -16,6 +17,7 @@ from twinops.rag.models import (
     RagChunk,
     RagCorpus,
     RagDocument,
+    RetrievalCandidate,
 )
 
 
@@ -44,6 +46,20 @@ class RagRepository(Protocol):
         self, asset_id: str, corpus_id: str
     ) -> ActiveCorpusChange: ...
     def get_active_corpus(self, asset_id: str) -> RagCorpus | None: ...
+    def exact_vector_search(
+        self,
+        corpus_id: str,
+        *,
+        query_embedding: Sequence[float],
+        limit: int,
+    ) -> list[RetrievalCandidate]: ...
+    def lexical_search(
+        self,
+        corpus_id: str,
+        *,
+        query: str,
+        limit: int,
+    ) -> list[RetrievalCandidate]: ...
 
 
 class InMemoryRagRepository:
@@ -189,6 +205,73 @@ class InMemoryRagRepository:
         corpus_id = self._active.get(asset_id)
         return None if corpus_id is None else self._corpora[corpus_id]
 
+    def exact_vector_search(
+        self,
+        corpus_id: str,
+        *,
+        query_embedding: Sequence[float],
+        limit: int,
+    ) -> list[RetrievalCandidate]:
+        corpus = self._require_corpus(corpus_id)
+        vector = _validated_vector(query_embedding, corpus.embedding_dimensions)
+        _validate_public_search_limit(limit)
+        candidates = [
+            RetrievalCandidate(
+                chunk=chunk,
+                document=self._documents[chunk.document_id],
+                source_score=max(
+                    0.0,
+                    min(1.0, 1.0 - _cosine_distance(chunk.embedding, vector)),
+                ),
+            )
+            for chunk in self._chunks.values()
+            if chunk.corpus_id == corpus_id
+        ]
+        return sorted(
+            candidates,
+            key=lambda item: (
+                -item.source_score,
+                item.chunk.ordinal,
+                item.chunk.chunk_id,
+            ),
+        )[:limit]
+
+    def lexical_search(
+        self,
+        corpus_id: str,
+        *,
+        query: str,
+        limit: int,
+    ) -> list[RetrievalCandidate]:
+        self._require_corpus(corpus_id)
+        _validate_public_search_limit(limit)
+        terms = tuple(dict.fromkeys(term.casefold() for term in query.split() if term))
+        if not terms:
+            return []
+        candidates: list[RetrievalCandidate] = []
+        for chunk in self._chunks.values():
+            if chunk.corpus_id != corpus_id:
+                continue
+            text = chunk.text.casefold()
+            matches = sum(term in text for term in terms)
+            if matches == 0:
+                continue
+            candidates.append(
+                RetrievalCandidate(
+                    chunk=chunk,
+                    document=self._documents[chunk.document_id],
+                    source_score=matches / len(terms),
+                )
+            )
+        return sorted(
+            candidates,
+            key=lambda item: (
+                -item.source_score,
+                item.chunk.ordinal,
+                item.chunk.chunk_id,
+            ),
+        )[:limit]
+
     def _activate(self, asset_id: str, corpus_id: str) -> ActiveCorpusChange:
         previous = self._active.get(asset_id)
         self._active[asset_id] = corpus_id
@@ -220,14 +303,47 @@ class PostgresRagRepository:
         database_url: str,
         *,
         connection_factory: Callable[[], object] | None = None,
+        connect_timeout_seconds: int = 5,
+        statement_timeout_ms: int = 5_000,
     ) -> None:
+        if (
+            not isinstance(connect_timeout_seconds, int)
+            or connect_timeout_seconds <= 0
+        ):
+            raise ValueError("connect timeout must be a positive integer")
+        if not isinstance(statement_timeout_ms, int) or statement_timeout_ms <= 0:
+            raise ValueError("statement timeout must be a positive integer")
         self._database_url = database_url
         self._connection_factory = connection_factory
+        self._connect_timeout_seconds = connect_timeout_seconds
+        self._statement_timeout_ms = statement_timeout_ms
 
     def _connection(self):
         if self._connection_factory is not None:
             return self._connection_factory()
-        return psycopg.connect(self._database_url, row_factory=dict_row)
+        return psycopg.connect(
+            self._database_url,
+            row_factory=dict_row,
+            connect_timeout=self._connect_timeout_seconds,
+        )
+
+    @contextmanager
+    def _public_connection(self):
+        """Bound public work so cancelled asyncio callers do not leave DB work free-running."""
+
+        with self._connection() as connection:
+            connection.execute(
+                "SELECT set_config('statement_timeout', %s, true)",
+                (str(self._statement_timeout_ms),),
+            )
+            yield connection
+
+    def _get_public_corpus(self, corpus_id: str) -> RagCorpus | None:
+        with self._public_connection() as connection:
+            row = connection.execute(
+                "SELECT * FROM rag_corpora WHERE corpus_id=%s", (corpus_id,)
+            ).fetchone()
+        return None if row is None else _corpus_from_row(row)
 
     def create_corpus(self, corpus: RagCorpus) -> RagCorpus:
         with self._connection() as connection:
@@ -448,7 +564,7 @@ class PostgresRagRepository:
         return ActiveCorpusChange(asset_id, corpus_id, previous, now)
 
     def get_active_corpus(self, asset_id: str) -> RagCorpus | None:
-        with self._connection() as connection:
+        with self._public_connection() as connection:
             row = connection.execute(
                 "SELECT r.* FROM rag_active_corpus a JOIN rag_corpora r "
                 "ON r.corpus_id=a.corpus_id WHERE a.asset_id=%s",
@@ -456,12 +572,97 @@ class PostgresRagRepository:
             ).fetchone()
         return None if row is None else _corpus_from_row(row)
 
+    def exact_vector_search(
+        self,
+        corpus_id: str,
+        *,
+        query_embedding: Sequence[float],
+        limit: int,
+    ) -> list[RetrievalCandidate]:
+        corpus = self._get_public_corpus(corpus_id)
+        if corpus is None:
+            raise KeyError("corpus not found")
+        vector = _validated_vector(query_embedding, corpus.embedding_dimensions)
+        _validate_public_search_limit(limit)
+        with self._public_connection() as connection:
+            rows = connection.execute(
+                _PUBLIC_CANDIDATE_SELECT
+                + _PUBLIC_CANDIDATE_JOIN
+                + " WHERE c.corpus_id=%s ORDER BY "
+                "c.embedding <=> %s::vector,c.ordinal,c.chunk_id LIMIT %s",
+                (corpus_id, _vector_literal(vector), limit),
+            ).fetchall()
+        return [
+            _candidate_from_row(
+                row,
+                source_score=max(
+                    0.0,
+                    min(
+                        1.0,
+                        1.0
+                        - _cosine_distance(
+                            _chunk_from_row(row).embedding,
+                            vector,
+                        ),
+                    ),
+                ),
+            )
+            for row in rows
+        ]
+
+    def lexical_search(
+        self,
+        corpus_id: str,
+        *,
+        query: str,
+        limit: int,
+    ) -> list[RetrievalCandidate]:
+        if self._get_public_corpus(corpus_id) is None:
+            raise KeyError("corpus not found")
+        _validate_public_search_limit(limit)
+        if not isinstance(query, str) or not query.strip():
+            return []
+        with self._public_connection() as connection:
+            rows = connection.execute(
+                _PUBLIC_CANDIDATE_SELECT
+                + ",ts_rank_cd(c.search_vector,"
+                "websearch_to_tsquery('simple',%s),32) AS source_score "
+                "FROM rag_chunks c JOIN rag_documents d "
+                "ON d.document_id=c.document_id AND d.corpus_id=c.corpus_id "
+                "WHERE c.corpus_id=%s AND c.search_vector @@ "
+                "websearch_to_tsquery('simple',%s) ORDER BY "
+                "source_score DESC,c.ordinal,c.chunk_id LIMIT %s",
+                (query, corpus_id, query, limit),
+            ).fetchall()
+        return [
+            _candidate_from_row(row, source_score=float(row["source_score"]))
+            for row in rows
+        ]
+
+
+_PUBLIC_CANDIDATE_SELECT = (
+    "SELECT c.chunk_id,c.corpus_id,c.document_id,c.ordinal,c.text,"
+    "c.page_start,c.page_end,c.section,c.content_hash,c.token_count,"
+    "c.embedding::text AS embedding,d.manufacturer,d.equipment_model,"
+    "d.revision,d.language,d.source_url,d.sha256,d.page_count,"
+    "d.coverage_pages"
+)
+_PUBLIC_CANDIDATE_JOIN = (
+    " FROM rag_chunks c JOIN rag_documents d "
+    "ON d.document_id=c.document_id AND d.corpus_id=c.corpus_id"
+)
+
 
 def _validated_vector(values: Sequence[float], dimensions: int) -> tuple[float, ...]:
     vector = tuple(float(item) for item in values)
     if len(vector) != dimensions or not all(math.isfinite(item) for item in vector):
         raise ValueError("embedding dimension does not match corpus")
     return vector
+
+
+def _validate_public_search_limit(limit: int) -> None:
+    if not isinstance(limit, int) or not 1 <= limit <= 12:
+        raise ValueError("retrieval limit must be between 1 and 12")
 
 
 def _vector_literal(values: Sequence[float]) -> str:
@@ -530,4 +731,23 @@ def _chunk_from_row(row) -> RagChunk:
         content_hash=row["content_hash"],
         token_count=row["token_count"],
         embedding=embedding,
+    )
+
+
+def _candidate_from_row(row, *, source_score: float) -> RetrievalCandidate:
+    return RetrievalCandidate(
+        chunk=_chunk_from_row(row),
+        document=RagDocument(
+            document_id=str(row["document_id"]),
+            corpus_id=str(row["corpus_id"]),
+            manufacturer=row["manufacturer"],
+            equipment_model=row["equipment_model"],
+            revision=row["revision"],
+            language=row["language"],
+            source_url=row["source_url"],
+            sha256=row["sha256"],
+            page_count=row["page_count"],
+            coverage_pages=row["coverage_pages"],
+        ),
+        source_score=source_score,
     )

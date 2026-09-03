@@ -303,3 +303,20 @@ class ActiveCorpusChange:
 class UploadedDocument:
     document: RagDocument
     coverage: CorpusCoverage
+
+
+@dataclass(frozen=True)
+class RetrievalCandidate:
+    """One corpus-scoped chunk with immutable document provenance."""
+
+    chunk: RagChunk
+    document: RagDocument
+    source_score: float
+
+    def __post_init__(self) -> None:
+        if self.chunk.corpus_id != self.document.corpus_id:
+            raise ValueError("retrieval candidate crosses corpus boundaries")
+        if self.chunk.document_id != self.document.document_id:
+            raise ValueError("retrieval candidate crosses document boundaries")
+        if not math.isfinite(self.source_score):
+            raise ValueError("retrieval source score must be finite")

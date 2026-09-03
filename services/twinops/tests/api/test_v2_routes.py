@@ -523,24 +523,36 @@ def test_environment_factory_selects_postgres_when_database_url_exists(
     repository = _Repository()
     sqlite_factory = Mock()
     postgres_factory = Mock(return_value=repository)
+    rag_factory = Mock(return_value=Mock())
     monkeypatch.setattr(
         main_v2, "SQLiteTelemetryRepositoryV2", sqlite_factory
     )
     monkeypatch.setattr(
         main_v2, "PostgresTelemetryRepository", postgres_factory
     )
+    monkeypatch.setattr(main_v2, "PostgresRagRepository", rag_factory)
 
     app = main_v2.create_app_v2_from_env(
         {
             "TWINOPS_UPSTREAM_BASE_URL": "https://upstream.invalid",
             "DATABASE_URL": database_url,
             "VERCEL": "1",
+            "TWINOPS_RAG_QUERY_TIMEOUT_SECONDS": "3",
         }
     )
 
     assert app.state.repository is repository
     assert repository.initialized is False
-    postgres_factory.assert_called_once_with(database_url)
+    postgres_factory.assert_called_once_with(
+        database_url,
+        connect_timeout_seconds=3,
+        statement_timeout_ms=3_000,
+    )
+    rag_factory.assert_called_once_with(
+        database_url,
+        connect_timeout_seconds=3,
+        statement_timeout_ms=3_000,
+    )
     sqlite_factory.assert_not_called()
 
 
