@@ -1,6 +1,6 @@
 """Validated configuration for the version 2 TwinOps service boundary."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import ipaddress
 import math
 from pathlib import Path
@@ -135,6 +135,14 @@ class SettingsV2:
     ml_artifact_path: Path | None = None
     ml_manifest_hash: str | None = None
     ml_model_hash: str | None = None
+    vercel_environment: str | None = None
+    rag_admin_enabled: bool = False
+    ai_gateway_api_key: str | None = field(default=None, repr=False)
+    rag_embedding_model: str = "google/text-multilingual-embedding-002"
+    rag_embedding_dimensions: int = 768
+    rag_gateway_timeout_seconds: float = 10.0
+    rag_manufacturer: str | None = None
+    rag_equipment_model: str | None = None
 
     def __post_init__(self) -> None:
         try:
@@ -159,6 +167,26 @@ class SettingsV2:
                 and re.fullmatch(r"sha256:[0-9a-f]{64}", value) is None
             ):
                 raise ValueError("ML artifact hashes must be lowercase SHA-256 values")
+        if self.vercel_environment not in {None, "development", "preview", "production"}:
+            raise ValueError("VERCEL_ENV must be development, preview, or production")
+        if self.rag_embedding_dimensions <= 0:
+            raise ValueError("RAG embedding dimensions must be positive")
+        if (
+            not math.isfinite(self.rag_gateway_timeout_seconds)
+            or self.rag_gateway_timeout_seconds <= 0
+        ):
+            raise ValueError("RAG Gateway timeout must be positive and finite")
+        if self.rag_admin_enabled and (
+            self.rag_manufacturer is None
+            or not self.rag_manufacturer.strip()
+            or self.rag_manufacturer != self.rag_manufacturer.strip()
+            or self.rag_equipment_model is None
+            or not self.rag_equipment_model.strip()
+            or self.rag_equipment_model != self.rag_equipment_model.strip()
+        ):
+            raise ValueError(
+                "RAG admin requires approved manufacturer and equipment model"
+            )
 
     @classmethod
     def from_env(cls, env: Mapping[str, str]) -> Self:
@@ -180,6 +208,10 @@ class SettingsV2:
         ):
             raise ValueError("poll interval and timeout must be positive finite numbers")
 
+        rag_admin_raw = env.get("RAG_ADMIN_ENABLED", "false").lower()
+        if rag_admin_raw not in {"true", "false"}:
+            raise ValueError("RAG_ADMIN_ENABLED must be true or false")
+
         return cls(
             upstream_base_url=upstream_base_url,
             database_url=env.get("DATABASE_URL") or None,
@@ -195,6 +227,23 @@ class SettingsV2:
             ),
             ml_manifest_hash=env.get("TWINOPS_ML_MANIFEST_HASH") or None,
             ml_model_hash=env.get("TWINOPS_ML_MODEL_HASH") or None,
+            vercel_environment=env.get("VERCEL_ENV") or None,
+            rag_admin_enabled=rag_admin_raw == "true",
+            ai_gateway_api_key=env.get("AI_GATEWAY_API_KEY") or None,
+            rag_embedding_model=env.get(
+                "TWINOPS_RAG_EMBEDDING_MODEL",
+                "google/text-multilingual-embedding-002",
+            ),
+            rag_embedding_dimensions=int(
+                env.get("TWINOPS_RAG_EMBEDDING_DIMENSIONS", "768")
+            ),
+            rag_gateway_timeout_seconds=float(
+                env.get("TWINOPS_RAG_GATEWAY_TIMEOUT_SECONDS", "10")
+            ),
+            rag_manufacturer=env.get("TWINOPS_RAG_MANUFACTURER") or None,
+            rag_equipment_model=(
+                env.get("TWINOPS_RAG_EQUIPMENT_MODEL") or None
+            ),
         )
 
     def for_deploy(self) -> Self:
