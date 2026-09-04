@@ -149,3 +149,39 @@ async def test_draft_retrieval_uses_public_hybrid_fusion_and_keeps_db_off_loop()
     assert hit.lexical_rank == 1
     assert repository.search_threads
     assert all(thread_id != loop_thread for thread_id in repository.search_threads)
+
+
+@pytest.mark.asyncio
+async def test_admin_uses_document_embeddings_for_ingestion_and_query_embeddings_for_tests():
+    class TrackingEmbeddings(_Embeddings):
+        def __init__(self):
+            self.calls = []
+
+        async def embed(self, texts):
+            self.calls.append(tuple(texts))
+            return await super().embed(texts)
+
+    repository = InMemoryRagRepository()
+    document_embeddings = TrackingEmbeddings()
+    query_embeddings = TrackingEmbeddings()
+    service = RagAdminService(
+        repository,
+        document_embeddings,
+        query_embeddings=query_embeddings,
+        manufacturer="WEG",
+        equipment_model="W22",
+    )
+    corpus = service.create_draft(asset_id="forzy-motor-01")
+    await service.upload_document(
+        corpus.corpus_id,
+        filename="manual.pdf",
+        content_type="application/pdf",
+        payload=searchable_pdf("MAINTENANCE bearing lubrication"),
+        metadata=_metadata(),
+    )
+
+    await service.test_retrieval(corpus.corpus_id, "bearing", limit=6)
+
+    assert len(document_embeddings.calls) == 1
+    assert "bearing lubrication" in document_embeddings.calls[0][0]
+    assert query_embeddings.calls == [("bearing",)]

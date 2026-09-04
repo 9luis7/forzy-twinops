@@ -99,6 +99,35 @@ def test_public_rag_uses_vercel_oidc_when_static_gateway_key_is_absent():
     assert "short-lived-oidc-token" not in repr(settings)
 
 
+def test_direct_gemini_provider_uses_backend_secret_and_provider_defaults():
+    settings = SettingsV2.from_env(
+        {
+            "TWINOPS_UPSTREAM_BASE_URL": "https://upstream.invalid",
+            "TWINOPS_RAG_PROVIDER": "gemini",
+            "GEMINI_API_KEY": "direct-gemini-secret",
+        }
+    )
+
+    assert settings.rag_provider == "gemini"
+    assert settings.rag_api_key == "direct-gemini-secret"
+    assert settings.rag_embedding_model == "gemini-embedding-2"
+    assert settings.rag_generation_model == "gemini-3.7-flash"
+    assert settings.rag_chat_base_url == (
+        "https://generativelanguage.googleapis.com/v1beta/openai"
+    )
+    assert "direct-gemini-secret" not in repr(settings)
+
+
+def test_unknown_rag_provider_fails_closed():
+    with pytest.raises(ValueError, match="TWINOPS_RAG_PROVIDER"):
+        SettingsV2.from_env(
+            {
+                "TWINOPS_UPSTREAM_BASE_URL": "https://upstream.invalid",
+                "TWINOPS_RAG_PROVIDER": "unknown",
+            }
+        )
+
+
 @pytest.mark.parametrize(
     "identity",
     [

@@ -2,8 +2,9 @@
 
 Este runbook prepara a demonstração do RAG para `forzy-motor-01`. Nenhum passo
 abaixo autoriza o passo seguinte. Luis é o aprovador técnico e deve autorizar
-explicitamente cada gate. Os comandos são modelos operacionais: não foram
-executados contra Neon, AI Gateway ou Vercel durante a implementação.
+explicitamente cada gate. Os comandos são modelos operacionais; o estado real
+de cada ambiente deve ser confirmado pela saída sanitizada da CLI e pelo ledger
+do deployment correspondente.
 
 ## Invariantes de segurança
 
@@ -44,10 +45,12 @@ O comando injeta as variáveis somente no subprocesso e não cria arquivo local
 com segredos. Saída válida contém apenas nomes de variáveis inválidas/ausentes,
 nunca valores.
 
-Use o `VERCEL_OIDC_TOKEN` injetado automaticamente pela Vercel para o AI
-Gateway; `AI_GATEWAY_API_KEY` fica como fallback somente para execução fora da
-Vercel. Configure no backend a identidade exata do manual, IDs de modelo,
-dimensão e timeouts. Configure também `RAG_PREVIEW_DATABASE_NAME` e
+Para a demo com free tier, configure `TWINOPS_RAG_PROVIDER=gemini` e grave
+`GEMINI_API_KEY` como variável sensível somente no backend. Esse caminho chama
+a Gemini API diretamente e não depende do AI Gateway. O Gateway continua como
+alternativa: `TWINOPS_RAG_PROVIDER=gateway` usa `VERCEL_OIDC_TOKEN` ou
+`AI_GATEWAY_API_KEY`. Configure no backend a identidade exata do manual, IDs de
+modelo, dimensão e timeouts. Configure também `RAG_PREVIEW_DATABASE_NAME` e
 `RAG_PREVIEW_DATABASE_USER` com a identidade exata permitida para o banco de
 Preview; esses valores vêm do ambiente Preview e nunca são inferidos do DSN nem
 impressos. O segredo não recebe prefixo `VITE_`. Para o Preview administrativo,
@@ -56,10 +59,15 @@ devem estar coerentes. O recurso público continua desligado com
 `TWINOPS_RAG_ENABLED=false` até a publicação. Referência oficial:
 [variáveis de ambiente](https://vercel.com/docs/environment-variables).
 
-Modelos ancorados nesta versão:
+Modelos Gemini ancorados nesta versão:
 
-- [google/text-multilingual-embedding-002](https://vercel.com/ai-gateway/models/text-multilingual-embedding-002/faq)
-- [openai/gpt-5.6-luna](https://vercel.com/ai-gateway/models/gpt-5.6-luna/about)
+- [gemini-embedding-2](https://ai.google.dev/gemini-api/docs/embeddings)
+- [gemini-3.7-flash](https://ai.google.dev/gemini-api/docs/models)
+
+No free tier, entradas e saídas podem ser usadas pelo Google para melhorar seus
+produtos. Para esta demo, trate como permitido somente o manual público, as
+perguntas do chat público e o snapshot operacional expressamente aprovado.
+Não envie credenciais, DSNs, PDFs privados ou dados pessoais.
 
 Trocar modelo ou dimensão exige um corpus novo e reindexado; embeddings de
 versões diferentes nunca são misturados.

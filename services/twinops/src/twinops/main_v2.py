@@ -19,7 +19,11 @@ from twinops.ml.runtime import load_assessment_scorer
 from twinops.ml.scorer import AssessmentScorer
 from twinops.rag.admin_routes import create_rag_admin_router
 from twinops.rag.admin_service import RagAdminService
-from twinops.rag.embeddings import EmbeddingGatewayClient
+from twinops.rag.embeddings import (
+    EmbeddingClient,
+    EmbeddingGatewayClient,
+    GeminiEmbeddingClient,
+)
 from twinops.rag.generation import ChatGatewayClient
 from twinops.rag.public_service import RagAssistantService
 from twinops.rag.repository import PostgresRagRepository, RagRepository
@@ -45,6 +49,36 @@ class _UnavailableRefreshService:
 
 def utc_now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _build_embedding_clients(
+    http,
+    settings: SettingsV2,
+) -> tuple[EmbeddingClient | None, EmbeddingClient | None]:
+    api_key = settings.rag_api_key
+    if api_key is None:
+        return None, None
+    common = {
+        "api_key": api_key,
+        "model": settings.rag_embedding_model,
+        "dimensions": settings.rag_embedding_dimensions,
+        "timeout_seconds": settings.rag_gateway_timeout_seconds,
+    }
+    if settings.rag_provider == "gemini":
+        return (
+            GeminiEmbeddingClient(
+                http,
+                task_type="RETRIEVAL_DOCUMENT",
+                **common,
+            ),
+            GeminiEmbeddingClient(
+                http,
+                task_type="RETRIEVAL_QUERY",
+                **common,
+            ),
+        )
+    gateway_client = EmbeddingGatewayClient(http, **common)
+    return gateway_client, gateway_client
 
 
 def create_app_v2(
@@ -152,37 +186,32 @@ def _runtime_lifespan(
                 clock=app.state.clock,
             )
             app.state.assessment_scorer = scorer or _UnavailableAssessmentScorer()
-            embedding_client = None
-            if (
-                rag_repository is not None
-                and settings.ai_gateway_api_key is not None
-            ):
-                embedding_client = EmbeddingGatewayClient(
-                    http,
-                    api_key=settings.ai_gateway_api_key,
-                    model=settings.rag_embedding_model,
-                    dimensions=settings.rag_embedding_dimensions,
-                    timeout_seconds=settings.rag_gateway_timeout_seconds,
+            document_embedding_client = None
+            query_embedding_client = None
+            if rag_repository is not None:
+                document_embedding_client, query_embedding_client = (
+                    _build_embedding_clients(http, settings)
                 )
             if (
                 settings.rag_enabled
                 and rag_repository is not None
-                and embedding_client is not None
+                and query_embedding_client is not None
             ):
                 assert settings.rag_manufacturer is not None
                 assert settings.rag_equipment_model is not None
                 app.state.rag_assistant_service = RagAssistantService(
                     HybridRetriever(
                         rag_repository,
-                        embedding_client,
+                        query_embedding_client,
                         manufacturer=settings.rag_manufacturer,
                         equipment_model=settings.rag_equipment_model,
                     ),
                     ChatGatewayClient(
                         http,
-                        api_key=settings.ai_gateway_api_key or "",
+                        api_key=settings.rag_api_key or "",
                         model=settings.rag_generation_model,
                         timeout_seconds=settings.rag_gateway_timeout_seconds,
+                        base_url=settings.rag_chat_base_url,
                     ),
                     query_timeout_seconds=settings.rag_query_timeout_seconds,
                 )
@@ -190,13 +219,15 @@ def _runtime_lifespan(
                 rag_repository is not None
                 and settings.vercel_environment == "preview"
                 and settings.rag_admin_enabled
-                and embedding_client is not None
+                and document_embedding_client is not None
+                and query_embedding_client is not None
             ):
                 assert settings.rag_manufacturer is not None
                 assert settings.rag_equipment_model is not None
                 app.state.rag_admin_service = RagAdminService(
                     rag_repository,
-                    embedding_client,
+                    document_embedding_client,
+                    query_embeddings=query_embedding_client,
                     manufacturer=settings.rag_manufacturer,
                     equipment_model=settings.rag_equipment_model,
                 )

@@ -3,7 +3,10 @@ from unittest.mock import AsyncMock
 import httpx
 import pytest
 
+from twinops.rag import embeddings as embeddings_module
 from twinops.rag.embeddings import EmbeddingGatewayClient, EmbeddingGatewayError
+from twinops import main_v2
+from twinops.config_v2 import SettingsV2
 
 
 class _Response:
@@ -76,3 +79,89 @@ async def test_gateway_sanitizes_transport_failure():
         await client.embed(["private payload"])
 
     assert str(caught.value) == "embedding_gateway_unavailable"
+
+
+@pytest.mark.asyncio
+async def test_gemini_uses_native_batch_contract_with_fixed_dimension_and_task_type(
+    caplog,
+):
+    client_type = getattr(embeddings_module, "GeminiEmbeddingClient", None)
+    assert client_type is not None, "direct Gemini embedding client is missing"
+    http = AsyncMock()
+    http.post.return_value = _Response(
+        {"embeddings": [{"values": [0.1, 0.2]}, {"values": [0.3, 0.4]}]}
+    )
+    client = client_type(
+        http,
+        api_key="gemini-secret",
+        model="gemini-embedding-2",
+        dimensions=2,
+        task_type="RETRIEVAL_DOCUMENT",
+        timeout_seconds=4.0,
+    )
+
+    result = await client.embed(["private first", "private second"])
+
+    assert result == ((0.1, 0.2), (0.3, 0.4))
+    args, kwargs = http.post.await_args
+    assert args[0] == (
+        "https://generativelanguage.googleapis.com/v1beta/"
+        "models/gemini-embedding-2:batchEmbedContents"
+    )
+    assert kwargs["headers"] == {
+        "x-goog-api-key": "gemini-secret",
+        "Content-Type": "application/json",
+    }
+    assert kwargs["json"] == {
+        "requests": [
+            {
+                "model": "models/gemini-embedding-2",
+                "content": {"parts": [{"text": "private first"}]},
+                "embedContentConfig": {
+                    "outputDimensionality": 2,
+                    "taskType": "RETRIEVAL_DOCUMENT",
+                },
+            },
+            {
+                "model": "models/gemini-embedding-2",
+                "content": {"parts": [{"text": "private second"}]},
+                "embedContentConfig": {
+                    "outputDimensionality": 2,
+                    "taskType": "RETRIEVAL_DOCUMENT",
+                },
+            },
+        ]
+    }
+    assert kwargs["timeout"] == 4.0
+    assert "private first" not in caplog.text
+    assert "gemini-secret" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_gemini_composition_separates_document_and_query_embedding_tasks():
+    builder = getattr(main_v2, "_build_embedding_clients", None)
+    assert builder is not None, "RAG embedding client composition is missing"
+    http = AsyncMock()
+    http.post.side_effect = [
+        _Response({"embeddings": [{"values": [0.1, 0.2]}]}),
+        _Response({"embeddings": [{"values": [0.3, 0.4]}]}),
+    ]
+    settings = SettingsV2.from_env(
+        {
+            "TWINOPS_UPSTREAM_BASE_URL": "https://upstream.invalid",
+            "TWINOPS_RAG_PROVIDER": "gemini",
+            "GEMINI_API_KEY": "gemini-secret",
+            "TWINOPS_RAG_EMBEDDING_DIMENSIONS": "2",
+        }
+    )
+
+    document_client, query_client = builder(http, settings)
+    assert document_client is not None
+    assert query_client is not None
+    await document_client.embed(["manual text"])
+    await query_client.embed(["operator question"])
+
+    first = http.post.await_args_list[0].kwargs["json"]["requests"][0]
+    second = http.post.await_args_list[1].kwargs["json"]["requests"][0]
+    assert first["embedContentConfig"]["taskType"] == "RETRIEVAL_DOCUMENT"
+    assert second["embedContentConfig"]["taskType"] == "RETRIEVAL_QUERY"

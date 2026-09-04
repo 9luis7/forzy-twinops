@@ -242,7 +242,7 @@ def _copilot_configured(request: Request) -> bool:
     settings = request.app.state.settings
     return bool(
         settings.rag_enabled
-        and settings.ai_gateway_api_key is not None
+        and settings.rag_api_key is not None
         and settings.rag_embedding_model
         and settings.rag_generation_model
         and settings.rag_manufacturer

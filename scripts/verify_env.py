@@ -34,8 +34,13 @@ _RAG_PREVIEW_IDENTITY_REQUIRED = (
     "RAG_PREVIEW_DATABASE_NAME",
     "RAG_PREVIEW_DATABASE_USER",
 )
-_RAG_EMBEDDING_MODEL = "google/text-multilingual-embedding-002"
-_RAG_GENERATION_MODEL = "openai/gpt-5.6-luna"
+_RAG_MODELS = {
+    "gateway": (
+        "google/text-multilingual-embedding-002",
+        "openai/gpt-5.6-luna",
+    ),
+    "gemini": ("gemini-embedding-2", "gemini-3.7-flash"),
+}
 
 
 @dataclass(frozen=True)
@@ -55,9 +60,15 @@ def verify_deploy_env(env: Mapping[str, str]) -> DeployEnvReport:
     rag_enabled = _boolean_flag(env, "TWINOPS_RAG_ENABLED", invalid)
     admin_enabled = _boolean_flag(env, "RAG_ADMIN_ENABLED", invalid)
     vite_admin_enabled = _boolean_flag(env, "VITE_RAG_ADMIN_ENABLED", invalid)
+    rag_provider = env.get("TWINOPS_RAG_PROVIDER", "gateway")
+    if rag_provider not in _RAG_MODELS:
+        invalid.add("TWINOPS_RAG_PROVIDER")
     if rag_enabled or admin_enabled:
         required.update(_RAG_REQUIRED)
-        if not (
+        if rag_provider == "gemini":
+            if not env.get("GEMINI_API_KEY", "").strip():
+                required.add("GEMINI_API_KEY")
+        elif rag_provider == "gateway" and not (
             env.get("AI_GATEWAY_API_KEY", "").strip()
             or env.get("VERCEL_OIDC_TOKEN", "").strip()
         ):
@@ -114,16 +125,18 @@ def verify_deploy_env(env: Mapping[str, str]) -> DeployEnvReport:
             and env["TWINOPS_RAG_EQUIPMENT_MODEL"] != env["TWINOPS_RAG_EQUIPMENT_MODEL"].strip()
         ):
             invalid.add("TWINOPS_RAG_EQUIPMENT_MODEL")
-        if (
-            "TWINOPS_RAG_EMBEDDING_MODEL" not in missing
-            and env["TWINOPS_RAG_EMBEDDING_MODEL"] != _RAG_EMBEDDING_MODEL
-        ):
-            invalid.add("TWINOPS_RAG_EMBEDDING_MODEL")
-        if (
-            "TWINOPS_RAG_GENERATION_MODEL" not in missing
-            and env["TWINOPS_RAG_GENERATION_MODEL"] != _RAG_GENERATION_MODEL
-        ):
-            invalid.add("TWINOPS_RAG_GENERATION_MODEL")
+        expected_models = _RAG_MODELS.get(rag_provider)
+        if expected_models is not None:
+            if (
+                "TWINOPS_RAG_EMBEDDING_MODEL" not in missing
+                and env["TWINOPS_RAG_EMBEDDING_MODEL"] != expected_models[0]
+            ):
+                invalid.add("TWINOPS_RAG_EMBEDDING_MODEL")
+            if (
+                "TWINOPS_RAG_GENERATION_MODEL" not in missing
+                and env["TWINOPS_RAG_GENERATION_MODEL"] != expected_models[1]
+            ):
+                invalid.add("TWINOPS_RAG_GENERATION_MODEL")
         if (
             "TWINOPS_RAG_EMBEDDING_DIMENSIONS" not in missing
             and not _positive_integer(env["TWINOPS_RAG_EMBEDDING_DIMENSIONS"])

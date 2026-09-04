@@ -105,6 +105,30 @@ def test_enabled_rag_accepts_vercel_oidc_instead_of_a_static_gateway_key():
     assert report.invalid == ()
 
 
+def test_enabled_direct_gemini_rag_requires_and_accepts_its_backend_secret():
+    common = {
+        "TWINOPS_RAG_ENABLED": "true",
+        "TWINOPS_RAG_PROVIDER": "gemini",
+        "TWINOPS_RAG_MANUFACTURER": "WEG",
+        "TWINOPS_RAG_EQUIPMENT_MODEL": "W22",
+        "TWINOPS_RAG_EMBEDDING_MODEL": "gemini-embedding-2",
+        "TWINOPS_RAG_EMBEDDING_DIMENSIONS": "768",
+        "TWINOPS_RAG_GENERATION_MODEL": "gemini-3.7-flash",
+        "TWINOPS_RAG_GATEWAY_TIMEOUT_SECONDS": "10",
+        "TWINOPS_RAG_QUERY_TIMEOUT_SECONDS": "10",
+    }
+
+    missing = verify_deploy_env(_valid_deploy_env(**common))
+    valid = verify_deploy_env(
+        _valid_deploy_env(**common, GEMINI_API_KEY="direct-gemini-secret")
+    )
+
+    assert missing.missing == ("GEMINI_API_KEY",)
+    assert missing.invalid == ()
+    assert valid.ok is True
+    assert "direct-gemini-secret" not in repr(valid)
+
+
 def test_enabled_rag_rejects_wrong_models_identity_dimensions_and_timeouts_safely():
     env = _valid_deploy_env(
         TWINOPS_RAG_ENABLED="true",

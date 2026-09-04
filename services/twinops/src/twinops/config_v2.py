@@ -12,6 +12,10 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 _SAFE_SSL_MODES = frozenset({"require", "verify-ca", "verify-full"})
 _DNS_LABEL = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?")
+_RAG_PROVIDERS = frozenset({"gateway", "gemini"})
+_GEMINI_OPENAI_BASE_URL = (
+    "https://generativelanguage.googleapis.com/v1beta/openai"
+)
 
 
 def normalize_https_origin(value: str) -> str:
@@ -138,7 +142,9 @@ class SettingsV2:
     vercel_environment: str | None = None
     rag_admin_enabled: bool = False
     rag_enabled: bool = False
+    rag_provider: str = "gateway"
     ai_gateway_api_key: str | None = field(default=None, repr=False)
+    gemini_api_key: str | None = field(default=None, repr=False)
     rag_embedding_model: str = "google/text-multilingual-embedding-002"
     rag_embedding_dimensions: int = 768
     rag_generation_model: str = "openai/gpt-5.6-luna"
@@ -172,6 +178,8 @@ class SettingsV2:
                 raise ValueError("ML artifact hashes must be lowercase SHA-256 values")
         if self.vercel_environment not in {None, "development", "preview", "production"}:
             raise ValueError("VERCEL_ENV must be development, preview, or production")
+        if self.rag_provider not in _RAG_PROVIDERS:
+            raise ValueError("TWINOPS_RAG_PROVIDER must be gateway or gemini")
         if self.rag_embedding_dimensions <= 0:
             raise ValueError("RAG embedding dimensions must be positive")
         if (
@@ -229,6 +237,17 @@ class SettingsV2:
         rag_enabled_raw = env.get("TWINOPS_RAG_ENABLED", "false").lower()
         if rag_enabled_raw not in {"true", "false"}:
             raise ValueError("TWINOPS_RAG_ENABLED must be true or false")
+        rag_provider = env.get("TWINOPS_RAG_PROVIDER", "gateway")
+        default_embedding_model = (
+            "gemini-embedding-2"
+            if rag_provider == "gemini"
+            else "google/text-multilingual-embedding-002"
+        )
+        default_generation_model = (
+            "gemini-3.7-flash"
+            if rag_provider == "gemini"
+            else "openai/gpt-5.6-luna"
+        )
 
         return cls(
             upstream_base_url=upstream_base_url,
@@ -248,20 +267,22 @@ class SettingsV2:
             vercel_environment=env.get("VERCEL_ENV") or None,
             rag_admin_enabled=rag_admin_raw == "true",
             rag_enabled=rag_enabled_raw == "true",
+            rag_provider=rag_provider,
             ai_gateway_api_key=(
                 env.get("AI_GATEWAY_API_KEY")
                 or env.get("VERCEL_OIDC_TOKEN")
                 or None
             ),
+            gemini_api_key=env.get("GEMINI_API_KEY") or None,
             rag_embedding_model=env.get(
                 "TWINOPS_RAG_EMBEDDING_MODEL",
-                "google/text-multilingual-embedding-002",
+                default_embedding_model,
             ),
             rag_embedding_dimensions=int(
                 env.get("TWINOPS_RAG_EMBEDDING_DIMENSIONS", "768")
             ),
             rag_generation_model=env.get(
-                "TWINOPS_RAG_GENERATION_MODEL", "openai/gpt-5.6-luna"
+                "TWINOPS_RAG_GENERATION_MODEL", default_generation_model
             ),
             rag_gateway_timeout_seconds=float(
                 env.get("TWINOPS_RAG_GATEWAY_TIMEOUT_SECONDS", "10")
@@ -274,6 +295,18 @@ class SettingsV2:
                 env.get("TWINOPS_RAG_EQUIPMENT_MODEL") or None
             ),
         )
+
+    @property
+    def rag_api_key(self) -> str | None:
+        if self.rag_provider == "gemini":
+            return self.gemini_api_key
+        return self.ai_gateway_api_key
+
+    @property
+    def rag_chat_base_url(self) -> str:
+        if self.rag_provider == "gemini":
+            return _GEMINI_OPENAI_BASE_URL
+        return "https://ai-gateway.vercel.sh/v1"
 
     def for_deploy(self) -> Self:
         if self.database_url is None:

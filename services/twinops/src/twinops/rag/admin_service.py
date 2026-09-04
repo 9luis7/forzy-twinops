@@ -47,6 +47,7 @@ class RagAdminService:
         repository: RagRepository,
         embeddings: EmbeddingClient,
         *,
+        query_embeddings: EmbeddingClient | None = None,
         manufacturer: str,
         equipment_model: str,
         embedding_batch_size: int = 32,
@@ -62,8 +63,15 @@ class RagAdminService:
             raise ValueError("embedding batch size is out of range")
         if not embeddings.model.strip() or embeddings.dimensions <= 0:
             raise ValueError("embedding client anchors are invalid")
+        query_client = query_embeddings or embeddings
+        if (
+            query_client.model != embeddings.model
+            or query_client.dimensions != embeddings.dimensions
+        ):
+            raise ValueError("query embedding client is incompatible")
         self.repository = repository
         self.embeddings = embeddings
+        self.query_embeddings = query_client
         self.manufacturer = manufacturer
         self.equipment_model = equipment_model
         self.embedding_batch_size = embedding_batch_size
@@ -183,7 +191,7 @@ class RagAdminService:
             raise InvalidAdminInputError("invalid_retrieval_limit")
         corpus = self._require_corpus(corpus_id)
         self._require_compatible(corpus)
-        vector = (await self.embeddings.embed([query]))[0]
+        vector = (await self.query_embeddings.embed([query]))[0]
         vector_work = asyncio.to_thread(
             self.repository.exact_vector_search,
             corpus_id,
