@@ -665,8 +665,8 @@ class PostgresRagRepository:
     ) -> tuple[list[RetrievalCandidate], list[RetrievalCandidate]]:
         """Read both exact candidate lists through one bounded DB session."""
 
-        if not isinstance(corpus, RagCorpus) or corpus.status != "published":
-            raise ValueError("hybrid search requires a published corpus")
+        if not isinstance(corpus, RagCorpus):
+            raise ValueError("hybrid search requires a corpus")
         vector = _validated_vector(
             query_embedding, corpus.embedding_dimensions
         )

@@ -264,21 +264,32 @@ class RagAdminService:
         corpus = self._require_corpus(corpus_id)
         self._require_compatible(corpus)
         vector = (await self.query_embeddings.embed([query]))[0]
-        vector_work = asyncio.to_thread(
-            self.repository.exact_vector_search,
-            corpus_id,
-            query_embedding=vector,
-            limit=VECTOR_CANDIDATE_LIMIT,
-        )
-        lexical_work = asyncio.to_thread(
-            self.repository.lexical_search,
-            corpus_id,
-            query=query,
-            limit=LEXICAL_CANDIDATE_LIMIT,
-        )
-        vector_candidates, lexical_candidates = await asyncio.gather(
-            vector_work, lexical_work
-        )
+        combined_search = getattr(self.repository, "hybrid_search", None)
+        if callable(combined_search):
+            vector_candidates, lexical_candidates = await asyncio.to_thread(
+                combined_search,
+                corpus,
+                query_embedding=vector,
+                query=query,
+                vector_limit=VECTOR_CANDIDATE_LIMIT,
+                lexical_limit=LEXICAL_CANDIDATE_LIMIT,
+            )
+        else:
+            vector_work = asyncio.to_thread(
+                self.repository.exact_vector_search,
+                corpus_id,
+                query_embedding=vector,
+                limit=VECTOR_CANDIDATE_LIMIT,
+            )
+            lexical_work = asyncio.to_thread(
+                self.repository.lexical_search,
+                corpus_id,
+                query=query,
+                limit=LEXICAL_CANDIDATE_LIMIT,
+            )
+            vector_candidates, lexical_candidates = await asyncio.gather(
+                vector_work, lexical_work
+            )
         return reciprocal_rank_fusion(
             vector_candidates,
             lexical_candidates,

@@ -182,6 +182,68 @@ async def test_draft_retrieval_uses_public_hybrid_fusion_and_keeps_db_off_loop()
 
 
 @pytest.mark.asyncio
+async def test_admin_retrieval_prefers_one_combined_db_session_when_available():
+    loop_thread = threading.get_ident()
+
+    class CombinedRepository(InMemoryRagRepository):
+        def __init__(self):
+            super().__init__()
+            self.hybrid_calls = []
+
+        def hybrid_search(
+            self,
+            corpus,
+            *,
+            query_embedding,
+            query,
+            vector_limit,
+            lexical_limit,
+        ):
+            self.hybrid_calls.append((corpus.corpus_id, threading.get_ident()))
+            return (
+                super().exact_vector_search(
+                    corpus.corpus_id,
+                    query_embedding=query_embedding,
+                    limit=vector_limit,
+                ),
+                super().lexical_search(
+                    corpus.corpus_id,
+                    query=query,
+                    limit=lexical_limit,
+                ),
+            )
+
+        def exact_vector_search(self, *args, **kwargs):
+            raise AssertionError("combined search must replace vector session")
+
+        def lexical_search(self, *args, **kwargs):
+            raise AssertionError("combined search must replace lexical session")
+
+    repository = CombinedRepository()
+    service = RagAdminService(
+        repository,
+        _Embeddings(),
+        manufacturer="WEG",
+        equipment_model="W22",
+    )
+    corpus = service.create_draft(asset_id="forzy-motor-01")
+    await service.upload_document(
+        corpus.corpus_id,
+        filename="manual.pdf",
+        content_type="application/pdf",
+        payload=searchable_pdf("MAINTENANCE bearing lubrication"),
+        metadata=_metadata(),
+    )
+
+    hits = await service.test_retrieval(corpus.corpus_id, "bearing", limit=6)
+
+    assert len(hits) == 1
+    assert len(repository.hybrid_calls) == 1
+    assert repository.hybrid_calls[0][0] == corpus.corpus_id
+    assert repository.hybrid_calls[0][1] != loop_thread
+
+
+@pytest.mark.asyncio
 async def test_answer_test_spends_one_budget_across_retrieval_and_generation():
     repository = InMemoryRagRepository()
     service = RagAdminService(
