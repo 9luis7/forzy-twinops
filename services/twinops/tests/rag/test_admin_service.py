@@ -1,9 +1,16 @@
+import asyncio
 import threading
+import time
 
 import pytest
 
 from twinops.rag.admin_service import DuplicateDocumentError, RagAdminService
+from twinops.rag.generation import (
+    GeneratedAssistantPayload,
+    GeneratedManualReference,
+)
 from twinops.rag.models import DocumentMetadata
+from twinops.rag.operational import TrustedOperationalContext
 from twinops.rag.repository import InMemoryRagRepository
 
 from .pdf_factory import searchable_pdf
@@ -15,6 +22,29 @@ class _Embeddings:
 
     async def embed(self, texts):
         return tuple((0.1, 0.2, 0.3) for _ in texts)
+
+
+class _SlowQueryEmbeddings(_Embeddings):
+    async def embed(self, texts):
+        await asyncio.sleep(0.08)
+        return await super().embed(texts)
+
+
+class _SlowChat:
+    model = "generation-v1"
+
+    async def generate(self, messages):
+        await asyncio.sleep(0.08)
+        payload = messages[-1]["content"]
+        chunk_id = payload.split('"chunkId": "', 1)[1].split('"', 1)[0]
+        return GeneratedAssistantPayload(
+            manualCitations=[
+                GeneratedManualReference(
+                    chunkId=chunk_id,
+                    exactQuote="MAINTENANCE bearing lubrication",
+                )
+            ]
+        )
 
 
 def _metadata():
@@ -149,6 +179,44 @@ async def test_draft_retrieval_uses_public_hybrid_fusion_and_keeps_db_off_loop()
     assert hit.lexical_rank == 1
     assert repository.search_threads
     assert all(thread_id != loop_thread for thread_id in repository.search_threads)
+
+
+@pytest.mark.asyncio
+async def test_answer_test_spends_one_budget_across_retrieval_and_generation():
+    repository = InMemoryRagRepository()
+    service = RagAdminService(
+        repository,
+        _Embeddings(),
+        query_embeddings=_SlowQueryEmbeddings(),
+        manufacturer="WEG",
+        equipment_model="W22",
+        acceptance_chat=_SlowChat(),
+        query_timeout_seconds=0.1,
+    )
+    corpus = service.create_draft(
+        asset_id="forzy-motor-01", min_relevance_score=0.2
+    )
+    await service.upload_document(
+        corpus.corpus_id,
+        filename="manual.pdf",
+        content_type="application/pdf",
+        payload=searchable_pdf("MAINTENANCE bearing lubrication"),
+        metadata=_metadata(),
+    )
+
+    started = time.perf_counter()
+    response, hits = await service.test_answer(
+        corpus.corpus_id,
+        "How should the bearing be lubricated?",
+        operational=TrustedOperationalContext.unavailable(
+            operational_state="unavailable"
+        ),
+    )
+    elapsed = time.perf_counter() - started
+
+    assert hits
+    assert response.grounding_status == "degraded_fallback"
+    assert elapsed < 0.14
 
 
 @pytest.mark.asyncio

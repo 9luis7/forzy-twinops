@@ -1,6 +1,7 @@
 """Administrative orchestration for draft ingestion and atomic publication."""
 
 import asyncio
+from time import perf_counter
 
 from uuid import uuid4
 
@@ -81,6 +82,8 @@ class RagAdminService:
             raise ValueError("approved manual identity must not be empty")
         if not 1 <= embedding_batch_size <= MAX_EMBEDDING_BATCH_SIZE:
             raise ValueError("embedding batch size is out of range")
+        if not 0 < query_timeout_seconds <= 11:
+            raise ValueError("query timeout must be in (0, 11]")
         if not embeddings.model.strip() or embeddings.dimensions <= 0:
             raise ValueError("embedding client anchors are invalid")
         query_client = query_embeddings or embeddings
@@ -242,6 +245,7 @@ class RagAdminService:
         *,
         operational: TrustedOperationalContext,
     ) -> tuple[AssistantQueryResponse, tuple[FusedRetrievalHit, ...]]:
+        started = perf_counter()
         if self.acceptance_chat is None:
             raise RuntimeError("acceptance_chat_unavailable")
         corpus = self._require_corpus(corpus_id)
@@ -263,7 +267,10 @@ class RagAdminService:
         assistant = RagAssistantService(
             _StaticAcceptanceRetriever(retrieval),
             self.acceptance_chat,
-            query_timeout_seconds=self.query_timeout_seconds,
+            query_timeout_seconds=max(
+                0.001,
+                self.query_timeout_seconds - (perf_counter() - started),
+            ),
         )
         response = await assistant.query(
             corpus.asset_id,
