@@ -604,6 +604,31 @@ async def test_route_entry_budget_covers_every_public_query_stage(slow_stage):
 
 
 @pytest.mark.asyncio
+async def test_snapshot_and_retrieval_run_concurrently_inside_route_budget():
+    retriever = _Retriever(delay=0.08)
+    service = RagAssistantService(
+        retriever,
+        _Chat(),
+        query_timeout_seconds=0.12,
+    )
+
+    async def load_operational():
+        await asyncio.sleep(0.08)
+        return _operational()
+
+    response = await service.query_with_operational_loader(
+        ASSET_ID,
+        AssistantQueryRequest(question="bearing"),
+        operational_loader=load_operational,
+        started_at=time.perf_counter(),
+    )
+
+    assert response.grounding_status == "grounded"
+    assert response.fallback_used is False
+    assert [item.type for item in response.citations] == ["manual", "telemetry"]
+
+
+@pytest.mark.asyncio
 async def test_unavailable_corpus_is_a_sanitized_service_unavailable_error():
     service = RagAssistantService(
         _Retriever(failure=CorpusUnavailableError("active_corpus_unavailable")),

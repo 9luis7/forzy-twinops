@@ -145,12 +145,28 @@ class RagAssistantService:
         try:
             async with asyncio.timeout(remaining):
                 corpus = await self.retriever.prepare(asset_id)
-                operational = await operational_loader()
-                retrieval = await self.retriever.retrieve(
-                    asset_id,
-                    request.question,
-                    corpus=corpus,
+                operational_task = asyncio.create_task(operational_loader())
+                retrieval_task = asyncio.create_task(
+                    self.retriever.retrieve(
+                        asset_id,
+                        request.question,
+                        corpus=corpus,
+                    )
                 )
+                try:
+                    operational, retrieval = await asyncio.gather(
+                        operational_task,
+                        retrieval_task,
+                    )
+                except BaseException:
+                    operational_task.cancel()
+                    retrieval_task.cancel()
+                    await asyncio.gather(
+                        operational_task,
+                        retrieval_task,
+                        return_exceptions=True,
+                    )
+                    raise
                 return await self._answer_from_retrieval(
                     request,
                     retrieval=retrieval,
