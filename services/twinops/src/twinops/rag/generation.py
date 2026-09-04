@@ -319,7 +319,10 @@ def _build_gateway_messages(
         "state failure probability or remaining useful life, execute maintenance, "
         "or invent a procedure. Return only exact quote selections from supplied "
         "chunks. Cite only supplied chunkId values, and copy every exactQuote "
-        "verbatim from its chunk. Do not produce free-form claims."
+        "verbatim from its chunk. Select the smallest non-empty set of unique chunkId "
+        "values that directly answers the question. Never repeat a chunkId. Prefer "
+        "the earliest, highest-ranked chunk when evidence is equally relevant, and "
+        "do not select merely related warnings. Do not produce free-form claims."
     )
     user_payload = (
         "UNTRUSTED_CHAT_HISTORY\n"
@@ -338,7 +341,11 @@ def validate_generated_payload(
     retrieval: RetrievalResult,
 ) -> GeneratedAssistantPayload:
     chunks = {hit.candidate.chunk.chunk_id: hit.candidate.chunk for hit in retrieval.hits}
+    cited_chunk_ids: set[str] = set()
     for citation in payload.manual_citations:
+        if citation.chunk_id in cited_chunk_ids:
+            raise GeneratedOutputError("duplicate_manual_citation")
+        cited_chunk_ids.add(citation.chunk_id)
         chunk = chunks.get(citation.chunk_id)
         if chunk is None or citation.exact_quote not in chunk.text:
             raise GeneratedOutputError("invalid_manual_citation")

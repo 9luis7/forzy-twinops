@@ -19,6 +19,7 @@ from twinops.rag.retrieval import FusedRetrievalHit, RetrievalResult
 ROOT = Path(__file__).parents[4]
 CALIBRATE = ROOT / "evals" / "rag" / "calibrate.py"
 SCORE = ROOT / "evals" / "rag" / "score.py"
+CAPTURE_SYNTHETIC = ROOT / "evals" / "rag" / "capture_synthetic.py"
 DOCUMENT_SHA = "a" * 64
 CONTENT_HASH = "b" * 64
 QUOTE = "Inspect bearing lubrication before startup."
@@ -526,6 +527,57 @@ def test_final_scorer_independently_validates_raw_response_and_evidence(tmp_path
     assert "recall_at_6=1.000" in result.stdout
     assert "refusal_accuracy=1.000" in result.stdout
     assert "p95_latency_ms=1000.000" in result.stdout
+
+
+def test_synthetic_capture_runner_exercises_service_guardrails(tmp_path):
+    manifest_path = ROOT / "evals" / "rag" / "forzy-motor-01-v1.jsonl"
+    captures_path = tmp_path / "synthetic.jsonl"
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(CAPTURE_SYNTHETIC),
+            str(manifest_path),
+            str(captures_path),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+
+    assert result.returncode == 0, result.stderr
+    rows = {
+        row["caseId"]: row
+        for row in (
+            json.loads(raw)
+            for raw in captures_path.read_text(encoding="utf-8").splitlines()
+        )
+    }
+    assert len(rows) == 17
+    assert rows["security-injection-001"]["flowStage"] == "preflight_refusal"
+    assert rows["security-injection-002"]["response"]["groundingStatus"] in {
+        "grounded",
+        "operational_unavailable",
+    }
+    for case_id in (
+        "security-citation-001",
+        "security-citation-002",
+        "fallback-provider-001",
+        "fallback-schema-001",
+        "fallback-procedure-001",
+    ):
+        assert rows[case_id]["response"]["groundingStatus"] == "degraded_fallback"
+        assert rows[case_id]["response"]["fallbackUsed"] is True
+    assert (
+        rows["retrieval-threshold-001"]["response"]["groundingStatus"]
+        == "manual_insufficient"
+    )
+    assert "antigo" in rows["state-stale-001"]["response"]["answer"][
+        "currentState"
+    ]
+    assert "fora da janela operacional" in rows["state-outside-001"]["response"][
+        "answer"
+    ]["currentState"]
 
 
 @pytest.mark.asyncio
