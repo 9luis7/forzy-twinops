@@ -268,6 +268,54 @@ async def test_generation_failure_returns_extractive_fallback_without_leakage(fa
 
 
 @pytest.mark.asyncio
+async def test_extractive_fallback_preserves_every_retrieved_hit_for_coverage():
+    first = _retrieval(sufficient=True)
+    document = first.hits[0].candidate.document
+    second_chunk = RagChunk(
+        chunk_id="chunk-2",
+        corpus_id=first.corpus.corpus_id,
+        document_id=document.document_id,
+        ordinal=1,
+        text="Check alignment and abnormal noise before startup.",
+        page_start=5,
+        page_end=5,
+        section="INSPECTION",
+        content_hash="c" * 64,
+        token_count=8,
+        embedding=(0.0, 1.0, 0.0),
+    )
+    second_candidate = RetrievalCandidate(second_chunk, document, 0.9)
+    second_hit = FusedRetrievalHit(second_candidate, 0.9, 2, 2)
+    retrieval = RetrievalResult(
+        corpus=first.corpus,
+        vector_candidates=first.vector_candidates + (second_candidate,),
+        lexical_candidates=first.lexical_candidates + (second_candidate,),
+        hits=first.hits + (second_hit,),
+        threshold=first.threshold,
+        sufficient=True,
+    )
+    service = RagAssistantService(
+        _Retriever(retrieval),
+        _Chat(failure=ChatGatewayError("timeout")),
+        query_timeout_seconds=1,
+    )
+
+    response = await service.query(
+        ASSET_ID,
+        AssistantQueryRequest(question="What should be inspected?"),
+        operational=_operational(),
+    )
+
+    manual = [item for item in response.citations if item.type == "manual"]
+    assert [item.chunk_id for item in manual] == ["chunk-1", "chunk-2"]
+    assert response.answer.manual == (
+        "Segundo o manual:\n"
+        "- Inspect bearing lubrication before startup.\n"
+        "- Check alignment and abnormal noise before startup."
+    )
+
+
+@pytest.mark.asyncio
 async def test_invalid_generated_citation_returns_fallback_not_provider_output():
     invalid = _generated(
         manual_citations=(
@@ -458,6 +506,8 @@ async def test_out_of_scope_requests_are_refused_before_retrieval_without_citati
         "Qual o intervalo de inspeção recomendado no manual?",
         "Which troubleshooting checks are listed in the manual?",
         "Como executar a checagem de lubrificação descrita no manual?",
+        "Explique o estado atual sem transformar score em probabilidade.",
+        "Explique o estado alert sem diagnosticar causa raiz.",
     ],
 )
 async def test_legitimate_manual_fact_and_troubleshooting_questions_are_not_refused(

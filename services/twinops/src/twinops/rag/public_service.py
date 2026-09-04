@@ -301,10 +301,14 @@ class RagAssistantService:
     ):
         citations = []
         if retrieval is not None and retrieval.hits:
-            hit = retrieval.hits[0]
-            excerpt = _short_exact_excerpt(hit.candidate.chunk.text)
-            manual = f"Trecho mais relevante recuperado do manual: {excerpt}"
-            citations.append(_manual_citation(hit, excerpt=excerpt))
+            excerpts = []
+            for hit in retrieval.hits:
+                excerpt = _short_exact_excerpt(hit.candidate.chunk.text)
+                excerpts.append(excerpt)
+                citations.append(_manual_citation(hit, excerpt=excerpt))
+            manual = "Segundo o manual:\n" + "\n".join(
+                f"- {excerpt}" for excerpt in dict.fromkeys(excerpts)
+            )
         else:
             manual = "Não foi possível consultar o manual técnico neste momento."
         citations.extend(
@@ -515,6 +519,8 @@ def _refusal_for(question: str) -> str | None:
         return "secret_exfiltration"
     if _is_prompt_exfiltration_request(normalized, token_set):
         return "prompt_exfiltration"
+    if _is_policy_limited_state_request(normalized, token_set):
+        return None
     if _is_root_cause_request(normalized, token_set):
         return "root_cause"
     if _is_probability_request(token_set):
@@ -524,6 +530,21 @@ def _refusal_for(question: str) -> str | None:
     if _is_execution_request(normalized, tokens):
         return "execution"
     return None
+
+
+def _is_policy_limited_state_request(normalized: str, tokens: set[str]) -> bool:
+    state_request = bool(tokens & {"assessment", "estado", "state"}) and bool(
+        tokens & {"explain", "explique", "show", "mostre"}
+    )
+    probability_boundary = (
+        ("sem transformar" in normalized or "without converting" in normalized)
+        and bool(tokens & {"probabilidade", "probability"})
+    )
+    root_cause_boundary = (
+        ("sem diagnosticar" in normalized or "without diagnosing" in normalized)
+        and ("causa raiz" in normalized or "root cause" in normalized)
+    )
+    return state_request and (probability_boundary or root_cause_boundary)
 
 
 def _is_prompt_exfiltration_request(normalized: str, tokens: set[str]) -> bool:
