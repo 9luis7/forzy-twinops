@@ -260,6 +260,7 @@ def create_rag_admin_router() -> APIRouter:
                 corpus_id,
                 body.question,
                 operational=operational,
+                started_at=started,
             )
         except CorpusNotFoundError:
             raise HTTPException(status_code=404, detail="corpus_not_found") from None

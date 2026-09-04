@@ -244,8 +244,9 @@ class RagAdminService:
         question: str,
         *,
         operational: TrustedOperationalContext,
+        started_at: float | None = None,
     ) -> tuple[AssistantQueryResponse, tuple[FusedRetrievalHit, ...]]:
-        started = perf_counter()
+        started = perf_counter() if started_at is None else started_at
         if self.acceptance_chat is None:
             raise RuntimeError("acceptance_chat_unavailable")
         corpus = self._require_corpus(corpus_id)

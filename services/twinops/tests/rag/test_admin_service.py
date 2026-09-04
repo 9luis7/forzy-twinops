@@ -205,18 +205,20 @@ async def test_answer_test_spends_one_budget_across_retrieval_and_generation():
     )
 
     started = time.perf_counter()
+    await asyncio.sleep(0.04)
     response, hits = await service.test_answer(
         corpus.corpus_id,
         "How should the bearing be lubricated?",
         operational=TrustedOperationalContext.unavailable(
             operational_state="unavailable"
         ),
+        started_at=started,
     )
     elapsed = time.perf_counter() - started
 
     assert hits
     assert response.grounding_status == "degraded_fallback"
-    assert elapsed < 0.14
+    assert 0.1 <= elapsed < 0.19
 
 
 @pytest.mark.asyncio
