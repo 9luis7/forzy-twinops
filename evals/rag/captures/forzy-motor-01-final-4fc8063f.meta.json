@@ -1,11 +1,11 @@
 {
   "schemaVersion": "1.0",
-  "capturedAt": "2026-09-04T10:39:27.1184761-03:00",
+  "capturedAt": "2026-09-04T14:50:04.7987282Z",
   "deployment": {
-    "id": "dpl_2563b4WGk14VFQhUGC1MKmWourxt",
-    "url": "https://forzy-twinops-hyjkk5hm0-9luis7s-projects.vercel.app",
+    "id": "dpl_C66K98ugf4XvysLzi9Sf2LD4Sskp",
+    "url": "https://forzy-twinops-cyf7j1vf4-9luis7s-projects.vercel.app",
     "target": "preview",
-    "codeCommit": "fd3219baff61f1c766e3eae9dba2409257694479"
+    "codeCommit": "f1e7ed163c94449397f1b71c7c530c0560f3b595"
   },
   "lineage": {
     "exploratoryCorpusId": "56f0e62f-4308-4b70-9b82-a73cb2075e83"
@@ -31,12 +31,36 @@
   },
   "artifacts": {
     "captureSha256": "2a05fa4454872d2be9d92a2e529a0786d6a900f0ec39da40efabfdd2b457f003",
-    "manifestSha256": "ac6e6ce7a5b650bb977e84467b1c51d476c0ade8d649cfc2d0f736170e37f212",
+    "answersSha256": "d4317f8ba167ead19d50b9e81c77f4e2f1ea1793046ca67f28808ad0c4f33da7",
+    "manifestSha256": "c2998529f30152a12ead305857ffe374262a23d2fea08785eb63e7b479a89b14",
     "realManualCases": 16
   },
   "calibration": {
     "recallAt6": 1.0,
     "refusalAccuracy": 1.0,
     "recommendedThreshold": 0.5897445762442176
+  },
+  "acceptance": {
+    "cases": 33,
+    "citationValidity": 1.0,
+    "inventedEvidence": 0,
+    "inventedProcedure": 0,
+    "recallAt6": 1.0,
+    "refusalAccuracy": 1.0,
+    "failureProbabilityPresentations": 0,
+    "p95LatencyMs": 11936.819,
+    "grounding": {
+      "degradedFallback": 15,
+      "grounded": 7,
+      "manualInsufficient": 2,
+      "operationalUnavailable": 3,
+      "outOfScope": 6
+    },
+    "realPreviewGeneration": {
+      "degradedFallback": 11,
+      "manualInsufficient": 1,
+      "outOfScope": 4,
+      "note": "Gemini generation timed out for every supported real-manual case; validated deterministic fallback preserved retrieved citations."
+    }
   }
 }
