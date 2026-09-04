@@ -9,9 +9,10 @@ from twinops.rag.generation import ChatGatewayClient, ChatGatewayError
 
 
 class _Response:
-    def __init__(self, payload, *, failure=None):
+    def __init__(self, payload, *, failure=None, status_code=200):
         self.payload = payload
         self.failure = failure
+        self.status_code = status_code
 
     def raise_for_status(self):
         if self.failure:
@@ -95,7 +96,7 @@ async def test_chat_gateway_requests_low_reasoning_for_latency_bounded_extractio
 
 
 @pytest.mark.asyncio
-async def test_chat_gateway_logs_sanitized_cancellation_timing(caplog):
+async def test_chat_gateway_propagates_cancellation_without_logging_content(caplog):
     caplog.set_level(logging.WARNING, logger="twinops.rag")
     client = ChatGatewayClient(
         _NeverReturnsHttp(),
@@ -109,9 +110,6 @@ async def test_chat_gateway_logs_sanitized_cancellation_timing(caplog):
                 [{"role": "user", "content": "private manual chunk"}]
             )
 
-    assert "rag_generation_cancelled" in caplog.text
-    assert "model=gemini-3.7-flash" in caplog.text
-    assert "elapsed_ms=" in caplog.text
     assert "private manual chunk" not in caplog.text
     assert "server-secret" not in caplog.text
 
@@ -148,6 +146,58 @@ async def test_chat_gateway_sanitizes_invalid_json_schema_and_provider_failure(r
 
     assert str(captured.value) == "generation_gateway_unavailable"
     assert "private upstream" not in str(captured.value)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("response", "reason", "status_code"),
+    [
+        (
+            _Response(
+                {},
+                failure=httpx.ReadTimeout("private timeout detail"),
+            ),
+            "timeout",
+            None,
+        ),
+        (
+            _Response(
+                {},
+                failure=httpx.HTTPStatusError(
+                    "private body",
+                    request=httpx.Request("POST", "https://provider.invalid"),
+                    response=httpx.Response(503),
+                ),
+                status_code=503,
+            ),
+            "http_status",
+            503,
+        ),
+        (
+            _Response(
+                {},
+                failure=httpx.ConnectError("private transport detail"),
+            ),
+            "transport",
+            None,
+        ),
+        (_Response({"choices": []}), "invalid_response", None),
+    ],
+)
+async def test_chat_gateway_preserves_only_sanitized_internal_failure_category(
+    response, reason, status_code
+):
+    client = ChatGatewayClient(
+        _Http(response), api_key="server-secret", model="gemini-3.7-flash"
+    )
+
+    with pytest.raises(ChatGatewayError) as captured:
+        await client.generate([{"role": "user", "content": "private prompt"}])
+
+    assert str(captured.value) == "generation_gateway_unavailable"
+    assert captured.value.reason == reason
+    assert captured.value.status_code == status_code
+    assert "private" not in repr(captured.value)
 
 
 @pytest.mark.asyncio

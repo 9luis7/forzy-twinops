@@ -54,7 +54,14 @@ class _StaticAcceptanceRetriever:
     def healthy(self, asset_id: str) -> bool:
         return asset_id == self.result.corpus.asset_id
 
-    async def retrieve(self, asset_id: str, query: str, *, corpus=None):
+    async def retrieve(
+        self,
+        asset_id: str,
+        query: str,
+        *,
+        corpus=None,
+        trace_id: str | None = None,
+    ):
         if asset_id != self.result.corpus.asset_id:
             raise ValueError("acceptance asset mismatch")
         return self.result

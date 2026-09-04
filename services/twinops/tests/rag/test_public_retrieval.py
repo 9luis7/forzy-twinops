@@ -1,4 +1,5 @@
 import asyncio
+import json
 from dataclasses import replace
 from datetime import datetime, timezone
 import time
@@ -400,3 +401,30 @@ async def test_sync_repository_searches_do_not_block_event_loop():
     )
 
     assert pulse_delay < 0.05
+
+
+@pytest.mark.asyncio
+async def test_retrieval_logs_each_sanitized_stage_without_query_or_chunk(caplog):
+    caplog.set_level("INFO", logger="twinops.rag")
+    repository = _published_slow_repository()
+    retriever = _retriever(repository, _Embeddings())
+    secret_query = "bearing-query-secret-never-log"
+
+    await retriever.retrieve(ASSET_ID, secret_query, trace_id="trace-1")
+
+    payloads = [
+        json.loads(record.message)
+        for record in caplog.records
+        if record.message.startswith("{")
+    ]
+    stages = {payload["stage"] for payload in payloads}
+    assert {
+        "corpus_lookup",
+        "query_embedding",
+        "vector_search",
+        "lexical_search",
+        "fusion",
+    } <= stages
+    assert all(payload["traceId"] == "trace-1" for payload in payloads)
+    assert secret_query not in caplog.text
+    assert "bearing lubrication" not in caplog.text

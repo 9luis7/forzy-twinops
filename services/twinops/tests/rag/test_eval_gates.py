@@ -528,7 +528,7 @@ class _PreflightRetriever:
         self.prepare_calls = 0
         self.retrieve_calls = 0
 
-    async def prepare(self, _asset_id):
+    async def prepare(self, _asset_id, *, trace_id=None):
         self.prepare_calls += 1
         raise AssertionError("preflight refusal must not prepare a corpus")
 

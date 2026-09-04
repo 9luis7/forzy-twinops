@@ -116,11 +116,13 @@ class _UnavailableRetriever:
     def healthy(self, asset_id):
         return False
 
-    async def prepare(self, asset_id):
+    async def prepare(self, asset_id, *, trace_id=None):
         self.prepare_calls += 1
         raise self.error
 
-    async def retrieve(self, asset_id, question, *, corpus=None):
+    async def retrieve(
+        self, asset_id, question, *, corpus=None, trace_id=None
+    ):
         raise AssertionError("refusal must precede retrieval")
 
 

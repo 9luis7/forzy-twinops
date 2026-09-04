@@ -217,7 +217,8 @@ async def test_answer_test_spends_one_budget_across_retrieval_and_generation():
     elapsed = time.perf_counter() - started
 
     assert hits
-    assert response.grounding_status == "degraded_fallback"
+    assert response.grounding_status == "manual_insufficient"
+    assert response.fallback_used is True
     assert 0.1 <= elapsed < 0.19
 
 

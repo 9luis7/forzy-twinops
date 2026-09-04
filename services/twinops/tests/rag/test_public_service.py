@@ -1,5 +1,6 @@
 import asyncio
 from datetime import datetime, timedelta, timezone
+import json
 import time
 from uuid import UUID
 
@@ -41,17 +42,22 @@ class _Retriever:
         self.prepare_delay = prepare_delay
         self.calls = []
         self.prepare_calls = []
+        self.trace_ids = []
 
-    async def prepare(self, asset_id):
+    async def prepare(self, asset_id, *, trace_id=None):
         self.prepare_calls.append(asset_id)
+        self.trace_ids.append(trace_id)
         if self.prepare_delay:
             await asyncio.sleep(self.prepare_delay)
         if self.failure:
             raise self.failure
         return self.result.corpus
 
-    async def retrieve(self, asset_id, query, *, corpus=None):
+    async def retrieve(
+        self, asset_id, query, *, corpus=None, trace_id=None
+    ):
         self.calls.append((asset_id, query))
+        self.trace_ids.append(trace_id)
         if self.delay:
             await asyncio.sleep(self.delay)
         if self.failure:
@@ -161,7 +167,8 @@ def _generated(**overrides):
 
 @pytest.mark.asyncio
 async def test_happy_path_returns_typed_grounding_and_only_allowed_citations():
-    service = RagAssistantService(_Retriever(), _Chat(), query_timeout_seconds=1)
+    retriever = _Retriever()
+    service = RagAssistantService(retriever, _Chat(), query_timeout_seconds=1)
 
     response = await service.query(
         ASSET_ID,
@@ -268,7 +275,7 @@ async def test_generation_failure_returns_extractive_fallback_without_leakage(fa
 
 
 @pytest.mark.asyncio
-async def test_extractive_fallback_preserves_every_retrieved_hit_for_coverage():
+async def test_extractive_fallback_preserves_distinct_relevant_safe_hits():
     first = _retrieval(sufficient=True)
     document = first.hits[0].candidate.document
     second_chunk = RagChunk(
@@ -302,7 +309,7 @@ async def test_extractive_fallback_preserves_every_retrieved_hit_for_coverage():
 
     response = await service.query(
         ASSET_ID,
-        AssistantQueryRequest(question="What should be inspected?"),
+        AssistantQueryRequest(question="What should be checked before startup?"),
         operational=_operational(),
     )
 
@@ -313,6 +320,48 @@ async def test_extractive_fallback_preserves_every_retrieved_hit_for_coverage():
         "- Inspect bearing lubrication before startup.\n"
         "- Check alignment and abnormal noise before startup."
     )
+
+
+@pytest.mark.asyncio
+async def test_extractive_fallback_returns_insufficiency_when_no_safe_span_exists():
+    retrieval = _retrieval(sufficient=True)
+    unsafe_chunk = RagChunk(
+        **{
+            **retrieval.hits[0].candidate.chunk.__dict__,
+            "text": "6220 24 7324 72 1700 1200 6319 45 4500 3500",
+            "token_count": 10,
+        }
+    )
+    unsafe_candidate = RetrievalCandidate(
+        unsafe_chunk,
+        retrieval.hits[0].candidate.document,
+        1.0,
+    )
+    unsafe_hit = FusedRetrievalHit(unsafe_candidate, 1.0, 1, 1)
+    unsafe_retrieval = RetrievalResult(
+        retrieval.corpus,
+        (unsafe_candidate,),
+        (unsafe_candidate,),
+        (unsafe_hit,),
+        retrieval.threshold,
+        True,
+    )
+    service = RagAssistantService(
+        _Retriever(unsafe_retrieval),
+        _Chat(failure=ChatGatewayError("timeout")),
+        query_timeout_seconds=1,
+    )
+
+    response = await service.query(
+        ASSET_ID,
+        AssistantQueryRequest(question="Como verificar a lubrificação?"),
+        operational=_operational(),
+    )
+
+    assert response.grounding_status == "manual_insufficient"
+    assert response.fallback_used is True
+    assert [item.type for item in response.citations] == ["telemetry"]
+    assert "evidência suficiente" in response.answer.manual
 
 
 @pytest.mark.asyncio
@@ -524,6 +573,7 @@ async def test_legitimate_manual_fact_and_troubleshooting_questions_are_not_refu
     )
 
     assert response.grounding_status == "grounded"
+    assert retriever.trace_ids == [str(response.trace_id)]
     assert len(retriever.calls) == 1
     assert len(chat.calls) == 1
 
@@ -601,6 +651,65 @@ async def test_route_entry_budget_covers_every_public_query_stage(slow_stage):
     assert response.fallback_used is True
     assert response.grounding_status == "degraded_fallback"
     assert response.latency_ms < 50
+
+
+@pytest.mark.asyncio
+async def test_route_timeout_logs_cancelled_generation_and_timeout_total(caplog):
+    caplog.set_level("INFO", logger="twinops.rag")
+    service = RagAssistantService(
+        _Retriever(), _Chat(delay=0.05), query_timeout_seconds=0.01
+    )
+
+    response = await service.query(
+        ASSET_ID,
+        AssistantQueryRequest(question="bearing"),
+        operational=_operational(),
+    )
+
+    payloads = [
+        json.loads(record.message)
+        for record in caplog.records
+        if record.message.startswith("{")
+    ]
+    generation = next(
+        item for item in payloads if item["stage"] == "generation"
+    )
+    total = next(item for item in payloads if item["stage"] == "total")
+    assert generation["outcome"] == "cancelled"
+    assert total["outcome"] == "timeout"
+    assert response.fallback_used is True
+
+
+@pytest.mark.asyncio
+async def test_external_cancellation_is_logged_and_propagated(caplog):
+    caplog.set_level("INFO", logger="twinops.rag")
+    service = RagAssistantService(
+        _Retriever(), _Chat(delay=1), query_timeout_seconds=1
+    )
+    task = asyncio.create_task(
+        service.query(
+            ASSET_ID,
+            AssistantQueryRequest(question="bearing"),
+            operational=_operational(),
+        )
+    )
+    await asyncio.sleep(0.01)
+
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    payloads = [
+        json.loads(record.message)
+        for record in caplog.records
+        if record.message.startswith("{")
+    ]
+    generation = next(
+        item for item in payloads if item["stage"] == "generation"
+    )
+    total = next(item for item in payloads if item["stage"] == "total")
+    assert generation["outcome"] == "cancelled"
+    assert total["outcome"] == "cancelled"
 
 
 @pytest.mark.asyncio
@@ -683,3 +792,79 @@ async def test_sensitive_input_and_provider_content_are_never_logged(caplog):
 
     assert secret not in caplog.text
     assert "credential-secret-never-log" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_public_query_logs_sanitized_budget_and_generation_stages(caplog):
+    caplog.set_level("INFO", logger="twinops.rag")
+    secret = "question-secret-never-log"
+    retriever = _Retriever()
+    service = RagAssistantService(retriever, _Chat(), query_timeout_seconds=1)
+
+    async def load_operational():
+        return _operational()
+
+    response = await service.query_with_operational_loader(
+        ASSET_ID,
+        AssistantQueryRequest(question=secret),
+        operational_loader=load_operational,
+        started_at=time.perf_counter(),
+    )
+
+    payloads = [
+        json.loads(record.message)
+        for record in caplog.records
+        if record.message.startswith("{")
+    ]
+    stages = {payload["stage"] for payload in payloads}
+    assert {
+        "snapshot",
+        "prompt_assembly",
+        "remaining_budget",
+        "generation",
+        "validation",
+        "total",
+    } <= stages
+    remaining = next(
+        item for item in payloads if item["stage"] == "remaining_budget"
+    )
+    assert 0 <= remaining["remainingBudgetMs"] <= 1000
+    assert response.grounding_status == "grounded"
+    assert retriever.trace_ids == [str(response.trace_id), str(response.trace_id)]
+    assert secret not in caplog.text
+    assert "Inspect bearing lubrication before startup." not in caplog.text
+    assert "s1:velocity_ewma" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_invalid_citation_is_distinguished_internally_but_publicly_sanitized(caplog):
+    caplog.set_level("INFO", logger="twinops.rag")
+    invalid = _generated(
+        manual_citations=(
+            GeneratedManualReference(
+                chunk_id="unknown",
+                exact_quote="invented private provider quote",
+            ),
+        ),
+    )
+    service = RagAssistantService(_Retriever(), _Chat(invalid), query_timeout_seconds=1)
+
+    response = await service.query(
+        ASSET_ID,
+        AssistantQueryRequest(question="bearing"),
+        operational=_operational(),
+    )
+
+    validation = next(
+        payload
+        for payload in (
+            json.loads(record.message)
+            for record in caplog.records
+            if record.message.startswith("{")
+        )
+        if payload["stage"] == "validation"
+    )
+    assert validation["outcome"] == "invalid_citation"
+    assert response.fallback_used is True
+    assert "invented private provider quote" not in caplog.text
+    assert "invented private provider quote" not in response.model_dump_json()

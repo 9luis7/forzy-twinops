@@ -3,10 +3,12 @@
 import asyncio
 from dataclasses import dataclass
 import math
+from time import perf_counter
 
 from twinops.rag.embeddings import EmbeddingClient
 from twinops.rag.models import RagCorpus, RetrievalCandidate
 from twinops.rag.repository import RagRepository
+from twinops.rag.telemetry import log_rag_stage
 
 
 VECTOR_CANDIDATE_LIMIT = 12
@@ -66,12 +68,33 @@ class HybridRetriever:
         except Exception:
             return False
 
-    async def prepare(self, asset_id: str) -> RagCorpus:
-        corpus = await asyncio.to_thread(
-            self.repository.get_active_corpus, asset_id
+    async def prepare(
+        self, asset_id: str, *, trace_id: str | None = None
+    ) -> RagCorpus:
+        started = perf_counter()
+        try:
+            corpus = await asyncio.to_thread(
+                self.repository.get_active_corpus, asset_id
+            )
+            self._validate_corpus(corpus, asset_id)
+            assert corpus is not None
+        except BaseException as error:
+            log_rag_stage(
+                "corpus_lookup",
+                outcome=_failure_outcome(error),
+                duration_ms=(perf_counter() - started) * 1000,
+                asset_id=asset_id,
+                trace_id=trace_id,
+            )
+            raise
+        log_rag_stage(
+            "corpus_lookup",
+            outcome="ok",
+            duration_ms=(perf_counter() - started) * 1000,
+            asset_id=asset_id,
+            corpus_id=corpus.corpus_id,
+            trace_id=trace_id,
         )
-        self._validate_corpus(corpus, asset_id)
-        assert corpus is not None
         return corpus
 
     async def retrieve(
@@ -80,19 +103,46 @@ class HybridRetriever:
         query: str,
         *,
         corpus: RagCorpus | None = None,
+        trace_id: str | None = None,
     ) -> RetrievalResult:
-        corpus = corpus or await self.prepare(asset_id)
+        corpus = corpus or await self.prepare(asset_id, trace_id=trace_id)
         self._validate_corpus(corpus, asset_id)
-        query_vector = (await self.embeddings.embed([query]))[0]
-        vector_work = asyncio.to_thread(
+        embedding_started = perf_counter()
+        try:
+            query_vector = (await self.embeddings.embed([query]))[0]
+        except BaseException as error:
+            log_rag_stage(
+                "query_embedding",
+                outcome=_failure_outcome(error),
+                duration_ms=(perf_counter() - embedding_started) * 1000,
+                corpus_id=corpus.corpus_id,
+                model=self.embeddings.model,
+                count=1,
+                trace_id=trace_id,
+            )
+            raise
+        log_rag_stage(
+            "query_embedding",
+            outcome="ok",
+            duration_ms=(perf_counter() - embedding_started) * 1000,
+            corpus_id=corpus.corpus_id,
+            model=self.embeddings.model,
+            count=1,
+            trace_id=trace_id,
+        )
+        vector_work = _timed_search(
+            "vector_search",
             self.repository.exact_vector_search,
-            corpus.corpus_id,
+            corpus_id=corpus.corpus_id,
+            trace_id=trace_id,
             query_embedding=query_vector,
             limit=VECTOR_CANDIDATE_LIMIT,
         )
-        lexical_work = asyncio.to_thread(
+        lexical_work = _timed_search(
+            "lexical_search",
             self.repository.lexical_search,
-            corpus.corpus_id,
+            corpus_id=corpus.corpus_id,
+            trace_id=trace_id,
             query=query,
             limit=LEXICAL_CANDIDATE_LIMIT,
         )
@@ -101,10 +151,30 @@ class HybridRetriever:
         )
         vector_candidates = tuple(vector_rows)
         lexical_candidates = tuple(lexical_rows)
-        ranked_hits = reciprocal_rank_fusion(
-            vector_candidates,
-            lexical_candidates,
-            limit=FINAL_HIT_LIMIT,
+        fusion_started = perf_counter()
+        try:
+            ranked_hits = reciprocal_rank_fusion(
+                vector_candidates,
+                lexical_candidates,
+                limit=FINAL_HIT_LIMIT,
+            )
+        except Exception:
+            log_rag_stage(
+                "fusion",
+                outcome="invalid_response",
+                duration_ms=(perf_counter() - fusion_started) * 1000,
+                corpus_id=corpus.corpus_id,
+                count=len(vector_candidates) + len(lexical_candidates),
+                trace_id=trace_id,
+            )
+            raise
+        log_rag_stage(
+            "fusion",
+            outcome="ok",
+            duration_ms=(perf_counter() - fusion_started) * 1000,
+            corpus_id=corpus.corpus_id,
+            count=len(ranked_hits),
+            trace_id=trace_id,
         )
         hits = tuple(
             hit
@@ -138,6 +208,45 @@ class HybridRetriever:
             or corpus.min_relevance_score <= 0
         ):
             raise CorpusUnavailableError("corpus_not_calibrated")
+
+
+async def _timed_search(
+    stage,
+    operation,
+    *,
+    corpus_id: str,
+    trace_id: str | None = None,
+    **kwargs,
+):
+    started = perf_counter()
+    try:
+        rows = await asyncio.to_thread(operation, corpus_id, **kwargs)
+    except BaseException as error:
+        log_rag_stage(
+            stage,
+            outcome=_failure_outcome(error),
+            duration_ms=(perf_counter() - started) * 1000,
+            corpus_id=corpus_id,
+            trace_id=trace_id,
+        )
+        raise
+    log_rag_stage(
+        stage,
+        outcome="ok",
+        duration_ms=(perf_counter() - started) * 1000,
+        corpus_id=corpus_id,
+        count=len(rows),
+        trace_id=trace_id,
+    )
+    return rows
+
+
+def _failure_outcome(error: BaseException) -> str:
+    if isinstance(error, asyncio.CancelledError):
+        return "cancelled"
+    if isinstance(error, TimeoutError):
+        return "timeout"
+    return "unavailable"
 
 
 def reciprocal_rank_fusion(

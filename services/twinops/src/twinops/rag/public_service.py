@@ -6,8 +6,11 @@ from time import perf_counter
 import unicodedata
 from uuid import uuid4
 
+from twinops.rag.extractive import select_safe_excerpts
 from twinops.rag.generation import (
     ChatClient,
+    ChatGatewayError,
+    GeneratedOutputError,
     build_gateway_messages,
     validate_generated_payload,
 )
@@ -22,6 +25,7 @@ from twinops.rag.public_models import (
     TelemetryCitation,
 )
 from twinops.rag.retrieval import CorpusUnavailableError, RetrievalResult
+from twinops.rag.telemetry import log_rag_stage
 
 
 DEFAULT_LIMITATIONS = (
@@ -84,19 +88,28 @@ class RagAssistantService:
         retrieval: RetrievalResult | None = None
         refusal = _refusal_for(request.question)
         if refusal is not None:
-            return self._out_of_scope(
+            response = self._out_of_scope(
                 refusal,
                 operational,
                 conversation_id=conversation_id,
                 trace_id=trace_id,
                 started=started,
             )
+            self._log_total(
+                asset_id,
+                trace_id,
+                started,
+                outcome=response.grounding_status,
+            )
+            return response
         try:
             async with asyncio.timeout(self.query_timeout_seconds):
                 retrieval = await self.retriever.retrieve(
-                    asset_id, request.question
+                    asset_id,
+                    request.question,
+                    trace_id=str(trace_id),
                 )
-                return await self._answer_from_retrieval(
+                response = await self._answer_from_retrieval(
                     request,
                     retrieval=retrieval,
                     operational=operational,
@@ -104,16 +117,49 @@ class RagAssistantService:
                     trace_id=trace_id,
                     started=started,
                 )
+                self._log_total(
+                    asset_id,
+                    trace_id,
+                    started,
+                    outcome=response.grounding_status,
+                    retrieval=retrieval,
+                )
+                return response
         except CorpusUnavailableError:
+            self._log_total(
+                asset_id,
+                trace_id,
+                started,
+                outcome="corpus_unavailable",
+                retrieval=retrieval,
+            )
             raise
-        except Exception:
-            return self._fallback(
+        except asyncio.CancelledError:
+            self._log_total(
+                asset_id,
+                trace_id,
+                started,
+                outcome="cancelled",
+                retrieval=retrieval,
+            )
+            raise
+        except Exception as error:
+            response = self._fallback(
+                request.question,
                 retrieval,
                 operational,
                 conversation_id=conversation_id,
                 trace_id=trace_id,
                 started=started,
             )
+            self._log_total(
+                asset_id,
+                trace_id,
+                started,
+                outcome=_internal_failure_outcome(error),
+                retrieval=retrieval,
+            )
+            return response
 
     async def query_with_operational_loader(
         self,
@@ -133,24 +179,40 @@ class RagAssistantService:
         )
         refusal = _refusal_for(request.question)
         if refusal is not None:
-            return self._out_of_scope(
+            response = self._out_of_scope(
                 refusal,
                 operational,
                 conversation_id=conversation_id,
                 trace_id=trace_id,
                 started=started_at,
             )
+            self._log_total(
+                asset_id,
+                trace_id,
+                started_at,
+                outcome=response.grounding_status,
+            )
+            return response
         elapsed = max(0.0, perf_counter() - started_at)
         remaining = max(0.0, self.query_timeout_seconds - elapsed)
         try:
             async with asyncio.timeout(remaining):
-                corpus = await self.retriever.prepare(asset_id)
-                operational_task = asyncio.create_task(operational_loader())
+                corpus = await self.retriever.prepare(
+                    asset_id, trace_id=str(trace_id)
+                )
+                operational_task = asyncio.create_task(
+                    _timed_operational_loader(
+                        operational_loader,
+                        asset_id=asset_id,
+                        trace_id=trace_id,
+                    )
+                )
                 retrieval_task = asyncio.create_task(
                     self.retriever.retrieve(
                         asset_id,
                         request.question,
                         corpus=corpus,
+                        trace_id=str(trace_id),
                     )
                 )
                 try:
@@ -167,7 +229,7 @@ class RagAssistantService:
                         return_exceptions=True,
                     )
                     raise
-                return await self._answer_from_retrieval(
+                response = await self._answer_from_retrieval(
                     request,
                     retrieval=retrieval,
                     operational=operational,
@@ -175,16 +237,49 @@ class RagAssistantService:
                     trace_id=trace_id,
                     started=started_at,
                 )
+                self._log_total(
+                    asset_id,
+                    trace_id,
+                    started_at,
+                    outcome=response.grounding_status,
+                    retrieval=retrieval,
+                )
+                return response
         except CorpusUnavailableError:
+            self._log_total(
+                asset_id,
+                trace_id,
+                started_at,
+                outcome="corpus_unavailable",
+                retrieval=retrieval,
+            )
             raise
-        except Exception:
-            return self._fallback(
+        except asyncio.CancelledError:
+            self._log_total(
+                asset_id,
+                trace_id,
+                started_at,
+                outcome="cancelled",
+                retrieval=retrieval,
+            )
+            raise
+        except Exception as error:
+            response = self._fallback(
+                request.question,
                 retrieval,
                 operational,
                 conversation_id=conversation_id,
                 trace_id=trace_id,
                 started=started_at,
             )
+            self._log_total(
+                asset_id,
+                trace_id,
+                started_at,
+                outcome=_internal_failure_outcome(error),
+                retrieval=retrieval,
+            )
+            return response
 
     async def _answer_from_retrieval(
         self,
@@ -204,17 +299,124 @@ class RagAssistantService:
                 trace_id=trace_id,
                 started=started,
             )
-        messages = build_gateway_messages(
-            question=request.question,
-            history=tuple(
-                (turn.question, turn.answer) for turn in request.history
-            ),
-            retrieval=retrieval,
+        prompt_started = perf_counter()
+        try:
+            messages = build_gateway_messages(
+                question=request.question,
+                history=tuple(
+                    (turn.question, turn.answer) for turn in request.history
+                ),
+                retrieval=retrieval,
+            )
+        except Exception:
+            log_rag_stage(
+                "prompt_assembly",
+                outcome="invalid_response",
+                duration_ms=(perf_counter() - prompt_started) * 1000,
+                corpus_id=retrieval.corpus.corpus_id,
+                model=self.chat.model,
+                trace_id=str(trace_id),
+            )
+            raise
+        log_rag_stage(
+            "prompt_assembly",
+            outcome="ok",
+            duration_ms=(perf_counter() - prompt_started) * 1000,
+            corpus_id=retrieval.corpus.corpus_id,
+            model=self.chat.model,
+            count=len(messages),
+            trace_id=str(trace_id),
         )
-        generated = await self.chat.generate(messages)
-        generated = validate_generated_payload(
-            generated,
-            retrieval=retrieval,
+        remaining_budget_ms = max(
+            0.0,
+            (self.query_timeout_seconds - (perf_counter() - started)) * 1000,
+        )
+        log_rag_stage(
+            "remaining_budget",
+            outcome="ok",
+            duration_ms=0.0,
+            remaining_budget_ms=remaining_budget_ms,
+            corpus_id=retrieval.corpus.corpus_id,
+            model=self.chat.model,
+            trace_id=str(trace_id),
+        )
+        generation_started = perf_counter()
+        try:
+            generated = await self.chat.generate(messages)
+        except asyncio.CancelledError:
+            log_rag_stage(
+                "generation",
+                outcome="cancelled",
+                duration_ms=(perf_counter() - generation_started) * 1000,
+                corpus_id=retrieval.corpus.corpus_id,
+                model=self.chat.model,
+                trace_id=str(trace_id),
+            )
+            raise
+        except ChatGatewayError as error:
+            log_rag_stage(
+                "generation",
+                outcome=error.reason,
+                duration_ms=(perf_counter() - generation_started) * 1000,
+                corpus_id=retrieval.corpus.corpus_id,
+                model=self.chat.model,
+                http_status=error.status_code,
+                trace_id=str(trace_id),
+            )
+            raise
+        except Exception:
+            log_rag_stage(
+                "generation",
+                outcome="invalid_response",
+                duration_ms=(perf_counter() - generation_started) * 1000,
+                corpus_id=retrieval.corpus.corpus_id,
+                model=self.chat.model,
+                trace_id=str(trace_id),
+            )
+            raise
+        log_rag_stage(
+            "generation",
+            outcome="ok",
+            duration_ms=(perf_counter() - generation_started) * 1000,
+            corpus_id=retrieval.corpus.corpus_id,
+            model=self.chat.model,
+            count=len(generated.manual_citations),
+            trace_id=str(trace_id),
+        )
+        validation_started = perf_counter()
+        try:
+            generated = validate_generated_payload(
+                generated,
+                retrieval=retrieval,
+            )
+        except GeneratedOutputError:
+            log_rag_stage(
+                "validation",
+                outcome="invalid_citation",
+                duration_ms=(perf_counter() - validation_started) * 1000,
+                corpus_id=retrieval.corpus.corpus_id,
+                model=self.chat.model,
+                trace_id=str(trace_id),
+            )
+            raise
+        except Exception:
+            log_rag_stage(
+                "validation",
+                outcome="invalid_response",
+                duration_ms=(perf_counter() - validation_started) * 1000,
+                corpus_id=retrieval.corpus.corpus_id,
+                model=self.chat.model,
+                trace_id=str(trace_id),
+            )
+            raise
+        log_rag_stage(
+            "validation",
+            outcome="ok",
+            duration_ms=(perf_counter() - validation_started) * 1000,
+            corpus_id=retrieval.corpus.corpus_id,
+            model=self.chat.model,
+            count=len(generated.manual_citations),
+            trace_id=str(trace_id),
         )
         return self._generated_response(
             generated,
@@ -223,6 +425,27 @@ class RagAssistantService:
             conversation_id=conversation_id,
             trace_id=trace_id,
             started=started,
+        )
+
+    def _log_total(
+        self,
+        asset_id,
+        trace_id,
+        started,
+        *,
+        outcome,
+        retrieval=None,
+    ):
+        log_rag_stage(
+            "total",
+            outcome=outcome,
+            duration_ms=(perf_counter() - started) * 1000,
+            asset_id=asset_id,
+            corpus_id=(
+                None if retrieval is None else retrieval.corpus.corpus_id
+            ),
+            model=self.chat.model,
+            trace_id=str(trace_id),
         )
 
     def _generated_response(
@@ -313,20 +536,36 @@ class RagAssistantService:
         )
 
     def _fallback(
-        self, retrieval, operational, *, conversation_id, trace_id, started
+        self,
+        question,
+        retrieval,
+        operational,
+        *,
+        conversation_id,
+        trace_id,
+        started,
     ):
         citations = []
         if retrieval is not None and retrieval.hits:
-            excerpts = []
-            for hit in retrieval.hits:
-                excerpt = _short_exact_excerpt(hit.candidate.chunk.text)
-                excerpts.append(excerpt)
-                citations.append(_manual_citation(hit, excerpt=excerpt))
-            manual = "Segundo o manual:\n" + "\n".join(
-                f"- {excerpt}" for excerpt in dict.fromkeys(excerpts)
-            )
+            selections = select_safe_excerpts(question, retrieval.hits)
+            if selections:
+                citations.extend(
+                    _manual_citation(item.hit, excerpt=item.excerpt)
+                    for item in selections
+                )
+                manual = "Segundo o manual:\n" + "\n".join(
+                    f"- {item.excerpt}" for item in selections
+                )
+                grounding_status = "degraded_fallback"
+            else:
+                manual = (
+                    "O manual ativo não contém evidência suficiente para responder "
+                    "a esta pergunta com segurança."
+                )
+                grounding_status = "manual_insufficient"
         else:
             manual = "Não foi possível consultar o manual técnico neste momento."
+            grounding_status = "degraded_fallback"
         citations.extend(
             _telemetry_citation(operational, item)
             for item in operational.evidence
@@ -334,7 +573,7 @@ class RagAssistantService:
         return _response(
             manual=manual,
             current_state=_deterministic_current_state(operational),
-            grounding_status="degraded_fallback",
+            grounding_status=grounding_status,
             citations=citations,
             retrieval=retrieval,
             generation_model=self.chat.model,
@@ -344,6 +583,49 @@ class RagAssistantService:
             trace_id=trace_id,
             started=started,
         )
+
+
+async def _timed_operational_loader(loader, *, asset_id, trace_id):
+    started = perf_counter()
+    try:
+        operational = await loader()
+    except asyncio.CancelledError:
+        log_rag_stage(
+            "snapshot",
+            outcome="cancelled",
+            duration_ms=(perf_counter() - started) * 1000,
+            asset_id=asset_id,
+            trace_id=str(trace_id),
+        )
+        raise
+    except Exception:
+        log_rag_stage(
+            "snapshot",
+            outcome="unavailable",
+            duration_ms=(perf_counter() - started) * 1000,
+            asset_id=asset_id,
+            trace_id=str(trace_id),
+        )
+        raise
+    log_rag_stage(
+        "snapshot",
+        outcome="ok",
+        duration_ms=(perf_counter() - started) * 1000,
+        asset_id=asset_id,
+        count=len(operational.evidence),
+        trace_id=str(trace_id),
+    )
+    return operational
+
+
+def _internal_failure_outcome(error: Exception) -> str:
+    if isinstance(error, TimeoutError):
+        return "timeout"
+    if isinstance(error, ChatGatewayError):
+        return error.reason
+    if isinstance(error, GeneratedOutputError):
+        return "invalid_citation"
+    return "unavailable"
 
 
 def prohibited_intent_response(
@@ -479,13 +761,6 @@ def _telemetry_citation(
         windowSeconds=evidence.window_seconds,
         qualityStatus=operational.quality_status,
     )
-
-
-def _short_exact_excerpt(text: str, limit: int = 240) -> str:
-    if len(text) <= limit:
-        return text
-    boundary = text.rfind(" ", 0, limit + 1)
-    return text[: boundary if boundary > 0 else limit]
 
 
 def _deterministic_current_state(operational: TrustedOperationalContext) -> str:

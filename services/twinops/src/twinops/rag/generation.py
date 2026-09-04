@@ -1,9 +1,6 @@
 """Structured AI Gateway generation and strict post-generation validation."""
 
-import asyncio
 import json
-import logging
-from time import perf_counter
 from typing import Protocol, Sequence
 
 import httpx
@@ -14,7 +11,9 @@ from twinops.rag.retrieval import RetrievalResult
 
 
 DEFAULT_GENERATION_MODEL = "openai/gpt-5.6-luna"
-_LOGGER = logging.getLogger("twinops.rag")
+_GENERATION_FAILURE_REASONS = frozenset(
+    {"timeout", "http_status", "transport", "invalid_response", "unknown"}
+)
 
 
 class GeneratedOutputError(RuntimeError):
@@ -22,7 +21,19 @@ class GeneratedOutputError(RuntimeError):
 
 
 class ChatGatewayError(RuntimeError):
-    pass
+    def __init__(
+        self,
+        reason: str = "unknown",
+        *,
+        status_code: int | None = None,
+    ) -> None:
+        super().__init__("generation_gateway_unavailable")
+        self.reason = reason if reason in _GENERATION_FAILURE_REASONS else "unknown"
+        self.status_code = (
+            status_code
+            if isinstance(status_code, int) and 100 <= status_code <= 599
+            else None
+        )
 
 
 class _GeneratedModel(BaseModel):
@@ -71,7 +82,6 @@ class ChatGatewayClient:
     async def generate(
         self, messages: Sequence[dict[str, str]]
     ) -> GeneratedAssistantPayload:
-        started = perf_counter()
         payload = {
             "model": self.model,
             "messages": list(messages),
@@ -104,15 +114,17 @@ class ChatGatewayClient:
             if not isinstance(content, str):
                 raise ValueError
             return GeneratedAssistantPayload.model_validate_json(content)
-        except asyncio.CancelledError:
-            _LOGGER.warning(
-                "rag_generation_cancelled model=%s elapsed_ms=%.3f",
-                self.model,
-                (perf_counter() - started) * 1000,
-            )
-            raise
-        except (httpx.HTTPError, KeyError, IndexError, TypeError, ValueError, ValidationError):
-            raise ChatGatewayError("generation_gateway_unavailable") from None
+        except httpx.TimeoutException:
+            raise ChatGatewayError("timeout") from None
+        except httpx.HTTPStatusError as error:
+            raise ChatGatewayError(
+                "http_status",
+                status_code=error.response.status_code,
+            ) from None
+        except httpx.HTTPError:
+            raise ChatGatewayError("transport") from None
+        except (KeyError, IndexError, TypeError, ValueError, ValidationError):
+            raise ChatGatewayError("invalid_response") from None
 
 
 def build_gateway_messages(
