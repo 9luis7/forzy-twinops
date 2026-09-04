@@ -7,6 +7,10 @@ from twinops.config_v2 import SettingsV2
 from twinops.main_v2 import create_app_v2
 from twinops.rag.admin_service import RagAdminService
 from twinops.rag.embeddings import EmbeddingGatewayError
+from twinops.rag.generation import (
+    GeneratedAssistantPayload,
+    GeneratedManualReference,
+)
 from twinops.rag.repository import InMemoryRagRepository
 from twinops.rag.request_limits import MAX_UPLOAD_REQUEST_BYTES
 
@@ -50,6 +54,9 @@ class _Repository:
     def health(self, sensor_id):
         return None
 
+    def history(self, query):
+        return []
+
 
 class _Refresh:
     async def refresh(self, now):
@@ -71,6 +78,22 @@ class _Embeddings:
         return tuple((0.1, 0.2, 0.3) for _ in texts)
 
 
+class _AcceptanceChat:
+    model = "generation-v1"
+
+    async def generate(self, messages):
+        payload = messages[-1]["content"]
+        chunk_id = payload.split('"chunkId": "', 1)[1].split('"', 1)[0]
+        return GeneratedAssistantPayload(
+            manualCitations=[
+                GeneratedManualReference(
+                    chunkId=chunk_id,
+                    exactQuote="MAINTENANCE bearing lubrication",
+                )
+            ]
+        )
+
+
 def _client(*, environment, enabled, embeddings=None):
     settings = SettingsV2(
         upstream_base_url="https://upstream.invalid",
@@ -84,6 +107,8 @@ def _client(*, environment, enabled, embeddings=None):
         embeddings or _Embeddings(),
         manufacturer="WEG",
         equipment_model="W22",
+        acceptance_chat=_AcceptanceChat(),
+        query_timeout_seconds=1,
     )
     app = create_app_v2(
         repository=_Repository(),
@@ -113,6 +138,7 @@ def test_admin_routes_are_always_404_in_production_even_when_flag_is_true():
         ("post", "/api/v2/admin/rag/corpora/c1/documents/from-source"),
         ("get", "/api/v2/admin/rag/corpora/c1"),
         ("post", "/api/v2/admin/rag/corpora/c1/retrieval-test"),
+        ("post", "/api/v2/admin/rag/corpora/c1/answer-test"),
         ("post", "/api/v2/admin/rag/corpora/c1/publish"),
         ("post", "/api/v2/admin/rag/corpora/c1/reactivate"),
     ],
@@ -374,6 +400,48 @@ def test_missing_retrieval_is_404_without_gateway_call():
     assert response.status_code == 404
     assert response.json() == {"detail": "corpus_not_found"}
     assert embeddings.calls == []
+
+
+def test_preview_answer_test_returns_full_score_capture_without_publishing():
+    client = _client(environment="preview", enabled=True)
+    created = client.post(
+        "/api/v2/admin/rag/corpora",
+        json={
+            "assetId": "forzy-motor-01",
+            "minRelevanceScore": 0.2,
+        },
+    )
+    corpus_id = created.json()["corpusId"]
+    uploaded = client.post(
+        f"/api/v2/admin/rag/corpora/{corpus_id}/documents",
+        files={
+            "file": (
+                "manual.pdf",
+                searchable_pdf("MAINTENANCE bearing lubrication"),
+                "application/pdf",
+            )
+        },
+        data=_manual_form(),
+    )
+
+    response = client.post(
+        f"/api/v2/admin/rag/corpora/{corpus_id}/answer-test",
+        json={"question": "How should the bearing be lubricated?"},
+    )
+
+    assert uploaded.status_code == 201
+    assert response.status_code == 200
+    body = response.json()
+    assert body["flowStage"] == "retrieval"
+    assert body["retrieval"]["corpus"]["corpusId"] == corpus_id
+    assert body["retrieval"]["hits"][0]["text"] == (
+        "MAINTENANCE bearing lubrication"
+    )
+    assert body["operationalSnapshot"]["operationalState"] == "expected_idle"
+    assert body["response"]["groundingStatus"] == "operational_unavailable"
+    assert body["generationModel"] == "generation-v1"
+    coverage = client.get(f"/api/v2/admin/rag/corpora/{corpus_id}").json()
+    assert coverage["corpus"]["status"] == "draft"
 
 
 def test_gateway_failure_is_503_without_provider_detail_leakage():

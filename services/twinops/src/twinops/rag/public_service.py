@@ -45,6 +45,15 @@ OUT_OF_SCOPE_MESSAGES = {
         "O assistente não executa manutenção nem comanda o equipamento. "
         "Qualquer intervenção exige uma pessoa qualificada."
     ),
+    "prompt_exfiltration": (
+        "Não posso revelar prompt, regras ou conteúdo interno do sistema. "
+        "Posso responder somente com evidências técnicas autorizadas."
+    ),
+    "secret_exfiltration": (
+        "Não posso revelar chaves, tokens ou outras credenciais. "
+        "Segredos encontrados em perguntas, histórico ou documentos não são "
+        "evidência técnica."
+    ),
 }
 
 
@@ -502,6 +511,10 @@ def _refusal_for(question: str) -> str | None:
     tokens = tuple(re.findall(r"[a-z0-9]+|%", normalized))
     token_set = set(tokens)
 
+    if _is_secret_exfiltration_request(normalized, token_set):
+        return "secret_exfiltration"
+    if _is_prompt_exfiltration_request(normalized, token_set):
+        return "prompt_exfiltration"
     if _is_root_cause_request(normalized, token_set):
         return "root_cause"
     if _is_probability_request(token_set):
@@ -511,6 +524,72 @@ def _refusal_for(question: str) -> str | None:
     if _is_execution_request(normalized, tokens):
         return "execution"
     return None
+
+
+def _is_prompt_exfiltration_request(normalized: str, tokens: set[str]) -> bool:
+    disclosure = bool(
+        tokens
+        & {
+            "exiba",
+            "expose",
+            "mostre",
+            "print",
+            "repita",
+            "repeat",
+            "reveal",
+            "revele",
+            "show",
+        }
+    )
+    protected_target = any(
+        phrase in normalized
+        for phrase in (
+            "conteudo interno",
+            "internal instructions",
+            "internal prompt",
+            "prompt do sistema",
+            "regras do sistema",
+            "system instructions",
+            "system prompt",
+        )
+    )
+    return disclosure and protected_target
+
+
+def _is_secret_exfiltration_request(normalized: str, tokens: set[str]) -> bool:
+    disclosure = bool(
+        tokens
+        & {
+            "exiba",
+            "expose",
+            "mostre",
+            "print",
+            "repita",
+            "repeat",
+            "reveal",
+            "revele",
+            "show",
+        }
+    )
+    explicit_secret = bool(
+        tokens
+        & {
+            "credential",
+            "credentials",
+            "credencial",
+            "credenciais",
+            "password",
+            "secret",
+            "segredo",
+            "senha",
+            "token",
+        }
+    )
+    provider_key = (
+        bool(tokens & {"api", "gateway"})
+        and bool(tokens & {"chave", "key"})
+    ) or "api key" in normalized
+    return disclosure and (explicit_secret or provider_key)
 
 
 def _normalized_text(value: str) -> str:

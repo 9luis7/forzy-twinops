@@ -6,6 +6,7 @@ from uuid import uuid4
 
 from twinops.rag.chunking import chunk_pages
 from twinops.rag.embeddings import EmbeddingClient
+from twinops.rag.generation import ChatClient
 from twinops.rag.errors import (
     CorpusCompatibilityError,
     CorpusConflictError,
@@ -22,6 +23,9 @@ from twinops.rag.models import (
     RagDocument,
     UploadedDocument,
 )
+from twinops.rag.operational import TrustedOperationalContext
+from twinops.rag.public_models import AssistantQueryRequest, AssistantQueryResponse
+from twinops.rag.public_service import RagAssistantService
 from twinops.rag.pdf import extract_searchable_pdf
 from twinops.rag.repository import RagRepository
 from twinops.rag.retrieval import (
@@ -29,6 +33,7 @@ from twinops.rag.retrieval import (
     LEXICAL_CANDIDATE_LIMIT,
     VECTOR_CANDIDATE_LIMIT,
     FusedRetrievalHit,
+    RetrievalResult,
     reciprocal_rank_fusion,
 )
 
@@ -41,6 +46,19 @@ class DuplicateDocumentError(CorpusConflictError):
         super().__init__("duplicate_document")
 
 
+class _StaticAcceptanceRetriever:
+    def __init__(self, result: RetrievalResult) -> None:
+        self.result = result
+
+    def healthy(self, asset_id: str) -> bool:
+        return asset_id == self.result.corpus.asset_id
+
+    async def retrieve(self, asset_id: str, query: str, *, corpus=None):
+        if asset_id != self.result.corpus.asset_id:
+            raise ValueError("acceptance asset mismatch")
+        return self.result
+
+
 class RagAdminService:
     def __init__(
         self,
@@ -51,6 +69,8 @@ class RagAdminService:
         manufacturer: str,
         equipment_model: str,
         embedding_batch_size: int = 32,
+        acceptance_chat: ChatClient | None = None,
+        query_timeout_seconds: float = 10.0,
     ) -> None:
         if (
             not manufacturer.strip()
@@ -75,6 +95,8 @@ class RagAdminService:
         self.manufacturer = manufacturer
         self.equipment_model = equipment_model
         self.embedding_batch_size = embedding_batch_size
+        self.acceptance_chat = acceptance_chat
+        self.query_timeout_seconds = query_timeout_seconds
 
     def create_draft(
         self,
@@ -212,6 +234,43 @@ class RagAdminService:
             lexical_candidates,
             limit=limit,
         )
+
+    async def test_answer(
+        self,
+        corpus_id: str,
+        question: str,
+        *,
+        operational: TrustedOperationalContext,
+    ) -> tuple[AssistantQueryResponse, tuple[FusedRetrievalHit, ...]]:
+        if self.acceptance_chat is None:
+            raise RuntimeError("acceptance_chat_unavailable")
+        corpus = self._require_corpus(corpus_id)
+        self._require_compatible(corpus)
+        raw_hits = tuple(await self.test_retrieval(corpus_id, question, limit=6))
+        filtered_hits = tuple(
+            hit
+            for hit in raw_hits
+            if hit.absolute_score >= corpus.min_relevance_score
+        )
+        retrieval = RetrievalResult(
+            corpus=corpus,
+            vector_candidates=(),
+            lexical_candidates=(),
+            hits=filtered_hits,
+            threshold=corpus.min_relevance_score,
+            sufficient=bool(filtered_hits),
+        )
+        assistant = RagAssistantService(
+            _StaticAcceptanceRetriever(retrieval),
+            self.acceptance_chat,
+            query_timeout_seconds=self.query_timeout_seconds,
+        )
+        response = await assistant.query(
+            corpus.asset_id,
+            AssistantQueryRequest(question=question),
+            operational=operational,
+        )
+        return response, raw_hits
 
     def publish(self, corpus_id: str) -> ActiveCorpusChange:
         corpus = self._require_corpus(corpus_id)

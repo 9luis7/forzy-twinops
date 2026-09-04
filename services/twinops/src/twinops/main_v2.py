@@ -232,6 +232,14 @@ def _runtime_lifespan(
                     query_embeddings=query_embedding_client,
                     manufacturer=settings.rag_manufacturer,
                     equipment_model=settings.rag_equipment_model,
+                    acceptance_chat=ChatGatewayClient(
+                        http,
+                        api_key=settings.rag_api_key or "",
+                        model=settings.rag_generation_model,
+                        timeout_seconds=settings.rag_gateway_timeout_seconds,
+                        base_url=settings.rag_chat_base_url,
+                    ),
+                    query_timeout_seconds=settings.rag_query_timeout_seconds,
                 )
                 app.state.rag_document_fetcher = OfficialPdfSourceFetcher(
                     http,

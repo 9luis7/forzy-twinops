@@ -1,11 +1,13 @@
 """Preview-only administrative HTTP surface for RAG corpora."""
 
+import asyncio
+from time import perf_counter
 from typing import Annotated
 
 from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-from twinops.api.v2_routes import PUBLIC_ASSET_ID
+from twinops.api.v2_routes import PUBLIC_ASSET_ID, _trusted_operational_context
 from twinops.rag.chunking import ChunkingLimitError
 from twinops.rag.admin_service import DuplicateDocumentError
 from twinops.rag.embeddings import EmbeddingGatewayError
@@ -16,6 +18,9 @@ from twinops.rag.errors import (
     InvalidAdminInputError,
 )
 from twinops.rag.models import DocumentMetadata
+from twinops.rag.operational import TrustedOperationalContext
+from twinops.rag.public_models import AssistantQueryRequest
+from twinops.rag.public_service import prohibited_intent_response
 from twinops.rag.pdf import (
     MAX_PDF_BYTES,
     PdfSourceFetchError,
@@ -37,6 +42,10 @@ class CreateCorpusRequest(BaseModel):
 class RetrievalTestRequest(BaseModel):
     query: str = Field(min_length=1, max_length=500)
     limit: int = Field(6, ge=1, le=6)
+
+
+class AnswerTestRequest(BaseModel):
+    question: str = Field(min_length=1, max_length=500)
 
 
 class ImportDocumentRequest(BaseModel):
@@ -220,6 +229,68 @@ def create_rag_admin_router() -> APIRouter:
             ) from None
         return {"items": [_chunk_json(item) for item in results]}
 
+    @router.post("/corpora/{corpus_id}/answer-test")
+    async def answer_test(
+        request: Request, corpus_id: str, body: AnswerTestRequest
+    ):
+        started = perf_counter()
+        service = _require_admin(request)
+        assistant_request = AssistantQueryRequest(question=body.question)
+        preflight = prohibited_intent_response(
+            assistant_request,
+            generation_model=request.app.state.settings.rag_generation_model,
+            started_at=started,
+        )
+        if preflight is not None:
+            latency = max(0.0, (perf_counter() - started) * 1_000.0)
+            response = preflight.model_copy(update={"latency_ms": latency})
+            return {
+                "flowStage": "preflight_refusal",
+                "retrieval": None,
+                "generationModel": response.models.generation,
+                "operationalSnapshot": None,
+                "response": response.model_dump(mode="json", by_alias=True),
+                "latencyMs": latency,
+            }
+        operational = await asyncio.to_thread(
+            _trusted_operational_context, request
+        )
+        try:
+            response, raw_hits = await service.test_answer(
+                corpus_id,
+                body.question,
+                operational=operational,
+            )
+        except CorpusNotFoundError:
+            raise HTTPException(status_code=404, detail="corpus_not_found") from None
+        except InvalidAdminInputError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from None
+        except CorpusCompatibilityError:
+            raise HTTPException(status_code=409, detail="corpus_incompatible") from None
+        except EmbeddingGatewayError:
+            raise HTTPException(
+                status_code=503, detail="embedding_gateway_unavailable"
+            ) from None
+        except RuntimeError:
+            raise HTTPException(
+                status_code=503, detail="generation_gateway_unavailable"
+            ) from None
+        latency = max(0.0, (perf_counter() - started) * 1_000.0)
+        response = response.model_copy(update={"latency_ms": latency})
+        return {
+            "flowStage": "retrieval",
+            "retrieval": {
+                "corpus": response.corpus.model_dump(
+                    mode="json", by_alias=True
+                ),
+                "hits": [_full_chunk_json(item) for item in raw_hits],
+            },
+            "generationModel": response.models.generation,
+            "operationalSnapshot": _operational_snapshot_json(operational),
+            "response": response.model_dump(mode="json", by_alias=True),
+            "latencyMs": latency,
+        }
+
     @router.post("/corpora/{corpus_id}/publish")
     def publish(request: Request, corpus_id: str):
         service = _require_admin(request)
@@ -313,6 +384,56 @@ def _chunk_json(hit):
         "rankScore": hit.rank_score,
         "vectorRank": hit.vector_rank,
         "lexicalRank": hit.lexical_rank,
+    }
+
+
+def _full_chunk_json(hit):
+    chunk = hit.candidate.chunk
+    document = hit.candidate.document
+    return {
+        "chunkId": chunk.chunk_id,
+        "documentId": document.document_id,
+        "manufacturer": document.manufacturer,
+        "equipmentModel": document.equipment_model,
+        "revision": document.revision,
+        "sourceUrl": document.source_url,
+        "documentSha256": document.sha256,
+        "pageStart": chunk.page_start,
+        "pageEnd": chunk.page_end,
+        "section": chunk.section,
+        "text": chunk.text,
+        "contentHash": chunk.content_hash,
+        "absoluteScore": hit.absolute_score,
+        "rankScore": hit.rank_score,
+        "vectorRank": hit.vector_rank,
+        "lexicalRank": hit.lexical_rank,
+    }
+
+
+def _operational_snapshot_json(context: TrustedOperationalContext):
+    def timestamp(value):
+        return None if value is None else value.isoformat()
+
+    return {
+        "operationalState": context.operational_state,
+        "assessmentId": context.assessment_id,
+        "assessmentStatus": context.assessment_status,
+        "qualityStatus": context.quality_status,
+        "windowStart": timestamp(context.window_start),
+        "windowEnd": timestamp(context.window_end),
+        "receivedAt": timestamp(context.received_at),
+        "freshnessMs": context.freshness_ms,
+        "qualityFlags": list(context.quality_flags),
+        "evidence": [
+            {
+                "evidenceId": item.evidence_id,
+                "feature": item.feature,
+                "value": item.value,
+                "unit": item.unit,
+                "windowSeconds": item.window_seconds,
+            }
+            for item in context.evidence
+        ],
     }
 
 
