@@ -270,6 +270,24 @@ def test_vercel_upload_context_ignores_agent_metadata():
     assert "skills-lock.json" in ignore_patterns
 
 
+def test_vercel_upload_context_keeps_runtime_ml_bundle_and_drops_tmp_outputs():
+    repository_root = Path(__file__).parents[4]
+    ignore_patterns = {
+        line.strip()
+        for line in (repository_root / ".vercelignore")
+        .read_text(encoding="utf-8")
+        .splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    }
+
+    assert "artifacts/**" not in ignore_patterns
+    assert "tmp/**" in ignore_patterns
+    assert "artifacts/ml-public/**" in ignore_patterns
+    assert "artifacts/research/**" in ignore_patterns
+    assert "artifacts/twin3d/**" in ignore_patterns
+    assert "artifacts/ml/real-forzy/source-summary.json" in ignore_patterns
+
+
 def test_real_runtime_assessment_does_not_import_training_dependencies():
     expected = _run_real_runtime_assessment(block_training_dependencies=False)
     runtime_only = _run_real_runtime_assessment(block_training_dependencies=True)
