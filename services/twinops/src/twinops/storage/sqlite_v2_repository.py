@@ -15,6 +15,7 @@ from twinops.storage.v2_repository import (
     RefreshCycleClaimV2,
     RefreshCycleV2,
     RepositorySensorHealthV2,
+    RepositorySnapshotReadV2,
     SensorRefreshOutcomeV2,
     SensorRefreshWriteV2,
 )
@@ -310,6 +311,95 @@ class SQLiteTelemetryRepositoryV2:
             latency_ms=latest["latency_ms"] if latest else None,
             error_code=latest["error_code"] if latest else None,
             sample_count=sample_count,
+        )
+
+    def snapshot_read(
+        self,
+        asset_id: str,
+        *,
+        sensor_ids: tuple[str, ...],
+        history_limit_per_sensor: int,
+    ) -> RepositorySnapshotReadV2:
+        if (
+            not sensor_ids
+            or len(set(sensor_ids)) != len(sensor_ids)
+            or any(not sensor_id for sensor_id in sensor_ids)
+            or not 1 <= history_limit_per_sensor <= 1000
+        ):
+            raise ValueError("snapshot read parameters are invalid")
+        placeholders = ",".join("?" for _ in sensor_ids)
+        with self._connection() as connection:
+            latest_rows = connection.execute(
+                "SELECT canonical_json FROM latest_readings_v2 "
+                f"WHERE asset_id=? AND sensor_id IN ({placeholders}) "
+                "ORDER BY sensor_id",
+                (asset_id, *sensor_ids),
+            ).fetchall()
+            history_rows = connection.execute(
+                "SELECT canonical_json FROM ("
+                "SELECT canonical_json, sensor_id, "
+                "ROW_NUMBER() OVER (PARTITION BY sensor_id "
+                "ORDER BY observed_at DESC, received_at DESC, reading_id DESC) "
+                "AS sensor_rank FROM telemetry_samples_v2 "
+                f"WHERE asset_id=? AND sensor_id IN ({placeholders})"
+                ") AS ranked WHERE sensor_rank <= ? "
+                "ORDER BY sensor_id, sensor_rank",
+                (asset_id, *sensor_ids, history_limit_per_sensor),
+            ).fetchall()
+            health_items = []
+            for sensor_id in sensor_ids:
+                latest_attempt = connection.execute(
+                    "SELECT attempted_at, latency_ms, error_code "
+                    "FROM collection_attempts_v2 WHERE sensor_id=? "
+                    "ORDER BY attempted_at DESC, attempt_id DESC LIMIT 1",
+                    (sensor_id,),
+                ).fetchone()
+                last_success = connection.execute(
+                    "SELECT MAX(attempted_at) FROM collection_attempts_v2 "
+                    "WHERE sensor_id=? AND succeeded=1",
+                    (sensor_id,),
+                ).fetchone()[0]
+                sample_count = connection.execute(
+                    "SELECT COUNT(*) FROM telemetry_samples_v2 WHERE sensor_id=?",
+                    (sensor_id,),
+                ).fetchone()[0]
+                if latest_attempt is not None or sample_count > 0:
+                    health_items.append(
+                        RepositorySensorHealthV2(
+                            sensor_id=sensor_id,
+                            last_attempt_at=(
+                                _parse_timestamp(latest_attempt["attempted_at"])
+                                if latest_attempt
+                                else None
+                            ),
+                            last_success_at=_parse_timestamp(last_success),
+                            latency_ms=(
+                                latest_attempt["latency_ms"]
+                                if latest_attempt
+                                else None
+                            ),
+                            error_code=(
+                                latest_attempt["error_code"]
+                                if latest_attempt
+                                else None
+                            ),
+                            sample_count=sample_count,
+                        )
+                    )
+        return RepositorySnapshotReadV2(
+            latest=tuple(
+                CanonicalSensorReadingV2.model_validate(
+                    json.loads(row["canonical_json"])
+                )
+                for row in latest_rows
+            ),
+            history=tuple(
+                CanonicalSensorReadingV2.model_validate(
+                    json.loads(row["canonical_json"])
+                )
+                for row in history_rows
+            ),
+            health=tuple(health_items),
         )
 
     def claim_refresh_cycle(

@@ -42,19 +42,9 @@ def build_snapshot_v2(
 ) -> DigitalTwinSnapshotV2:
     """Read current telemetry and return a snapshot without mutating dependencies."""
 
-    latest_by_sensor = {
-        reading.sensor_id: reading for reading in repository.latest(_ASSET_ID)
-    }
-    readings_by_sensor = {
-        sensor_id: repository.history(
-            HistoryQueryV2(
-                asset_id=_ASSET_ID,
-                sensor_id=sensor_id,
-                limit=1000,
-            )
-        )
-        for sensor_id in _SENSOR_IDS
-    }
+    latest_by_sensor, readings_by_sensor, health_by_sensor = (
+        _snapshot_repository_inputs(repository)
+    )
     time_candidates = [_as_datetime(now)]
     time_candidates.extend(
         _as_datetime(reading.received_at)
@@ -137,7 +127,7 @@ def build_snapshot_v2(
             "assessment": selected_assessment,
             "integration": {
                 "sensors": {
-                    sensor_id: _sensor_health(repository.health(sensor_id))
+                    sensor_id: _sensor_health(health_by_sensor.get(sensor_id))
                     for sensor_id in _SENSOR_IDS
                 }
             },
@@ -149,6 +139,49 @@ def build_snapshot_v2(
             },
         }
     )
+
+
+def _snapshot_repository_inputs(repository):
+    atomic_read = getattr(repository, "snapshot_read", None)
+    if callable(atomic_read):
+        result = atomic_read(
+            _ASSET_ID,
+            sensor_ids=_SENSOR_IDS,
+            history_limit_per_sensor=1000,
+        )
+        latest_by_sensor = {
+            reading.sensor_id: reading for reading in result.latest
+        }
+        readings_by_sensor = {
+            sensor_id: [
+                reading
+                for reading in result.history
+                if reading.sensor_id == sensor_id
+            ]
+            for sensor_id in _SENSOR_IDS
+        }
+        health_by_sensor = {
+            health.sensor_id: health for health in result.health
+        }
+        return latest_by_sensor, readings_by_sensor, health_by_sensor
+
+    latest_by_sensor = {
+        reading.sensor_id: reading for reading in repository.latest(_ASSET_ID)
+    }
+    readings_by_sensor = {
+        sensor_id: repository.history(
+            HistoryQueryV2(
+                asset_id=_ASSET_ID,
+                sensor_id=sensor_id,
+                limit=1000,
+            )
+        )
+        for sensor_id in _SENSOR_IDS
+    }
+    health_by_sensor = {
+        sensor_id: repository.health(sensor_id) for sensor_id in _SENSOR_IDS
+    }
+    return latest_by_sensor, readings_by_sensor, health_by_sensor
 
 
 def _score_sensor(

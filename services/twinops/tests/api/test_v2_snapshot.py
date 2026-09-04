@@ -7,6 +7,7 @@ import pytest
 from twinops.api.v2_snapshot import build_snapshot_v2
 from twinops.contracts.models import AssetConditionAssessment
 from twinops.contracts.v2_models import CanonicalSensorReadingV2
+from twinops.storage import v2_repository
 from twinops.storage.v2_repository import RepositorySensorHealthV2
 
 
@@ -223,6 +224,56 @@ def _assessment(sensor_id: str, status: str) -> AssetConditionAssessment:
             "limitations": [],
         }
     )
+
+
+def test_snapshot_uses_atomic_repository_read_when_available():
+    bundle_type = getattr(
+        v2_repository, "RepositorySnapshotReadV2", None
+    )
+    assert bundle_type is not None, "snapshot repository read model is missing"
+
+    class _AtomicRepository:
+        def __init__(self):
+            self.calls = []
+
+        def snapshot_read(
+            self, asset_id, *, sensor_ids, history_limit_per_sensor
+        ):
+            self.calls.append(
+                (asset_id, sensor_ids, history_limit_per_sensor)
+            )
+            readings = (_reading("s1"), _reading("s2"))
+            return bundle_type(
+                latest=readings,
+                history=readings,
+                health=(),
+            )
+
+        def latest(self, asset_id):
+            raise AssertionError("atomic snapshot must not reopen latest")
+
+        def history(self, query):
+            raise AssertionError("atomic snapshot must not reopen history")
+
+        def health(self, sensor_id):
+            raise AssertionError("atomic snapshot must not reopen health")
+
+    repository = _AtomicRepository()
+
+    snapshot = build_snapshot_v2(
+        repository=repository,
+        scorer=_Scorer({"s1": "normal", "s2": "normal"}),
+        now=NOW,
+        operational_state="last_known",
+        freshness_basis="last_received",
+        twin3d_enabled=True,
+    )
+
+    assert repository.calls == [
+        ("forzy-motor-01", ("s1", "s2"), 1000)
+    ]
+    assert [item.sensor_id for item in snapshot.channels] == ["s1", "s2"]
+    assert snapshot.status == "normal"
 
 
 def test_partial_channels_never_report_normal():
