@@ -1,4 +1,6 @@
+import asyncio
 import json
+import logging
 
 import httpx
 import pytest
@@ -27,6 +29,11 @@ class _Http:
     async def post(self, url, **kwargs):
         self.calls.append((url, kwargs))
         return self.response
+
+
+class _NeverReturnsHttp:
+    async def post(self, url, **kwargs):
+        await asyncio.Future()
 
 
 def _content(**overrides):
@@ -85,6 +92,28 @@ async def test_chat_gateway_requests_low_reasoning_for_latency_bounded_extractio
     _, kwargs = http.calls[0]
     assert kwargs["json"]["reasoning_effort"] == "low"
     assert "temperature" not in kwargs["json"]
+
+
+@pytest.mark.asyncio
+async def test_chat_gateway_logs_sanitized_cancellation_timing(caplog):
+    caplog.set_level(logging.WARNING, logger="twinops.rag")
+    client = ChatGatewayClient(
+        _NeverReturnsHttp(),
+        api_key="server-secret",
+        model="gemini-3.7-flash",
+    )
+
+    with pytest.raises(TimeoutError):
+        async with asyncio.timeout(0.01):
+            await client.generate(
+                [{"role": "user", "content": "private manual chunk"}]
+            )
+
+    assert "rag_generation_cancelled" in caplog.text
+    assert "model=gemini-3.7-flash" in caplog.text
+    assert "elapsed_ms=" in caplog.text
+    assert "private manual chunk" not in caplog.text
+    assert "server-secret" not in caplog.text
 
 
 @pytest.mark.asyncio
