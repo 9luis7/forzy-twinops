@@ -7,7 +7,13 @@ from uuid import uuid4
 
 from twinops.rag.chunking import chunk_pages
 from twinops.rag.embeddings import EmbeddingClient
-from twinops.rag.generation import ChatClient
+from twinops.rag.generation import (
+    ChatClient,
+    ChatGatewayError,
+    GeneratedOutputError,
+    build_provider_probe_messages,
+    validate_provider_probe_payload,
+)
 from twinops.rag.errors import (
     CorpusCompatibilityError,
     CorpusConflictError,
@@ -45,6 +51,40 @@ MAX_EMBEDDING_BATCH_SIZE = 64
 class DuplicateDocumentError(CorpusConflictError):
     def __init__(self) -> None:
         super().__init__("duplicate_document")
+
+
+async def run_provider_probe(
+    chat: ChatClient | None, *, profile: str
+) -> tuple[bool, str, str, float, str]:
+    """Exercise the configured generation client with a fixed safe fixture."""
+
+    started = perf_counter()
+    trace_id = str(uuid4())
+    model = "unavailable" if chat is None else chat.model
+    if profile not in {"minimal", "six_hits"}:
+        raise InvalidAdminInputError("provider_probe_not_found")
+    if chat is None:
+        return False, "unavailable", model, 0.0, trace_id
+    messages, chunks = build_provider_probe_messages(
+        chunk_count=1 if profile == "minimal" else 6
+    )
+    try:
+        generated = await chat.generate(messages)
+        validate_provider_probe_payload(generated, chunks=chunks)
+    except ChatGatewayError as error:
+        category = error.reason
+        success = False
+    except GeneratedOutputError:
+        category = "invalid_response"
+        success = False
+    except Exception:
+        category = "unknown"
+        success = False
+    else:
+        category = "ok"
+        success = True
+    latency_ms = max(0.0, (perf_counter() - started) * 1_000.0)
+    return success, category, model, latency_ms, trace_id
 
 
 class _StaticAcceptanceRetriever:

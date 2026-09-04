@@ -9,7 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from twinops.api.v2_routes import PUBLIC_ASSET_ID, _trusted_operational_context
 from twinops.rag.chunking import ChunkingLimitError
-from twinops.rag.admin_service import DuplicateDocumentError
+from twinops.rag.admin_service import DuplicateDocumentError, run_provider_probe
 from twinops.rag.embeddings import EmbeddingGatewayError
 from twinops.rag.errors import (
     CorpusCompatibilityError,
@@ -59,6 +59,26 @@ class ImportDocumentRequest(BaseModel):
 
 def create_rag_admin_router() -> APIRouter:
     router = APIRouter(prefix="/api/v2/admin/rag", tags=["rag-admin"])
+
+    @router.post("/provider-probes/{profile}")
+    async def provider_probe(request: Request, profile: str):
+        service = _require_admin(request)
+        try:
+            success, category, model, latency_ms, trace_id = (
+                await run_provider_probe(
+                    service.acceptance_chat,
+                    profile=profile,
+                )
+            )
+        except InvalidAdminInputError:
+            raise HTTPException(status_code=404, detail="not_found") from None
+        return {
+            "success": success,
+            "category": category,
+            "model": model,
+            "latencyMs": latency_ms,
+            "traceId": trace_id,
+        }
 
     @router.post("/corpora", status_code=201)
     def create_corpus(request: Request, body: CreateCorpusRequest):
