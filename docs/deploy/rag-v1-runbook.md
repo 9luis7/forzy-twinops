@@ -62,15 +62,20 @@ devem estar coerentes. O recurso público continua desligado com
 Modelos Gemini ancorados nesta versão:
 
 - [gemini-embedding-2](https://ai.google.dev/gemini-api/docs/embeddings)
-- [gemini-3.7-flash](https://ai.google.dev/gemini-api/docs/models)
+- [gemini-3.5-flash-lite](https://ai.google.dev/gemini-api/docs/models/gemini-3.5-flash-lite)
+
+O modelo generativo usa `reasoning_effort=minimal` para reduzir a latência da
+seleção estruturada e extrativa. O backend continua validando toda referência
+antes de exibir a resposta.
 
 No free tier, entradas e saídas podem ser usadas pelo Google para melhorar seus
 produtos. Para esta demo, trate como permitido somente o manual público, as
 perguntas do chat público e o snapshot operacional expressamente aprovado.
 Não envie credenciais, DSNs, PDFs privados ou dados pessoais.
 
-Trocar modelo ou dimensão exige um corpus novo e reindexado; embeddings de
-versões diferentes nunca são misturados.
+Trocar o modelo de embedding ou a dimensão exige um corpus novo e reindexado;
+embeddings de versões diferentes nunca são misturados. O modelo generativo
+permanece uma âncora explícita de deploy, mas não altera os vetores persistidos.
 
 ## Gate 3 — aplicar migration aditiva 003
 

@@ -85,7 +85,12 @@ class ChatGatewayClient:
         payload = {
             "model": self.model,
             "messages": list(messages),
-            "reasoning_effort": "low",
+            "reasoning_effort": (
+                "minimal"
+                if self.model.startswith("gemini-3.")
+                and self.model.endswith("-flash-lite")
+                else "low"
+            ),
             "stream": False,
             "max_tokens": 1200,
             "response_format": {

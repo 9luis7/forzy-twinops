@@ -39,7 +39,7 @@ _RAG_MODELS = {
         "google/text-multilingual-embedding-002",
         "openai/gpt-5.6-luna",
     ),
-    "gemini": ("gemini-embedding-2", "gemini-3.7-flash"),
+    "gemini": ("gemini-embedding-2", "gemini-3.5-flash-lite"),
 }
 
 

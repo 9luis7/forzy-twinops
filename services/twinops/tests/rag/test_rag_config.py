@@ -111,7 +111,7 @@ def test_direct_gemini_provider_uses_backend_secret_and_provider_defaults():
     assert settings.rag_provider == "gemini"
     assert settings.rag_api_key == "direct-gemini-secret"
     assert settings.rag_embedding_model == "gemini-embedding-2"
-    assert settings.rag_generation_model == "gemini-3.7-flash"
+    assert settings.rag_generation_model == "gemini-3.5-flash-lite"
     assert settings.rag_chat_base_url == (
         "https://generativelanguage.googleapis.com/v1beta/openai"
     )

@@ -244,7 +244,7 @@ class SettingsV2:
             else "google/text-multilingual-embedding-002"
         )
         default_generation_model = (
-            "gemini-3.7-flash"
+            "gemini-3.5-flash-lite"
             if rag_provider == "gemini"
             else "openai/gpt-5.6-luna"
         )

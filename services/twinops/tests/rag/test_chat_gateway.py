@@ -96,6 +96,24 @@ async def test_chat_gateway_requests_low_reasoning_for_latency_bounded_extractio
 
 
 @pytest.mark.asyncio
+async def test_chat_gateway_requests_minimal_reasoning_for_flash_lite_latency():
+    http = _Http(
+        _Response({"choices": [{"message": {"content": _content()}}]})
+    )
+    client = ChatGatewayClient(
+        http,
+        api_key="server-secret",
+        model="gemini-3.5-flash-lite",
+    )
+
+    await client.generate([{"role": "system", "content": "policy"}])
+
+    _, kwargs = http.calls[0]
+    assert kwargs["json"]["reasoning_effort"] == "minimal"
+    assert "temperature" not in kwargs["json"]
+
+
+@pytest.mark.asyncio
 async def test_chat_gateway_propagates_cancellation_without_logging_content(caplog):
     caplog.set_level(logging.WARNING, logger="twinops.rag")
     client = ChatGatewayClient(

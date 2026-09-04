@@ -113,7 +113,7 @@ def test_enabled_direct_gemini_rag_requires_and_accepts_its_backend_secret():
         "TWINOPS_RAG_EQUIPMENT_MODEL": "W22",
         "TWINOPS_RAG_EMBEDDING_MODEL": "gemini-embedding-2",
         "TWINOPS_RAG_EMBEDDING_DIMENSIONS": "768",
-        "TWINOPS_RAG_GENERATION_MODEL": "gemini-3.7-flash",
+        "TWINOPS_RAG_GENERATION_MODEL": "gemini-3.5-flash-lite",
         "TWINOPS_RAG_GATEWAY_TIMEOUT_SECONDS": "10",
         "TWINOPS_RAG_QUERY_TIMEOUT_SECONDS": "10",
     }
