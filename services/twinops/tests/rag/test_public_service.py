@@ -323,7 +323,13 @@ async def test_extractive_fallback_preserves_distinct_relevant_safe_hits():
 
 
 @pytest.mark.asyncio
-async def test_extractive_fallback_returns_insufficiency_when_no_safe_span_exists():
+@pytest.mark.parametrize(
+    "generation_outcome",
+    ["gateway_failure", "invalid_citation"],
+)
+async def test_extractive_fallback_returns_insufficiency_without_fallback_flag(
+    generation_outcome,
+):
     retrieval = _retrieval(sufficient=True)
     unsafe_chunk = RagChunk(
         **{
@@ -346,10 +352,21 @@ async def test_extractive_fallback_returns_insufficiency_when_no_safe_span_exist
         retrieval.threshold,
         True,
     )
+    if generation_outcome == "gateway_failure":
+        chat = _Chat(failure=ChatGatewayError("timeout"))
+    else:
+        chat = _Chat(
+            _generated(
+                manual_citations=(
+                    GeneratedManualReference(
+                        chunk_id="unknown",
+                        exact_quote="invented quote",
+                    ),
+                )
+            )
+        )
     service = RagAssistantService(
-        _Retriever(unsafe_retrieval),
-        _Chat(failure=ChatGatewayError("timeout")),
-        query_timeout_seconds=1,
+        _Retriever(unsafe_retrieval), chat, query_timeout_seconds=1
     )
 
     response = await service.query(
@@ -359,7 +376,7 @@ async def test_extractive_fallback_returns_insufficiency_when_no_safe_span_exist
     )
 
     assert response.grounding_status == "manual_insufficient"
-    assert response.fallback_used is True
+    assert response.fallback_used is False
     assert [item.type for item in response.citations] == ["telemetry"]
     assert "evidência suficiente" in response.answer.manual
 
@@ -540,6 +557,7 @@ async def test_out_of_scope_requests_are_refused_before_retrieval_without_citati
     )
 
     assert response.grounding_status == "out_of_scope"
+    assert response.fallback_used is False
     assert expected_fragment in response.answer.manual.casefold()
     assert response.citations == []
     assert retriever.calls == []

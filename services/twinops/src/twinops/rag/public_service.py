@@ -577,7 +577,7 @@ class RagAssistantService:
             citations=citations,
             retrieval=retrieval,
             generation_model=self.chat.model,
-            fallback_used=True,
+            fallback_used=grounding_status == "degraded_fallback",
             limitations=DEFAULT_LIMITATIONS,
             conversation_id=conversation_id,
             trace_id=trace_id,

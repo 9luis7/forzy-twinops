@@ -1,4 +1,5 @@
 from copy import deepcopy
+from datetime import datetime
 import json
 from pathlib import Path
 import subprocess
@@ -7,8 +8,12 @@ import time
 
 import pytest
 
+from twinops.rag.generation import ChatGatewayError
+from twinops.rag.models import RagChunk, RagCorpus, RagDocument, RetrievalCandidate
+from twinops.rag.operational import OperationalEvidence, TrustedOperationalContext
 from twinops.rag.public_models import AssistantQueryRequest
 from twinops.rag.public_service import RagAssistantService
+from twinops.rag.retrieval import FusedRetrievalHit, RetrievalResult
 
 
 ROOT = Path(__file__).parents[4]
@@ -521,6 +526,116 @@ def test_final_scorer_independently_validates_raw_response_and_evidence(tmp_path
     assert "recall_at_6=1.000" in result.stdout
     assert "refusal_accuracy=1.000" in result.stdout
     assert "p95_latency_ms=1000.000" in result.stdout
+
+
+@pytest.mark.asyncio
+async def test_final_scorer_accepts_real_manual_insufficient_without_fallback(
+    tmp_path,
+):
+    class Retriever:
+        async def prepare(self, _asset_id, *, trace_id=None):
+            return retrieval.corpus
+
+        async def retrieve(self, _asset_id, _query, *, corpus=None, trace_id=None):
+            return retrieval
+
+    class FailingChat:
+        model = GENERATION_MODEL
+
+        async def generate(self, _messages):
+            raise ChatGatewayError("timeout")
+
+    created_at = datetime.fromisoformat(WINDOW_END)
+    corpus = RagCorpus.draft(
+        corpus_id=CORPUS["corpusId"],
+        asset_id="forzy-motor-01",
+        manufacturer=CORPUS["manufacturer"],
+        equipment_model=CORPUS["equipmentModel"],
+        embedding_model=CORPUS["embeddingModel"],
+        embedding_dimensions=CORPUS["embeddingDimensions"],
+        min_relevance_score=CORPUS["minRelevanceScore"],
+        created_at=created_at,
+    ).published(created_at)
+    document = RagDocument(
+        document_id="document-1",
+        corpus_id=corpus.corpus_id,
+        manufacturer="WEG",
+        equipment_model="W22",
+        revision="2026-01",
+        language="en",
+        source_url="https://manufacturer.example/manual.pdf",
+        sha256=DOCUMENT_SHA,
+        page_count=10,
+        coverage_pages=10,
+    )
+    chunk = RagChunk(
+        chunk_id="noise-real-09",
+        corpus_id=corpus.corpus_id,
+        document_id=document.document_id,
+        ordinal=0,
+        text="6220 24 7324 72 1700 1200 6319 45 4500 3500",
+        page_start=7,
+        page_end=7,
+        section="MAINTENANCE",
+        content_hash=CONTENT_HASH,
+        token_count=10,
+        embedding=(1.0, 0.0, 0.0),
+    )
+    candidate = RetrievalCandidate(chunk, document, 0.8)
+    hit = FusedRetrievalHit(candidate, 1.0, 1, 1)
+    retrieval = RetrievalResult(
+        corpus,
+        (candidate,),
+        (candidate,),
+        (hit,),
+        corpus.min_relevance_score,
+        True,
+    )
+    operational = TrustedOperationalContext(
+        operational_state="normal",
+        assessment_id="assessment-1",
+        assessment_status="normal",
+        quality_status="ok",
+        window_start=datetime.fromisoformat(WINDOW_START),
+        window_end=datetime.fromisoformat(WINDOW_END),
+        received_at=datetime.fromisoformat(RECEIVED_AT),
+        freshness_ms=0,
+        evidence=(
+            OperationalEvidence(
+                evidence_id="evidence-1",
+                feature="vibration",
+                value=1.2,
+                unit="mm/s",
+                window_seconds=60,
+            ),
+        ),
+    )
+    cases = _manifest()
+    captures = _score_captures(cases)
+    absent_index = next(
+        index for index, case in enumerate(cases) if case["id"] == "real-09"
+    )
+    response = await RagAssistantService(
+        Retriever(), FailingChat(), query_timeout_seconds=1
+    ).query(
+        "forzy-motor-01",
+        AssistantQueryRequest(question=cases[absent_index]["question"]),
+        operational=operational,
+    )
+    captures[absent_index]["response"] = response.model_dump(
+        mode="json", by_alias=True
+    )
+    captures[absent_index]["latencyMs"] = response.latency_ms
+    manifest_path = tmp_path / "manifest.jsonl"
+    captures_path = tmp_path / "answers.jsonl"
+    _write_jsonl(manifest_path, cases)
+    _write_jsonl(captures_path, captures)
+
+    result = _run(SCORE, manifest_path, captures_path)
+
+    assert response.grounding_status == "manual_insufficient"
+    assert response.fallback_used is False
+    assert result.returncode == 0, result.stderr
 
 
 class _PreflightRetriever:
