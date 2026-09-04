@@ -5,6 +5,7 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 import json
 import math
+import re
 from threading import RLock
 from typing import Protocol
 
@@ -19,6 +20,46 @@ from twinops.rag.models import (
     RagDocument,
     RetrievalCandidate,
 )
+
+
+_LEXICAL_TOKEN = re.compile(
+    r"[0-9A-Za-zÀ-ÖØ-öø-ÿ_]+(?:[.-][0-9A-Za-zÀ-ÖØ-öø-ÿ_]+)*"
+)
+_LEXICAL_STOPWORDS = frozenset(
+    {
+        "a",
+        "ao",
+        "aos",
+        "as",
+        "com",
+        "como",
+        "da",
+        "das",
+        "de",
+        "do",
+        "dos",
+        "e",
+        "em",
+        "exige",
+        "existem",
+        "informa",
+        "na",
+        "nas",
+        "no",
+        "nos",
+        "o",
+        "os",
+        "para",
+        "por",
+        "qual",
+        "quais",
+        "que",
+        "quando",
+        "um",
+        "uma",
+    }
+)
+_MAX_LEXICAL_TERMS = 16
 
 
 class RagRepository(Protocol):
@@ -247,7 +288,7 @@ class InMemoryRagRepository:
     ) -> list[RetrievalCandidate]:
         self._require_corpus(corpus_id)
         _validate_public_search_limit(limit)
-        terms = tuple(dict.fromkeys(term.casefold() for term in query.split() if term))
+        terms = _lexical_terms(query)
         if not terms:
             return []
         candidates: list[RetrievalCandidate] = []
@@ -625,6 +666,9 @@ class PostgresRagRepository:
         _validate_public_search_limit(limit)
         if not isinstance(query, str) or not query.strip():
             return []
+        lexical_query = _lexical_websearch_query(query)
+        if not lexical_query:
+            return []
         with self._public_connection() as connection:
             rows = connection.execute(
                 _PUBLIC_CANDIDATE_SELECT
@@ -635,7 +679,7 @@ class PostgresRagRepository:
                 "WHERE c.corpus_id=%s AND c.search_vector @@ "
                 "websearch_to_tsquery('simple',%s) ORDER BY "
                 "source_score DESC,c.ordinal,c.chunk_id LIMIT %s",
-                (query, corpus_id, query, limit),
+                (lexical_query, corpus_id, lexical_query, limit),
             ).fetchall()
         return [
             _candidate_from_row(row, source_score=float(row["source_score"]))
@@ -661,6 +705,24 @@ def _validated_vector(values: Sequence[float], dimensions: int) -> tuple[float, 
     if len(vector) != dimensions or not all(math.isfinite(item) for item in vector):
         raise ValueError("embedding dimension does not match corpus")
     return vector
+
+
+def _lexical_terms(query: str) -> tuple[str, ...]:
+    if not isinstance(query, str):
+        return ()
+    return tuple(
+        dict.fromkeys(
+            token
+            for token in (
+                match.group().casefold() for match in _LEXICAL_TOKEN.finditer(query)
+            )
+            if token not in _LEXICAL_STOPWORDS
+        )
+    )[:_MAX_LEXICAL_TERMS]
+
+
+def _lexical_websearch_query(query: str) -> str:
+    return " OR ".join(_lexical_terms(query))
 
 
 def _validate_public_search_limit(limit: int) -> None:

@@ -2,7 +2,7 @@ from datetime import datetime, timezone
 from unittest.mock import Mock
 
 from twinops.rag import repository as repository_module
-from twinops.rag.repository import PostgresRagRepository
+from twinops.rag.repository import PostgresRagRepository, _lexical_websearch_query
 
 
 class _Result:
@@ -92,8 +92,15 @@ def test_postgres_lexical_search_filters_with_simple_websearch_and_parameters():
     normalized = " ".join(sql.split())
     assert "search_vector @@ websearch_to_tsquery('simple',%s)" in normalized
     assert untrusted not in sql
-    assert untrusted in parameters
+    assert parameters[0] == "bearing OR drop OR table OR rag_chunks"
+    assert parameters[2] == parameters[0]
     assert parameters[-1] == 12
+
+
+def test_lexical_query_uses_informative_or_terms_for_natural_language():
+    assert _lexical_websearch_query(
+        "Que verificações documentadas existem para aquecimento excessivo?"
+    ) == "verificações OR documentadas OR aquecimento OR excessivo"
 
 
 def test_each_public_db_operation_sets_local_statement_timeout_and_closes_connection():
