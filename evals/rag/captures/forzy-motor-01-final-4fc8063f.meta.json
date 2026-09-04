@@ -1,18 +1,18 @@
 {
   "schemaVersion": "1.0",
-  "capturedAt": "2026-09-04T14:50:04.7987282Z",
+  "capturedAt": "2026-09-04T21:48:36.5626247Z",
   "deployment": {
-    "id": "dpl_C66K98ugf4XvysLzi9Sf2LD4Sskp",
-    "url": "https://forzy-twinops-cyf7j1vf4-9luis7s-projects.vercel.app",
+    "id": "dpl_CYGqNGG8BFQbUiYPEeJ8PkqkKPtm",
+    "url": "https://forzy-twinops-o7bm10s3r-9luis7s-projects.vercel.app",
     "target": "preview",
-    "codeCommit": "f1e7ed163c94449397f1b71c7c530c0560f3b595"
+    "codeCommit": "39535bef398e4049e553011cc70422451a661d1a"
   },
   "lineage": {
     "exploratoryCorpusId": "56f0e62f-4308-4b70-9b82-a73cb2075e83"
   },
   "corpus": {
     "id": "4fc8063f-aa3a-4283-8b14-2f54bf08358c",
-    "status": "draft",
+    "status": "published",
     "embeddingModel": "gemini-embedding-2",
     "embeddingDimensions": 768,
     "chunkTargetTokens": 700,
@@ -30,15 +30,20 @@
     "ingestionMethod": "official-source-url"
   },
   "artifacts": {
-    "captureSha256": "2a05fa4454872d2be9d92a2e529a0786d6a900f0ec39da40efabfdd2b457f003",
-    "answersSha256": "d4317f8ba167ead19d50b9e81c77f4e2f1ea1793046ca67f28808ad0c4f33da7",
-    "manifestSha256": "c2998529f30152a12ead305857ffe374262a23d2fea08785eb63e7b479a89b14",
+    "captureSha256": "420cdb00259fb7784cefb8a22465be2b9299cbfba0cb60918c1464f7a5b6bfde",
+    "answersSha256": "6679ea11f70f73908721f8b932b71d5b0fc10e020d349176ed8ff703f3ebf9ab",
+    "realAnswersSha256": "1e85260bcd37047498c25d0b05bbae1db8b3b78bbbcc47e042a49dcb880b650f",
+    "syntheticAnswersSha256": "70c3ba0ea2cc78ce5dfce48303641939f6280329dd0d27ecf64cd7ad2810dada",
+    "manifestSha256": "116d3de5f7ddb63dcb749f8335f9cb89c8366a9ede97cb127a27f43f8131a3a8",
+    "answerCaptureRetention": "ephemeral-local-only; operational snapshots are not committed",
     "realManualCases": 16
   },
   "calibration": {
     "recallAt6": 1.0,
     "refusalAccuracy": 1.0,
-    "recommendedThreshold": 0.5897445762442176
+    "recommendedThreshold": 0.64285713,
+    "validatedActiveThreshold": 0.5897445762442176,
+    "thresholdDecision": "Preserve the immutable published corpus; the active conservative threshold passes the final retrieval and refusal gates."
   },
   "acceptance": {
     "cases": 33,
@@ -48,19 +53,20 @@
     "recallAt6": 1.0,
     "refusalAccuracy": 1.0,
     "failureProbabilityPresentations": 0,
-    "p95LatencyMs": 11936.819,
+    "p95LatencyMs": 7859.281,
     "grounding": {
-      "degradedFallback": 15,
-      "grounded": 7,
+      "degradedFallback": 9,
+      "grounded": 13,
       "manualInsufficient": 2,
       "operationalUnavailable": 3,
       "outOfScope": 6
     },
     "realPreviewGeneration": {
-      "degradedFallback": 11,
+      "degradedFallback": 4,
+      "grounded": 7,
       "manualInsufficient": 1,
       "outOfScope": 4,
-      "note": "Gemini generation timed out for every supported real-manual case; validated deterministic fallback preserved retrieved citations."
+      "note": "Every provider-selected citation was validated before display; invalid selections used deterministic exact-substring fallback."
     }
   }
 }
