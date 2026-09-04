@@ -70,6 +70,23 @@ async def test_chat_gateway_is_non_streaming_deterministic_and_uses_strict_schem
 
 
 @pytest.mark.asyncio
+async def test_chat_gateway_requests_low_reasoning_for_latency_bounded_extraction():
+    http = _Http(
+        _Response({"choices": [{"message": {"content": _content()}}]})
+    )
+    client = ChatGatewayClient(
+        http,
+        api_key="server-secret",
+        model="gemini-3.7-flash",
+    )
+
+    await client.generate([{"role": "system", "content": "policy"}])
+
+    _, kwargs = http.calls[0]
+    assert kwargs["json"]["reasoning_effort"] == "low"
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "response",
     [

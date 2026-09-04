@@ -77,6 +77,7 @@ class ChatGatewayClient:
                 json={
                     "model": self.model,
                     "messages": list(messages),
+                    "reasoning_effort": "low",
                     "temperature": 0,
                     "stream": False,
                     "max_tokens": 1200,
