@@ -236,12 +236,8 @@ def _native_gemini_payload(
                     else "LOW"
                 )
             },
-            "responseFormat": {
-                "text": {
-                    "mimeType": "application/json",
-                    "schema": _gateway_schema(),
-                }
-            },
+            "responseMimeType": "application/json",
+            "responseJsonSchema": _gateway_schema(),
             "maxOutputTokens": 1200,
         },
     }

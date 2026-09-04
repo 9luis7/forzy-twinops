@@ -157,12 +157,9 @@ async def test_native_gemini_chat_uses_fixed_schema_and_minimal_thinking():
     ]
     config = kwargs["json"]["generationConfig"]
     assert config["thinkingConfig"] == {"thinkingLevel": "MINIMAL"}
-    assert config["responseFormat"]["text"]["mimeType"] == (
-        "application/json"
-    )
-    assert config["responseFormat"]["text"]["schema"][
-        "additionalProperties"
-    ] is False
+    assert config["responseMimeType"] == "application/json"
+    assert config["responseJsonSchema"]["additionalProperties"] is False
+    assert "responseFormat" not in config
     assert config["maxOutputTokens"] == 1200
     assert kwargs["timeout"] == 7
     assert result.manual_citations[0].chunk_id == "chunk-1"
