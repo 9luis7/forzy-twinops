@@ -377,7 +377,23 @@ def test_calibrator_reapplies_positive_threshold_to_each_expected_hit(tmp_path):
     assert result.returncode == 0, result.stderr
     assert "recall_at_6=1.000" in result.stdout
     assert "refusal_accuracy=1.000" in result.stdout
-    assert "recommended_threshold=0.610000" in result.stdout
+    assert "recommended_threshold=0.61" in result.stdout
+
+
+def test_calibrator_prints_round_trippable_threshold_without_rounding_up(tmp_path):
+    manifest_path = tmp_path / "manifest.jsonl"
+    captures_path = tmp_path / "retrieval.jsonl"
+    cases = _manifest()
+    captures = _calibration_captures(cases)
+    precise_threshold = 0.5897445762442176
+    captures[0]["hits"][0]["absoluteScore"] = precise_threshold
+    _write_jsonl(manifest_path, cases)
+    _write_jsonl(captures_path, captures)
+
+    result = _run(CALIBRATE, manifest_path, captures_path)
+
+    assert result.returncode == 0, result.stderr
+    assert f"recommended_threshold={precise_threshold!r}" in result.stdout
 
 
 def test_calibrator_rejects_high_wrong_hit_when_expected_hit_falls_below_refusals(

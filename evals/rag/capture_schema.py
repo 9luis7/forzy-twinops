@@ -4,9 +4,14 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import sys
 from typing import Literal, TypeVar
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
+
+_PROJECT_SRC = Path(__file__).resolve().parents[2] / "services" / "twinops" / "src"
+if str(_PROJECT_SRC) not in sys.path:
+    sys.path.insert(0, str(_PROJECT_SRC))
 
 from twinops.rag.public_models import AssistantQueryResponse, CorpusAnchor
 

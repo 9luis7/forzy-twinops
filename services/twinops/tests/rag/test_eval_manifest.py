@@ -39,7 +39,7 @@ def test_evaluation_manifest_has_at_least_30_versioned_non_invented_cases():
     )
 
 
-def test_validator_passes_structure_but_require_complete_fails_pending_gate():
+def test_validator_passes_structure_and_completed_real_manual_gate():
     ordinary = subprocess.run(
         [sys.executable, str(VALIDATOR), str(MANIFEST)],
         capture_output=True,
@@ -54,8 +54,17 @@ def test_validator_passes_structure_but_require_complete_fails_pending_gate():
     )
 
     assert ordinary.returncode == 0, ordinary.stderr
-    assert gated.returncode == 1
-    assert "pending manual cases remain" in gated.stderr
+    assert gated.returncode == 0, gated.stderr
+
+    real_cases = [case for case in _cases() if case["caseKind"] == "real_manual"]
+    assert len(real_cases) >= 15
+    assert all(case["status"] == "complete" for case in real_cases)
+    assert {case["manualExpectation"] for case in real_cases} == {
+        "supported",
+        "absent",
+        "out_of_scope",
+    }
+    assert all(case["manualIdentity"] is not None for case in real_cases)
 
 
 def _cases():

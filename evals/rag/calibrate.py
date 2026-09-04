@@ -116,7 +116,7 @@ def main(argv: list[str] | None = None) -> int:
         "calibration_ok "
         f"recall_at_6={metrics['recall_at_6']:.3f} "
         f"refusal_accuracy={metrics['refusal_accuracy']:.3f} "
-        f"recommended_threshold={metrics['recommended_threshold']:.6f}"
+        f"recommended_threshold={metrics['recommended_threshold']!r}"
     )
     return 0
 
