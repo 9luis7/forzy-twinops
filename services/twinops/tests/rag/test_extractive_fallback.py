@@ -174,6 +174,31 @@ def test_cross_language_aliases_select_one_safe_source_language_without_translat
     assert selected[0].language == "en"
 
 
+def test_explicit_source_language_overrides_question_language():
+    portuguese = _hit(
+        "chunk-1",
+        "A partida direta do motor deve respeitar a tensão indicada na placa.",
+        rank=1,
+        language="pt",
+    )
+    english = _hit(
+        "chunk-2",
+        "Check bearing operating conditions before the motor is started.",
+        rank=2,
+        language="en",
+    )
+
+    selected = select_safe_excerpts(
+        "Que inspeção a seção em inglês exige antes da partida?",
+        (portuguese, english),
+    )
+
+    assert [item.excerpt for item in selected] == [
+        "Check bearing operating conditions before the motor is started."
+    ]
+    assert selected[0].language == "en"
+
+
 def test_multilingual_unknown_language_keeps_only_highest_ranked_span():
     english = _hit(
         "chunk-1",

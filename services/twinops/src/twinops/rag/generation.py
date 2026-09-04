@@ -257,13 +257,14 @@ def build_gateway_messages(
 ) -> list[dict[str, str]]:
     chunks = [
         {
+            "retrievalRank": rank,
             "chunkId": hit.candidate.chunk.chunk_id,
             "pageStart": hit.candidate.chunk.page_start,
             "pageEnd": hit.candidate.chunk.page_end,
             "section": hit.candidate.chunk.section,
             "text": hit.candidate.chunk.text,
         }
-        for hit in retrieval.hits
+        for rank, hit in enumerate(retrieval.hits, 1)
     ]
     return _build_gateway_messages(
         question=question,
@@ -281,6 +282,7 @@ def build_provider_probe_messages(
         raise ValueError("provider probe chunk count must be 1 or 6")
     chunks = [
         {
+            "retrievalRank": index,
             "chunkId": f"provider-probe-{index:02d}",
             "pageStart": index,
             "pageEnd": index,
@@ -321,8 +323,10 @@ def _build_gateway_messages(
         "chunks. Cite only supplied chunkId values, and copy every exactQuote "
         "verbatim from its chunk. Select the smallest non-empty set of unique chunkId "
         "values that directly answers the question. Never repeat a chunkId. Prefer "
-        "the earliest, highest-ranked chunk when evidence is equally relevant, and "
-        "do not select merely related warnings. Do not produce free-form claims."
+        "the earliest, highest-ranked chunk (the lowest retrievalRank) when evidence "
+        "is equally relevant, and do not select merely related warnings. Treat rank "
+        "as a relevance hint, not proof, and honor a source language explicitly "
+        "requested by the user. Do not produce free-form claims."
     )
     user_payload = (
         "UNTRUSTED_CHAT_HISTORY\n"

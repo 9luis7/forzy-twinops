@@ -170,6 +170,7 @@ def select_safe_excerpts(
     if not query_terms:
         return ()
     question_language = _detect_language(query_tokens)
+    requested_language = _requested_language(question)
     candidates: list[_Candidate] = []
 
     for hit_index, hit in enumerate(hits):
@@ -209,7 +210,9 @@ def select_safe_excerpts(
             item.excerpt,
         )
     )
-    selected_language = _selected_language(candidates, question_language)
+    selected_language = _selected_language(
+        candidates, requested_language or question_language
+    )
     candidates = [
         item for item in candidates if item.language == selected_language
     ]
@@ -321,6 +324,31 @@ def _detect_language(tokens: Sequence[str]) -> str | None:
         language for language, score in scores.items() if score == best and score
     ]
     return winners[0] if len(winners) == 1 else None
+
+
+def _requested_language(question: str) -> str | None:
+    normalized = _normalized(question)
+    requests = {
+        "en": ("em ingles", "secao em ingles", "in english", "english section"),
+        "pt": (
+            "em portugues",
+            "secao em portugues",
+            "in portuguese",
+            "portuguese section",
+        ),
+        "es": (
+            "em espanhol",
+            "secao em espanhol",
+            "in spanish",
+            "spanish section",
+        ),
+    }
+    matches = [
+        language
+        for language, markers in requests.items()
+        if any(marker in normalized for marker in markers)
+    ]
+    return matches[0] if len(matches) == 1 else None
 
 
 def _single_document_language(raw: str) -> str | None:
