@@ -165,6 +165,36 @@ async def test_native_gemini_chat_uses_fixed_schema_and_minimal_thinking():
     assert result.manual_citations[0].chunk_id == "chunk-1"
 
 
+@pytest.mark.asyncio
+async def test_native_gemini_25_flash_lite_disables_thinking_by_budget():
+    http = _Http(
+        _Response(
+            {
+                "candidates": [
+                    {"content": {"parts": [{"text": _content()}]}}
+                ]
+            }
+        )
+    )
+    client = generation_module.GeminiChatClient(
+        http,
+        api_key="server-secret",
+        model="gemini-2.5-flash-lite",
+    )
+
+    await client.generate(
+        [
+            {"role": "system", "content": "fixed policy"},
+            {"role": "user", "content": "fixed evidence"},
+        ]
+    )
+
+    _, kwargs = http.calls[0]
+    assert kwargs["json"]["generationConfig"]["thinkingConfig"] == {
+        "thinkingBudget": 0
+    }
+
+
 def test_chat_composition_selects_native_gemini_and_preserves_gateway_client():
     builder = getattr(main_v2, "_build_chat_client", None)
     assert builder is not None, "RAG chat client composition is missing"

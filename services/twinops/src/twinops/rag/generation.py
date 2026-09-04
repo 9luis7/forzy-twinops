@@ -228,18 +228,24 @@ def _native_gemini_payload(
         "systemInstruction": {"parts": system_parts},
         "contents": contents,
         "generationConfig": {
-            "thinkingConfig": {
-                "thinkingLevel": (
-                    "MINIMAL"
-                    if model.startswith("gemini-3.")
-                    and model.endswith("-flash-lite")
-                    else "LOW"
-                )
-            },
+            "thinkingConfig": _native_gemini_thinking_config(model),
             "responseMimeType": "application/json",
             "responseJsonSchema": _gateway_schema(),
             "maxOutputTokens": 1200,
         },
+    }
+
+
+def _native_gemini_thinking_config(model: str) -> dict[str, object]:
+    if model.startswith("gemini-2.5-"):
+        return {"thinkingBudget": 0}
+    return {
+        "thinkingLevel": (
+            "MINIMAL"
+            if model.startswith("gemini-3.")
+            and model.endswith("-flash-lite")
+            else "LOW"
+        )
     }
 
 
