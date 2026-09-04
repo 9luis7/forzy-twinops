@@ -654,6 +654,86 @@ class PostgresRagRepository:
             for row in rows
         ]
 
+    def hybrid_search(
+        self,
+        corpus: RagCorpus,
+        *,
+        query_embedding: Sequence[float],
+        query: str,
+        vector_limit: int,
+        lexical_limit: int,
+    ) -> tuple[list[RetrievalCandidate], list[RetrievalCandidate]]:
+        """Read both exact candidate lists through one bounded DB session."""
+
+        if not isinstance(corpus, RagCorpus) or corpus.status != "published":
+            raise ValueError("hybrid search requires a published corpus")
+        vector = _validated_vector(
+            query_embedding, corpus.embedding_dimensions
+        )
+        _validate_public_search_limit(vector_limit)
+        _validate_public_search_limit(lexical_limit)
+        if not isinstance(query, str) or not query.strip():
+            raise ValueError("hybrid search query must not be empty")
+        lexical_query = _lexical_websearch_query(query)
+        with self._public_connection() as connection:
+            vector_rows = connection.execute(
+                _PUBLIC_CANDIDATE_SELECT
+                + _PUBLIC_CANDIDATE_JOIN
+                + " WHERE c.corpus_id=%s ORDER BY "
+                "c.embedding <=> %s::vector,c.ordinal,c.chunk_id LIMIT %s",
+                (
+                    corpus.corpus_id,
+                    _vector_literal(vector),
+                    vector_limit,
+                ),
+            ).fetchall()
+            lexical_rows = (
+                []
+                if not lexical_query
+                else connection.execute(
+                    _PUBLIC_CANDIDATE_SELECT
+                    + ",ts_rank_cd(c.search_vector,"
+                    "websearch_to_tsquery('simple',%s),32) AS source_score "
+                    "FROM rag_chunks c JOIN rag_documents d "
+                    "ON d.document_id=c.document_id "
+                    "AND d.corpus_id=c.corpus_id "
+                    "WHERE c.corpus_id=%s AND c.search_vector @@ "
+                    "websearch_to_tsquery('simple',%s) ORDER BY "
+                    "source_score DESC,c.ordinal,c.chunk_id LIMIT %s",
+                    (
+                        lexical_query,
+                        corpus.corpus_id,
+                        lexical_query,
+                        lexical_limit,
+                    ),
+                ).fetchall()
+            )
+        return (
+            [
+                _candidate_from_row(
+                    row,
+                    source_score=max(
+                        0.0,
+                        min(
+                            1.0,
+                            1.0
+                            - _cosine_distance(
+                                _chunk_from_row(row).embedding,
+                                vector,
+                            ),
+                        ),
+                    ),
+                )
+                for row in vector_rows
+            ],
+            [
+                _candidate_from_row(
+                    row, source_score=float(row["source_score"])
+                )
+                for row in lexical_rows
+            ],
+        )
+
     def lexical_search(
         self,
         corpus_id: str,

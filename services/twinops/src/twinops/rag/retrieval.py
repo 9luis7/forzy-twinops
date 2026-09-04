@@ -130,25 +130,35 @@ class HybridRetriever:
             count=1,
             trace_id=trace_id,
         )
-        vector_work = _timed_search(
-            "vector_search",
-            self.repository.exact_vector_search,
-            corpus_id=corpus.corpus_id,
-            trace_id=trace_id,
-            query_embedding=query_vector,
-            limit=VECTOR_CANDIDATE_LIMIT,
-        )
-        lexical_work = _timed_search(
-            "lexical_search",
-            self.repository.lexical_search,
-            corpus_id=corpus.corpus_id,
-            trace_id=trace_id,
-            query=query,
-            limit=LEXICAL_CANDIDATE_LIMIT,
-        )
-        vector_rows, lexical_rows = await asyncio.gather(
-            vector_work, lexical_work
-        )
+        combined_search = getattr(self.repository, "hybrid_search", None)
+        if callable(combined_search):
+            vector_rows, lexical_rows = await _timed_hybrid_search(
+                combined_search,
+                corpus=corpus,
+                query_embedding=query_vector,
+                query=query,
+                trace_id=trace_id,
+            )
+        else:
+            vector_work = _timed_search(
+                "vector_search",
+                self.repository.exact_vector_search,
+                corpus_id=corpus.corpus_id,
+                trace_id=trace_id,
+                query_embedding=query_vector,
+                limit=VECTOR_CANDIDATE_LIMIT,
+            )
+            lexical_work = _timed_search(
+                "lexical_search",
+                self.repository.lexical_search,
+                corpus_id=corpus.corpus_id,
+                trace_id=trace_id,
+                query=query,
+                limit=LEXICAL_CANDIDATE_LIMIT,
+            )
+            vector_rows, lexical_rows = await asyncio.gather(
+                vector_work, lexical_work
+            )
         vector_candidates = tuple(vector_rows)
         lexical_candidates = tuple(lexical_rows)
         fusion_started = perf_counter()
@@ -239,6 +249,51 @@ async def _timed_search(
         trace_id=trace_id,
     )
     return rows
+
+
+async def _timed_hybrid_search(
+    operation,
+    *,
+    corpus: RagCorpus,
+    query_embedding,
+    query,
+    trace_id: str | None,
+):
+    started = perf_counter()
+    try:
+        vector_rows, lexical_rows = await asyncio.to_thread(
+            operation,
+            corpus,
+            query_embedding=query_embedding,
+            query=query,
+            vector_limit=VECTOR_CANDIDATE_LIMIT,
+            lexical_limit=LEXICAL_CANDIDATE_LIMIT,
+        )
+    except BaseException as error:
+        duration_ms = (perf_counter() - started) * 1000
+        for stage in ("vector_search", "lexical_search"):
+            log_rag_stage(
+                stage,
+                outcome=_failure_outcome(error),
+                duration_ms=duration_ms,
+                corpus_id=corpus.corpus_id,
+                trace_id=trace_id,
+            )
+        raise
+    duration_ms = (perf_counter() - started) * 1000
+    for stage, rows in (
+        ("vector_search", vector_rows),
+        ("lexical_search", lexical_rows),
+    ):
+        log_rag_stage(
+            stage,
+            outcome="ok",
+            duration_ms=duration_ms,
+            corpus_id=corpus.corpus_id,
+            count=len(rows),
+            trace_id=trace_id,
+        )
+    return vector_rows, lexical_rows
 
 
 def _failure_outcome(error: BaseException) -> str:

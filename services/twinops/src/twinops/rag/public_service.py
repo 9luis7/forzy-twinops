@@ -197,9 +197,6 @@ class RagAssistantService:
         remaining = max(0.0, self.query_timeout_seconds - elapsed)
         try:
             async with asyncio.timeout(remaining):
-                corpus = await self.retriever.prepare(
-                    asset_id, trace_id=str(trace_id)
-                )
                 operational_task = asyncio.create_task(
                     _timed_operational_loader(
                         operational_loader,
@@ -207,25 +204,33 @@ class RagAssistantService:
                         trace_id=trace_id,
                     )
                 )
-                retrieval_task = asyncio.create_task(
-                    self.retriever.retrieve(
-                        asset_id,
-                        request.question,
-                        corpus=corpus,
-                        trace_id=str(trace_id),
-                    )
-                )
+                retrieval_task = None
                 try:
+                    corpus = await self.retriever.prepare(
+                        asset_id, trace_id=str(trace_id)
+                    )
+                    retrieval_task = asyncio.create_task(
+                        self.retriever.retrieve(
+                            asset_id,
+                            request.question,
+                            corpus=corpus,
+                            trace_id=str(trace_id),
+                        )
+                    )
                     operational, retrieval = await asyncio.gather(
                         operational_task,
                         retrieval_task,
                     )
                 except BaseException:
                     operational_task.cancel()
-                    retrieval_task.cancel()
+                    if retrieval_task is not None:
+                        retrieval_task.cancel()
                     await asyncio.gather(
-                        operational_task,
-                        retrieval_task,
+                        *(
+                            (operational_task,)
+                            if retrieval_task is None
+                            else (operational_task, retrieval_task)
+                        ),
                         return_exceptions=True,
                     )
                     raise

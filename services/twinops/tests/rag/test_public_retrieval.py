@@ -404,6 +404,76 @@ async def test_sync_repository_searches_do_not_block_event_loop():
 
 
 @pytest.mark.asyncio
+async def test_postgres_style_combined_search_is_preferred_when_available():
+    class _CombinedRepository(InMemoryRagRepository):
+        def __init__(self):
+            super().__init__()
+            self.hybrid_calls = []
+
+        def hybrid_search(
+            self,
+            corpus,
+            *,
+            query_embedding,
+            query,
+            vector_limit,
+            lexical_limit,
+        ):
+            self.hybrid_calls.append(
+                (
+                    corpus.corpus_id,
+                    query,
+                    vector_limit,
+                    lexical_limit,
+                )
+            )
+            return (
+                super().exact_vector_search(
+                    corpus.corpus_id,
+                    query_embedding=query_embedding,
+                    limit=vector_limit,
+                ),
+                super().lexical_search(
+                    corpus.corpus_id,
+                    query=query,
+                    limit=lexical_limit,
+                ),
+            )
+
+        def exact_vector_search(self, *args, **kwargs):
+            raise AssertionError("combined search must replace vector connection")
+
+        def lexical_search(self, *args, **kwargs):
+            raise AssertionError("combined search must replace lexical connection")
+
+    repository = _CombinedRepository()
+    corpus = _corpus("c1")
+    document = _document("c1")
+    repository.create_corpus(corpus)
+    repository.add_document(
+        document,
+        [
+            _chunk(
+                "c1",
+                document.document_id,
+                0,
+                text="bearing lubrication",
+                embedding=(1.0, 0.0, 0.0),
+            )
+        ],
+    )
+    repository.publish_corpus(ASSET_ID, "c1")
+
+    result = await _retriever(repository, _Embeddings()).retrieve(
+        ASSET_ID,
+        "bearing",
+    )
+
+    assert result.sufficient is True
+    assert repository.hybrid_calls == [("c1", "bearing", 12, 12)]
+
+
+@pytest.mark.asyncio
 async def test_retrieval_logs_each_sanitized_stage_without_query_or_chunk(caplog):
     caplog.set_level("INFO", logger="twinops.rag")
     repository = _published_slow_repository()

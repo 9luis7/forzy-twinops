@@ -2,6 +2,7 @@ from datetime import datetime, timezone
 from unittest.mock import Mock
 
 from twinops.rag import repository as repository_module
+from twinops.rag.models import RagCorpus
 from twinops.rag.repository import PostgresRagRepository, _lexical_websearch_query
 
 
@@ -95,6 +96,47 @@ def test_postgres_lexical_search_filters_with_simple_websearch_and_parameters():
     assert parameters[0] == "bearing OR drop OR table OR rag_chunks"
     assert parameters[2] == parameters[0]
     assert parameters[-1] == 12
+
+
+def test_postgres_hybrid_search_reuses_one_bounded_connection():
+    connections = []
+
+    def connection_factory():
+        connection = _Connection([])
+        connections.append(connection)
+        return connection
+
+    repository = PostgresRagRepository(
+        "postgresql://unused",
+        connection_factory=connection_factory,
+        statement_timeout_ms=250,
+    )
+    corpus = RagCorpus(**_corpus_row())
+
+    vector_rows, lexical_rows = repository.hybrid_search(
+        corpus,
+        query_embedding=(0.1, 0.2, 0.3),
+        query="bearing",
+        vector_limit=12,
+        lexical_limit=12,
+    )
+
+    assert vector_rows == []
+    assert lexical_rows == []
+    assert len(connections) == 1
+    assert connections[0].closed is True
+    assert len(connections[0].calls) == 3
+    first_sql, first_parameters = connections[0].calls[0]
+    assert "set_config('statement_timeout'" in first_sql
+    assert first_parameters == ("250",)
+    vector_sql, vector_parameters = connections[0].calls[1]
+    lexical_sql, lexical_parameters = connections[0].calls[2]
+    assert "embedding <=> %s::vector" in vector_sql
+    assert vector_parameters[-1] == 12
+    assert "search_vector @@ websearch_to_tsquery('simple',%s)" in " ".join(
+        lexical_sql.split()
+    )
+    assert lexical_parameters[-1] == 12
 
 
 def test_lexical_query_uses_informative_or_terms_for_natural_language():

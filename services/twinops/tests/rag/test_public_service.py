@@ -756,6 +756,40 @@ async def test_snapshot_and_retrieval_run_concurrently_inside_route_budget():
 
 
 @pytest.mark.asyncio
+async def test_snapshot_starts_while_corpus_preflight_is_running():
+    snapshot_started = asyncio.Event()
+
+    class _PreflightWaitsForSnapshot(_Retriever):
+        async def prepare(self, asset_id, *, trace_id=None):
+            self.prepare_calls.append(asset_id)
+            self.trace_ids.append(trace_id)
+            await asyncio.wait_for(snapshot_started.wait(), timeout=0.05)
+            return self.result.corpus
+
+    retriever = _PreflightWaitsForSnapshot()
+    service = RagAssistantService(
+        retriever,
+        _Chat(),
+        query_timeout_seconds=0.2,
+    )
+
+    async def load_operational():
+        snapshot_started.set()
+        return _operational()
+
+    response = await service.query_with_operational_loader(
+        ASSET_ID,
+        AssistantQueryRequest(question="bearing"),
+        operational_loader=load_operational,
+        started_at=time.perf_counter(),
+    )
+
+    assert response.grounding_status == "grounded"
+    assert response.fallback_used is False
+    assert retriever.prepare_calls == [ASSET_ID]
+
+
+@pytest.mark.asyncio
 async def test_unavailable_corpus_is_a_sanitized_service_unavailable_error():
     service = RagAssistantService(
         _Retriever(failure=CorpusUnavailableError("active_corpus_unavailable")),
