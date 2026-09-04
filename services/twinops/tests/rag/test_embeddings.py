@@ -1,4 +1,5 @@
 from unittest.mock import AsyncMock
+import logging
 
 import httpx
 import pytest
@@ -165,3 +166,35 @@ async def test_gemini_composition_separates_document_and_query_embedding_tasks()
     second = http.post.await_args_list[1].kwargs["json"]["requests"][0]
     assert first["embedContentConfig"]["taskType"] == "RETRIEVAL_DOCUMENT"
     assert second["embedContentConfig"]["taskType"] == "RETRIEVAL_QUERY"
+
+
+@pytest.mark.asyncio
+async def test_gemini_logs_only_sanitized_http_status_on_provider_failure(caplog):
+    http = AsyncMock()
+    request = httpx.Request(
+        "POST",
+        "https://generativelanguage.googleapis.com/v1beta/models/"
+        "gemini-embedding-2:batchEmbedContents",
+    )
+    http.post.return_value = httpx.Response(
+        429,
+        request=request,
+        json={"error": {"message": "private provider detail"}},
+    )
+    client = embeddings_module.GeminiEmbeddingClient(
+        http,
+        api_key="gemini-secret",
+        model="gemini-embedding-2",
+        dimensions=2,
+        task_type="RETRIEVAL_DOCUMENT",
+    )
+
+    with caplog.at_level(logging.WARNING, logger="twinops.rag"):
+        with pytest.raises(EmbeddingGatewayError) as caught:
+            await client.embed(["private manual text"])
+
+    assert str(caught.value) == "embedding_gateway_unavailable"
+    assert "gemini_embedding_failed status_code=429" in caplog.text
+    assert "gemini-secret" not in caplog.text
+    assert "private manual text" not in caplog.text
+    assert "private provider detail" not in caplog.text

@@ -1,5 +1,6 @@
 """Validated embedding clients for Vercel AI Gateway and direct Gemini."""
 
+import logging
 import math
 import re
 from typing import Protocol, Sequence
@@ -12,6 +13,7 @@ DEFAULT_GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta"
 _GEMINI_TASK_TYPES = frozenset(
     {"RETRIEVAL_DOCUMENT", "RETRIEVAL_QUERY", "SEMANTIC_SIMILARITY"}
 )
+_LOGGER = logging.getLogger("twinops.rag")
 
 
 class EmbeddingGatewayError(RuntimeError):
@@ -166,5 +168,15 @@ class GeminiEmbeddingClient:
                     raise ValueError
                 vectors.append(vector)
             return tuple(vectors)
-        except (httpx.HTTPError, KeyError, TypeError, ValueError):
-            raise EmbeddingGatewayError("embedding_gateway_unavailable") from None
+        except httpx.HTTPStatusError as exc:
+            _LOGGER.warning(
+                "gemini_embedding_failed status_code=%s",
+                exc.response.status_code,
+            )
+        except httpx.TimeoutException:
+            _LOGGER.warning("gemini_embedding_failed reason=timeout")
+        except httpx.HTTPError:
+            _LOGGER.warning("gemini_embedding_failed reason=transport")
+        except (KeyError, TypeError, ValueError):
+            _LOGGER.warning("gemini_embedding_failed reason=invalid_response")
+        raise EmbeddingGatewayError("embedding_gateway_unavailable") from None
