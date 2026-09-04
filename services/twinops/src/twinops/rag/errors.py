@@ -23,4 +23,3 @@ class CorpusConflictError(RagAdminError):
 class InvalidAdminInputError(RagAdminError):
     def __init__(self, code: str = "invalid_admin_input") -> None:
         super().__init__(code)
-
