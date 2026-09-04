@@ -18,6 +18,8 @@ from twinops.rag.errors import (
 from twinops.rag.models import DocumentMetadata
 from twinops.rag.pdf import (
     MAX_PDF_BYTES,
+    PdfSourceFetchError,
+    PdfSourceUnavailableError,
     PdfContentLimitError,
     PdfPayloadTooLargeError,
     PdfValidationError,
@@ -35,6 +37,15 @@ class CreateCorpusRequest(BaseModel):
 class RetrievalTestRequest(BaseModel):
     query: str = Field(min_length=1, max_length=500)
     limit: int = Field(6, ge=1, le=6)
+
+
+class ImportDocumentRequest(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+    manufacturer: str = Field(min_length=1, max_length=120)
+    equipment_model: str = Field(alias="equipmentModel", min_length=1, max_length=240)
+    revision: str = Field(min_length=1, max_length=120)
+    language: str = Field(min_length=1, max_length=120)
+    source_url: str = Field(alias="sourceUrl", min_length=1, max_length=2_048)
 
 
 def create_rag_admin_router() -> APIRouter:
@@ -110,6 +121,64 @@ def create_rag_admin_router() -> APIRouter:
             ) from None
         except PdfValidationError:
             raise HTTPException(status_code=422, detail="invalid_pdf") from None
+        except EmbeddingGatewayError:
+            raise HTTPException(
+                status_code=503, detail="embedding_gateway_unavailable"
+            ) from None
+        return {
+            "document": _document_json(result.document),
+            "coverage": _coverage_json(result.coverage),
+        }
+
+    @router.post("/corpora/{corpus_id}/documents/from-source", status_code=201)
+    async def import_document(
+        request: Request, corpus_id: str, body: ImportDocumentRequest
+    ):
+        service = _require_admin(request)
+        fetcher = getattr(request.app.state, "rag_document_fetcher", None)
+        if fetcher is None:
+            raise HTTPException(status_code=503, detail="document_source_unavailable")
+        try:
+            payload, content_type, filename = await fetcher(body.source_url)
+            result = await service.upload_document(
+                corpus_id,
+                filename=filename,
+                content_type=content_type,
+                payload=payload,
+                metadata=DocumentMetadata(
+                    manufacturer=body.manufacturer,
+                    equipment_model=body.equipment_model,
+                    revision=body.revision,
+                    language=body.language,
+                    source_url=body.source_url,
+                ),
+            )
+        except ValidationError:
+            raise HTTPException(
+                status_code=422, detail="invalid_document_metadata"
+            ) from None
+        except DuplicateDocumentError:
+            raise HTTPException(status_code=409, detail="duplicate_document") from None
+        except CorpusNotFoundError:
+            raise HTTPException(status_code=404, detail="corpus_not_found") from None
+        except InvalidAdminInputError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from None
+        except CorpusCompatibilityError:
+            raise HTTPException(status_code=409, detail="corpus_incompatible") from None
+        except CorpusConflictError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from None
+        except PdfPayloadTooLargeError:
+            raise HTTPException(status_code=413, detail="pdf_too_large") from None
+        except (PdfContentLimitError, ChunkingLimitError):
+            raise HTTPException(
+                status_code=422, detail="document_content_too_large"
+            ) from None
+        except (PdfValidationError, PdfSourceFetchError):
+            raise HTTPException(status_code=422, detail="invalid_pdf") from None
+        except PdfSourceUnavailableError:
+            raise HTTPException(
+                status_code=502, detail="document_source_unavailable"
+            ) from None
         except EmbeddingGatewayError:
             raise HTTPException(
                 status_code=503, detail="embedding_gateway_unavailable"

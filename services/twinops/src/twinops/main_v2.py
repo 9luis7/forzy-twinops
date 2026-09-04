@@ -19,6 +19,7 @@ from twinops.ml.runtime import load_assessment_scorer
 from twinops.ml.scorer import AssessmentScorer
 from twinops.rag.admin_routes import create_rag_admin_router
 from twinops.rag.admin_service import RagAdminService
+from twinops.rag.pdf import OfficialPdfSourceFetcher
 from twinops.rag.embeddings import (
     EmbeddingClient,
     EmbeddingGatewayClient,
@@ -98,6 +99,7 @@ def create_app_v2(
     app.state.assessment_scorer = assessment_scorer or _UnavailableAssessmentScorer()
     app.state.clock = clock
     app.state.rag_admin_service = rag_admin_service
+    app.state.rag_document_fetcher = None
     app.state.rag_assistant_service = rag_assistant_service
     app.include_router(create_v2_router())
     app.add_middleware(RagPublicQueryLimitMiddleware)
@@ -231,9 +233,14 @@ def _runtime_lifespan(
                     manufacturer=settings.rag_manufacturer,
                     equipment_model=settings.rag_equipment_model,
                 )
+                app.state.rag_document_fetcher = OfficialPdfSourceFetcher(
+                    http,
+                    timeout_seconds=settings.rag_gateway_timeout_seconds,
+                ).fetch
             try:
                 yield
             finally:
+                app.state.rag_document_fetcher = None
                 app.state.refresh_service = _UnavailableRefreshService()
                 app.state.assessment_scorer = _UnavailableAssessmentScorer()
                 app.state.rag_admin_service = None

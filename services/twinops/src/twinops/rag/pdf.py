@@ -2,8 +2,11 @@
 
 from hashlib import sha256
 from io import BytesIO
+from pathlib import PurePosixPath
 import re
+from urllib.parse import unquote, urlsplit
 
+import httpx
 from pypdf import PdfReader
 from pypdf.errors import PdfReadError
 
@@ -28,6 +31,93 @@ class PdfContentLimitError(PdfValidationError):
 
 class PdfPayloadTooLargeError(PdfValidationError):
     pass
+
+
+class PdfSourceFetchError(ValueError):
+    pass
+
+
+class PdfSourceUnavailableError(RuntimeError):
+    pass
+
+
+class OfficialPdfSourceFetcher:
+    """Fetch one allowlisted manufacturer PDF without persisting its bytes."""
+
+    def __init__(self, http: httpx.AsyncClient, *, timeout_seconds: float = 10) -> None:
+        if timeout_seconds <= 0:
+            raise ValueError("source fetch timeout must be positive")
+        self.http = http
+        self.timeout_seconds = timeout_seconds
+
+    async def fetch(self, source_url: str) -> tuple[bytes, str, str]:
+        filename = _validate_official_source_url(source_url)
+        try:
+            async with self.http.stream(
+                "GET",
+                source_url,
+                headers={"Accept": "application/pdf"},
+                follow_redirects=False,
+                timeout=self.timeout_seconds,
+            ) as response:
+                if response.status_code != 200:
+                    raise PdfSourceFetchError("official PDF source returned non-200")
+                content_type = (
+                    response.headers.get("content-type", "")
+                    .split(";", 1)[0]
+                    .strip()
+                    .lower()
+                )
+                if content_type != "application/pdf":
+                    raise PdfSourceFetchError("official PDF source returned invalid mime")
+                content_length = response.headers.get("content-length")
+                if content_length is not None:
+                    try:
+                        declared_size = int(content_length)
+                    except ValueError:
+                        raise PdfSourceFetchError(
+                            "official PDF source returned invalid length"
+                        ) from None
+                    if declared_size < 0:
+                        raise PdfSourceFetchError(
+                            "official PDF source returned invalid length"
+                        )
+                    if declared_size > MAX_PDF_BYTES:
+                        raise PdfPayloadTooLargeError("PDF exceeds 25 MiB")
+                payload = bytearray()
+                async for chunk in response.aiter_bytes():
+                    payload.extend(chunk)
+                    if len(payload) > MAX_PDF_BYTES:
+                        raise PdfPayloadTooLargeError("PDF exceeds 25 MiB")
+        except (PdfPayloadTooLargeError, PdfSourceFetchError):
+            raise
+        except httpx.RequestError:
+            raise PdfSourceUnavailableError("official PDF source unavailable") from None
+        return bytes(payload), content_type, filename
+
+
+def _validate_official_source_url(source_url: str) -> str:
+    try:
+        parsed = urlsplit(source_url)
+        port = parsed.port
+    except (TypeError, ValueError):
+        raise PdfSourceFetchError("invalid official PDF source") from None
+    if (
+        parsed.scheme != "https"
+        or parsed.hostname != "static.weg.net"
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.fragment
+        or port not in {None, 443}
+    ):
+        raise PdfSourceFetchError("invalid official PDF source")
+    filename = unquote(PurePosixPath(parsed.path).name)
+    if (
+        not filename.casefold().endswith(".pdf")
+        or any(ord(character) <= 0x20 or ord(character) == 0x7F for character in filename)
+    ):
+        raise PdfSourceFetchError("invalid official PDF filename")
+    return filename
 
 
 def extract_searchable_pdf(

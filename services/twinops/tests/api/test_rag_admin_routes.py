@@ -110,6 +110,7 @@ def test_admin_routes_are_always_404_in_production_even_when_flag_is_true():
     [
         ("post", "/api/v2/admin/rag/corpora"),
         ("post", "/api/v2/admin/rag/corpora/c1/documents"),
+        ("post", "/api/v2/admin/rag/corpora/c1/documents/from-source"),
         ("get", "/api/v2/admin/rag/corpora/c1"),
         ("post", "/api/v2/admin/rag/corpora/c1/retrieval-test"),
         ("post", "/api/v2/admin/rag/corpora/c1/publish"),
@@ -209,6 +210,40 @@ def test_enabled_preview_can_upload_and_inspect_a_draft_without_activating_it():
     assert response.json()["coverage"]["coveragePages"] == 1
     inspection = client.get(f"/api/v2/admin/rag/corpora/{corpus_id}")
     assert inspection.json()["corpus"]["status"] == "draft"
+
+
+def test_enabled_preview_can_ingest_an_allowlisted_official_source_without_upload():
+    client = _client(environment="preview", enabled=True)
+    corpus_id = client.post(
+        "/api/v2/admin/rag/corpora",
+        json={"assetId": "forzy-motor-01"},
+    ).json()["corpusId"]
+    calls = []
+
+    async def fetch_official_pdf(source_url):
+        calls.append(source_url)
+        return (
+            searchable_pdf("MAINTENANCE bearing lubrication"),
+            "application/pdf",
+            "manual.pdf",
+        )
+
+    client.app.state.rag_document_fetcher = fetch_official_pdf
+    source_url = "https://static.weg.net/manual.pdf"
+    response = client.post(
+        f"/api/v2/admin/rag/corpora/{corpus_id}/documents/from-source",
+        json={
+            "manufacturer": "WEG",
+            "equipmentModel": "W22",
+            "revision": "2026-01",
+            "language": "en",
+            "sourceUrl": source_url,
+        },
+    )
+
+    assert response.status_code == 201
+    assert response.json()["coverage"]["coveragePages"] == 1
+    assert calls == [source_url]
 
 
 def test_upload_rejects_invalid_metadata_with_422_and_duplicate_with_409():
