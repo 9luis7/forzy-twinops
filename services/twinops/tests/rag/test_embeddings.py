@@ -187,6 +187,7 @@ async def test_gemini_logs_only_sanitized_http_status_on_provider_failure(caplog
         model="gemini-embedding-2",
         dimensions=2,
         task_type="RETRIEVAL_DOCUMENT",
+        max_rate_limit_retries=0,
     )
 
     with caplog.at_level(logging.WARNING, logger="twinops.rag"):
@@ -198,3 +199,42 @@ async def test_gemini_logs_only_sanitized_http_status_on_provider_failure(caplog
     assert "gemini-secret" not in caplog.text
     assert "private manual text" not in caplog.text
     assert "private provider detail" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_gemini_retries_one_rate_limited_batch_after_sanitized_delay(
+    monkeypatch,
+    caplog,
+):
+    http = AsyncMock()
+    request = httpx.Request(
+        "POST",
+        "https://generativelanguage.googleapis.com/v1beta/models/"
+        "gemini-embedding-2:batchEmbedContents",
+    )
+    http.post.side_effect = [
+        httpx.Response(429, request=request, json={"error": {"message": "private"}}),
+        _Response({"embeddings": [{"values": [0.1, 0.2]}]}),
+    ]
+    sleep = AsyncMock()
+    monkeypatch.setattr("asyncio.sleep", sleep)
+    client = embeddings_module.GeminiEmbeddingClient(
+        http,
+        api_key="gemini-secret",
+        model="gemini-embedding-2",
+        dimensions=2,
+        task_type="RETRIEVAL_DOCUMENT",
+        max_rate_limit_retries=1,
+        rate_limit_retry_seconds=61.0,
+    )
+
+    with caplog.at_level(logging.WARNING, logger="twinops.rag"):
+        result = await client.embed(["private manual text"])
+
+    assert result == ((0.1, 0.2),)
+    assert http.post.await_count == 2
+    sleep.assert_awaited_once_with(61.0)
+    assert "gemini_embedding_rate_limited retry=1" in caplog.text
+    assert "gemini-secret" not in caplog.text
+    assert "private manual text" not in caplog.text
+    assert "private" not in caplog.text

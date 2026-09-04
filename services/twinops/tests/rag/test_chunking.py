@@ -47,16 +47,16 @@ def test_chunking_preserves_cross_page_coverage():
     assert chunks[-1].page_end == 3
 
 
-def test_chunking_never_crosses_section_boundaries_or_overlaps_into_next_section():
+def test_chunking_coalesces_short_sections_without_losing_heading_context():
     chunks = chunk_pages(
         [
             ExtractedPage(
                 page_number=1,
                 text=(
                     "SECTION ONE\n"
-                    + "alpha " * 650
+                    + "alpha " * 50
                     + "\nSECTION TWO\n"
-                    + "beta " * 650
+                    + "beta " * 50
                 ),
             )
         ],
@@ -64,9 +64,11 @@ def test_chunking_never_crosses_section_boundaries_or_overlaps_into_next_section
         overlap_tokens=100,
     )
 
-    assert [chunk.section for chunk in chunks] == ["SECTION ONE", "SECTION TWO"]
-    assert "beta" not in chunks[0].text.split()
-    assert "alpha" not in chunks[1].text.split()
+    assert len(chunks) == 1
+    assert chunks[0].section == "SECTION ONE"
+    assert "SECTION" in chunks[0].text.split()
+    assert "alpha" in chunks[0].text.split()
+    assert "beta" in chunks[0].text.split()
 
 
 def test_chunking_rejects_one_oversized_token_without_whitespace():
@@ -88,7 +90,7 @@ def test_chunking_caps_total_gateway_work():
     ]
 
     with pytest.raises(ChunkingLimitError, match="chunks"):
-        chunk_pages(pages)
+        chunk_pages(pages, target_tokens=2, overlap_tokens=1)
 
 
 def test_chunking_accepts_a_bounded_multilingual_manual_with_many_short_sections():
@@ -102,6 +104,7 @@ def test_chunking_accepts_a_bounded_multilingual_manual_with_many_short_sections
 
     chunks = chunk_pages(pages)
 
-    assert len(chunks) == 1_200
+    assert 1 < len(chunks) <= 12
+    assert max(chunk.token_count for chunk in chunks) == 700
     assert chunks[0].page_start == 1
     assert chunks[-1].page_end == 150
