@@ -9,6 +9,7 @@ from scripts import check_rag_postgres
 MIGRATION_PATH = Path(__file__).parents[1] / "migrations" / "003_rag_asset_aware_v1.sql"
 WRONG_MIGRATION = Path(__file__).parents[1] / "migrations" / "002_real_twin_v2.sql"
 PREVIEW_ARGS = ["--target", "preview", "--migrate", str(MIGRATION_PATH)]
+PRODUCTION_ARGS = ["--target", "production", "--migrate", str(MIGRATION_PATH)]
 CONSTRAINTS = (
     ("rag_corpora", "rag_corpora_asset_check", "CHECK (asset_id = 'forzy-motor-01')"),
     ("rag_corpora", "rag_corpora_status_check", "CHECK (status IN ('draft','published'))"),
@@ -46,6 +47,14 @@ def _preview_env(database_url="postgresql://user:secret@database.invalid/twinops
     }
 
 
+def _production_env(database_url="postgresql://user:secret@database.invalid/twinops"):
+    return {
+        "DATABASE_URL": database_url,
+        "RAG_PRODUCTION_DATABASE_NAME": "twinops_production",
+        "RAG_PRODUCTION_DATABASE_USER": "production_user",
+    }
+
+
 class _Rows:
     def __init__(self, rows=()):
         self.rows = list(rows)
@@ -58,13 +67,22 @@ class _Rows:
 
 
 class _Connection:
-    def __init__(self, migration, *, approximate=0, constraints=CONSTRAINTS, fail_migration=False):
+    def __init__(
+        self,
+        migration,
+        *,
+        approximate=0,
+        constraints=CONSTRAINTS,
+        fail_migration=False,
+        identity=("twinops_preview", "preview_user"),
+    ):
         self.migration = migration
         self.approximate = approximate
         self.constraints = constraints
         self.fail_migration = fail_migration
         self.calls = []
         self.rollbacks = 0
+        self.identity = identity
         self.pgconn = SimpleNamespace(ssl_in_use=True)
 
     def __enter__(self):
@@ -80,7 +98,7 @@ class _Connection:
                 raise RuntimeError("secret migration failure")
             return _Rows()
         if "current_database()" in query:
-            return _Rows([("twinops_preview", "preview_user")])
+            return _Rows([self.identity])
         if "FROM pg_extension" in query:
             return _Rows([("0.8.6",)])
         if "FROM pg_catalog.pg_tables" in query:
@@ -145,6 +163,29 @@ def test_rag_checker_applies_allowlisted_migration_and_reports_sanitized_contrac
     assert connection.rollbacks == 0
     assert captured.out.strip() == (
         "rag_postgres_check_ok target=preview identity=true tables=4 "
+        "indexes=2 constraints=true vector=true approximate_indexes=0 ssl=true"
+    )
+    assert database_url not in captured.out + captured.err
+
+
+def test_rag_checker_applies_allowlisted_migration_to_explicit_production_target(capsys):
+    migration = MIGRATION_PATH.read_text(encoding="utf-8")
+    connection = _Connection(
+        migration,
+        identity=("twinops_production", "production_user"),
+    )
+    database_url = "postgresql://production:secret@database.invalid/twinops"
+
+    result = check_rag_postgres.main(
+        PRODUCTION_ARGS,
+        env=_production_env(database_url),
+        connect=lambda dsn: connection,
+    )
+
+    captured = capsys.readouterr()
+    assert result == 0
+    assert captured.out.strip() == (
+        "rag_postgres_check_ok target=production identity=true tables=4 "
         "indexes=2 constraints=true vector=true approximate_indexes=0 ssl=true"
     )
     assert database_url not in captured.out + captured.err
@@ -270,7 +311,7 @@ def test_rag_checker_rejects_definitions_swapped_between_named_constraints(capsy
     assert "stage=constraints" in capsys.readouterr().err
 
 
-def test_rag_checker_refuses_non_preview_target_before_connecting(capsys):
+def test_rag_checker_refuses_unknown_target_before_connecting(capsys):
     called = False
 
     def connect(_):
@@ -278,7 +319,7 @@ def test_rag_checker_refuses_non_preview_target_before_connecting(capsys):
         called = True
 
     result = check_rag_postgres.main(
-        ["--target", "production", "--migrate", str(MIGRATION_PATH)],
+        ["--target", "staging", "--migrate", str(MIGRATION_PATH)],
         env={"DATABASE_URL": "postgresql://secret.invalid/db"},
         connect=connect,
     )

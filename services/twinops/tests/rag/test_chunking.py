@@ -89,3 +89,19 @@ def test_chunking_caps_total_gateway_work():
 
     with pytest.raises(ChunkingLimitError, match="chunks"):
         chunk_pages(pages)
+
+
+def test_chunking_accepts_a_bounded_multilingual_manual_with_many_short_sections():
+    pages = [
+        ExtractedPage(
+            page_number=(index // 8) + 1,
+            text=f"SECTION {index}\ninspection item {index}",
+        )
+        for index in range(1_200)
+    ]
+
+    chunks = chunk_pages(pages)
+
+    assert len(chunks) == 1_200
+    assert chunks[0].page_start == 1
+    assert chunks[-1].page_end == 150

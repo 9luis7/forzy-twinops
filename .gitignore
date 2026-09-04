@@ -49,3 +49,5 @@ data/public/*/raw/
 data/public/*/downloads/
 data/public/*/prepared/
 .vercel/
+.env.local
+.env.*.local

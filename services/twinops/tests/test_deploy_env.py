@@ -85,6 +85,26 @@ def test_enabled_rag_requires_every_backend_anchor_by_variable_name_only():
     assert report.invalid == ()
 
 
+def test_enabled_rag_accepts_vercel_oidc_instead_of_a_static_gateway_key():
+    report = verify_deploy_env(
+        _valid_deploy_env(
+            TWINOPS_RAG_ENABLED="true",
+            VERCEL_OIDC_TOKEN="short-lived-oidc-token",
+            TWINOPS_RAG_MANUFACTURER="WEG",
+            TWINOPS_RAG_EQUIPMENT_MODEL="W22",
+            TWINOPS_RAG_EMBEDDING_MODEL="google/text-multilingual-embedding-002",
+            TWINOPS_RAG_EMBEDDING_DIMENSIONS="768",
+            TWINOPS_RAG_GENERATION_MODEL="openai/gpt-5.6-luna",
+            TWINOPS_RAG_GATEWAY_TIMEOUT_SECONDS="10",
+            TWINOPS_RAG_QUERY_TIMEOUT_SECONDS="10",
+        )
+    )
+
+    assert report.ok is True
+    assert report.missing == ()
+    assert report.invalid == ()
+
+
 def test_enabled_rag_rejects_wrong_models_identity_dimensions_and_timeouts_safely():
     env = _valid_deploy_env(
         TWINOPS_RAG_ENABLED="true",

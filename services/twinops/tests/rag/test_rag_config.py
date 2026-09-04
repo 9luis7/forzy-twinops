@@ -84,6 +84,21 @@ def test_public_rag_configuration_is_explicit_and_secret_stays_backend_only():
     assert "never-print-this" not in repr(settings)
 
 
+def test_public_rag_uses_vercel_oidc_when_static_gateway_key_is_absent():
+    settings = SettingsV2.from_env(
+        {
+            "TWINOPS_UPSTREAM_BASE_URL": "https://upstream.invalid",
+            "TWINOPS_RAG_ENABLED": "true",
+            "VERCEL_OIDC_TOKEN": "short-lived-oidc-token",
+            "TWINOPS_RAG_MANUFACTURER": "WEG",
+            "TWINOPS_RAG_EQUIPMENT_MODEL": "W22",
+        }
+    )
+
+    assert settings.ai_gateway_api_key == "short-lived-oidc-token"
+    assert "short-lived-oidc-token" not in repr(settings)
+
+
 @pytest.mark.parametrize(
     "identity",
     [

@@ -44,8 +44,10 @@ O comando injeta as variáveis somente no subprocesso e não cria arquivo local
 com segredos. Saída válida contém apenas nomes de variáveis inválidas/ausentes,
 nunca valores.
 
-Configure no backend `AI_GATEWAY_API_KEY`, identidade exata do manual, IDs de
-modelo, dimensão e timeouts. Configure também `RAG_PREVIEW_DATABASE_NAME` e
+Use o `VERCEL_OIDC_TOKEN` injetado automaticamente pela Vercel para o AI
+Gateway; `AI_GATEWAY_API_KEY` fica como fallback somente para execução fora da
+Vercel. Configure no backend a identidade exata do manual, IDs de modelo,
+dimensão e timeouts. Configure também `RAG_PREVIEW_DATABASE_NAME` e
 `RAG_PREVIEW_DATABASE_USER` com a identidade exata permitida para o banco de
 Preview; esses valores vêm do ambiente Preview e nunca são inferidos do DSN nem
 impressos. O segredo não recebe prefixo `VITE_`. Para o Preview administrativo,
@@ -201,6 +203,19 @@ autoriza produção.
 **Aprovação separada e final:** Luis autoriza variáveis, migration, corpus e
 deploy no ambiente Production. Refaça todas as verificações no SHA aprovado.
 Não reutilize autorização de Preview como autorização de produção.
+
+Configure `RAG_PRODUCTION_DATABASE_NAME` e `RAG_PRODUCTION_DATABASE_USER` com
+a identidade exata do banco alvo e execute a migration somente pelo checker:
+
+```powershell
+vercel env run -e production -- python scripts/check_rag_postgres.py --target production --migrate services/twinops/migrations/003_rag_asset_aware_v1.sql
+```
+
+O checker seleciona a allowlist pelo `--target`, valida identidade e TLS antes
+de executar SQL e mantém o mesmo rollback transacional do Preview. As rotas
+administrativas continuam ausentes em Production; a ingestão e publicação
+devem ocorrer no Preview protegido que compartilha o banco aprovado ou por uma
+rotina operacional offline com as mesmas validações e autorização explícita.
 
 ## Rollback
 

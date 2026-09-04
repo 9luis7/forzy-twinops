@@ -248,7 +248,11 @@ class SettingsV2:
             vercel_environment=env.get("VERCEL_ENV") or None,
             rag_admin_enabled=rag_admin_raw == "true",
             rag_enabled=rag_enabled_raw == "true",
-            ai_gateway_api_key=env.get("AI_GATEWAY_API_KEY") or None,
+            ai_gateway_api_key=(
+                env.get("AI_GATEWAY_API_KEY")
+                or env.get("VERCEL_OIDC_TOKEN")
+                or None
+            ),
             rag_embedding_model=env.get(
                 "TWINOPS_RAG_EMBEDDING_MODEL",
                 "google/text-multilingual-embedding-002",

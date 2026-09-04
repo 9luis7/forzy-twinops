@@ -1,4 +1,4 @@
-"""Apply and verify only RAG migration 003 against an explicit Preview target."""
+"""Apply and verify only RAG migration 003 against an explicit Vercel target."""
 
 import argparse
 from collections.abc import Callable, Mapping, Sequence
@@ -16,6 +16,7 @@ _EXPECTED_MIGRATION = (
 )
 _TABLES = {"rag_corpora", "rag_documents", "rag_chunks", "rag_active_corpus"}
 _INDEXES = {"rag_chunks_corpus_idx", "rag_chunks_search_vector_idx"}
+_TARGETS = {"preview", "production"}
 _EXPECTED_CONSTRAINTS = {
     ("rag_corpora", "rag_corpora_asset_check"):
         "CHECK (asset_id = 'forzy-motor-01')",
@@ -81,8 +82,8 @@ def _arguments(argv: Sequence[str] | None):
     parser.add_argument("--target", required=True)
     parser.add_argument("--migrate", required=True, type=Path)
     arguments = parser.parse_args(argv)
-    if arguments.target != "preview":
-        raise ValueError("only the preview target is allowed")
+    if arguments.target not in _TARGETS:
+        raise ValueError("target must be preview or production")
     if arguments.migrate.resolve() != _EXPECTED_MIGRATION.resolve():
         raise ValueError("unexpected migration path")
     return arguments
@@ -201,10 +202,11 @@ def main(
         database_url = source_env.get("DATABASE_URL")
         if not database_url:
             raise ValueError("DATABASE_URL is required")
-        expected_database = source_env.get("RAG_PREVIEW_DATABASE_NAME", "").strip()
-        expected_user = source_env.get("RAG_PREVIEW_DATABASE_USER", "").strip()
+        target_prefix = f"RAG_{arguments.target.upper()}_DATABASE"
+        expected_database = source_env.get(f"{target_prefix}_NAME", "").strip()
+        expected_user = source_env.get(f"{target_prefix}_USER", "").strip()
         if not expected_database or not expected_user:
-            raise ValueError("Preview database identity allowlist is required")
+            raise ValueError("database identity allowlist is required")
         _verify(
             database_url,
             arguments.migrate,
@@ -212,7 +214,8 @@ def main(
             connect,
         )
         print(
-            "rag_postgres_check_ok target=preview identity=true tables=4 "
+            f"rag_postgres_check_ok target={arguments.target} "
+            "identity=true tables=4 "
             "indexes=2 constraints=true vector=true approximate_indexes=0 ssl=true"
         )
         return 0

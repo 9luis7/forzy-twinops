@@ -9,7 +9,7 @@ from twinops.rag.models import ChunkDraft, ExtractedPage
 _TOKEN = re.compile(r"\S+")
 _HEADING = re.compile(r"^[A-ZÀ-ÖØ-Þ0-9][A-ZÀ-ÖØ-Þ0-9 /&().:_-]{2,80}$")
 MAX_CHUNK_CHARACTERS = 16_000
-MAX_CHUNKS_PER_DOCUMENT = 1_000
+MAX_CHUNKS_PER_DOCUMENT = 4_000
 
 
 class ChunkingLimitError(ValueError):

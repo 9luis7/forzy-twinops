@@ -22,7 +22,6 @@ _REQUIRED = (
 _MANIFEST_HASH = "sha256:fe2cbd7e1b576f04b2c6380e41ecb7c97df7faa5084c39c4b0d16db786afe7f0"
 _MODEL_HASH = "sha256:68d00121edbf8c4c01cf7cd231cd57c4c8eff25661135494e3c791ca78e562ba"
 _RAG_REQUIRED = (
-    "AI_GATEWAY_API_KEY",
     "TWINOPS_RAG_EMBEDDING_DIMENSIONS",
     "TWINOPS_RAG_EMBEDDING_MODEL",
     "TWINOPS_RAG_EQUIPMENT_MODEL",
@@ -58,6 +57,11 @@ def verify_deploy_env(env: Mapping[str, str]) -> DeployEnvReport:
     vite_admin_enabled = _boolean_flag(env, "VITE_RAG_ADMIN_ENABLED", invalid)
     if rag_enabled or admin_enabled:
         required.update(_RAG_REQUIRED)
+        if not (
+            env.get("AI_GATEWAY_API_KEY", "").strip()
+            or env.get("VERCEL_OIDC_TOKEN", "").strip()
+        ):
+            required.add("AI_GATEWAY_API_KEY")
     if admin_enabled:
         required.update(_RAG_PREVIEW_IDENTITY_REQUIRED)
     missing = tuple(sorted(name for name in required if not env.get(name, "").strip()))
