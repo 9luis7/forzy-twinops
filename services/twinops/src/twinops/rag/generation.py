@@ -67,6 +67,23 @@ class ChatGatewayClient:
     async def generate(
         self, messages: Sequence[dict[str, str]]
     ) -> GeneratedAssistantPayload:
+        payload = {
+            "model": self.model,
+            "messages": list(messages),
+            "reasoning_effort": "low",
+            "stream": False,
+            "max_tokens": 1200,
+            "response_format": {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "forzy_rag_answer",
+                    "strict": True,
+                    "schema": _gateway_schema(),
+                },
+            },
+        }
+        if not self.model.rsplit("/", 1)[-1].startswith("gemini-3"):
+            payload["temperature"] = 0
         try:
             response = await self._http.post(
                 f"{self._base_url}/chat/completions",
@@ -74,22 +91,7 @@ class ChatGatewayClient:
                     "Authorization": f"Bearer {self._api_key}",
                     "Content-Type": "application/json",
                 },
-                json={
-                    "model": self.model,
-                    "messages": list(messages),
-                    "reasoning_effort": "low",
-                    "temperature": 0,
-                    "stream": False,
-                    "max_tokens": 1200,
-                    "response_format": {
-                        "type": "json_schema",
-                        "json_schema": {
-                            "name": "forzy_rag_answer",
-                            "strict": True,
-                            "schema": _gateway_schema(),
-                        },
-                    },
-                },
+                json=payload,
                 timeout=self._timeout_seconds,
             )
             response.raise_for_status()

@@ -84,6 +84,7 @@ async def test_chat_gateway_requests_low_reasoning_for_latency_bounded_extractio
 
     _, kwargs = http.calls[0]
     assert kwargs["json"]["reasoning_effort"] == "low"
+    assert "temperature" not in kwargs["json"]
 
 
 @pytest.mark.asyncio
