@@ -103,13 +103,14 @@ test("Preview draft to explicit publish and grounded public answer", async ({ pa
   const retrieval = page.getByRole("form", { name: "Testar recuperação do corpus" });
   await retrieval.getByLabel("Consulta de teste").fill("Como aterrar o motor?");
   await retrieval.getByRole("button", { name: "Testar recuperação" }).click();
+  await page.getByText("Páginas 2–3 · INSTALLATION").click();
   await expect(page.getByText("Score absoluto de relevância: 0.820")).toBeVisible();
   await expect(page.getByText("Score de ranking híbrido: 1.000")).toBeVisible();
   expect(fake.state.publishCalls).toBe(0);
 
   await page.goto("/");
   await expect(page.getByRole("heading", { name: "Assistente técnico" })).toBeVisible();
-  await expect(page.getByRole("status")).toContainText("exige um corpus técnico ativo");
+  await expect(page.getByText(/O assistente exige um corpus técnico ativo/)).toBeVisible();
   await expect(page.getByRole("form", { name: "Consultar o assistente técnico" })).toHaveCount(0);
   expect(fake.state.published).toBe(false);
 
