@@ -199,6 +199,7 @@ const assertDocument = (value, path) => {
 const assertRetrievalItem = (value, path) => {
   assertExactKeys(value, path, [
     "chunkId", "documentId", "pageStart", "pageEnd", "section", "excerpt", "contentHash",
+    "absoluteScore", "rankScore", "vectorRank", "lexicalRank",
   ]);
   boundedString(value.chunkId, `${path}.chunkId`, 200);
   boundedString(value.documentId, `${path}.documentId`, 200);
@@ -208,6 +209,13 @@ const assertRetrievalItem = (value, path) => {
   boundedString(value.excerpt, `${path}.excerpt`, 500);
   if (typeof value.contentHash !== "string" || !SHA256.test(value.contentHash)) {
     fail(`${path}.contentHash`, "must be a lowercase SHA-256 hash");
+  }
+  assertFiniteNumber(value.absoluteScore, `${path}.absoluteScore`, { minimum: 0, maximum: 1 });
+  assertFiniteNumber(value.rankScore, `${path}.rankScore`, { minimum: 0, maximum: 1 });
+  for (const field of ["vectorRank", "lexicalRank"]) {
+    if (value[field] !== null) {
+      assertInteger(value[field], `${path}.${field}`, { minimum: 1, maximum: 12 });
+    }
   }
 };
 

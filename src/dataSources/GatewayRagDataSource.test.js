@@ -152,6 +152,10 @@ describe("GatewayRagDataSource Preview administration", () => {
       section: null,
       excerpt: "Ground the motor before energizing it.",
       contentHash: "c".repeat(64),
+      absoluteScore: 0.82,
+      rankScore: 1,
+      vectorRank: 1,
+      lexicalRank: 1,
     }] };
     const payloads = [corpus, upload, { corpus, coverage }, retrieval, activation, activation];
     const fetchImpl = vi.fn().mockImplementation(() => Promise.resolve({
@@ -195,5 +199,12 @@ describe("GatewayRagDataSource Preview administration", () => {
     expect(uploadRequest.body.get("manufacturer")).toBe("WEG");
     expect(uploadRequest.body.get("equipmentModel")).toBe("W22");
     expect(uploadRequest.body.get("file").name).toBe("manual.pdf");
+  });
+
+  it("rejects an admin retrieval request above the public top-six contract", async () => {
+    const source = createGatewayRagDataSource({ fetchImpl: vi.fn() });
+
+    await expect(source.testRetrieval("corpus-1", { query: "bearing", limit: 7 }))
+      .rejects.toThrow(/limit/);
   });
 });

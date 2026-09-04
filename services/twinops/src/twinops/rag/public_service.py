@@ -28,6 +28,24 @@ DEFAULT_LIMITATIONS = (
     "O assistente não diagnostica causa raiz nem estima probabilidade de falha ou RUL.",
     "Procedimentos e intervenções exigem validação de uma pessoa qualificada.",
 )
+OUT_OF_SCOPE_MESSAGES = {
+    "root_cause": (
+        "Não posso determinar causa raiz. Posso apresentar somente "
+        "evidências do manual e do assessment atual para validação humana."
+    ),
+    "probability": (
+        "Não posso estimar probabilidade de falha. Posso apresentar somente "
+        "evidências observadas, sem converter scores em probabilidade."
+    ),
+    "rul": (
+        "Não posso estimar vida útil restante (RUL) nem prever quando o "
+        "equipamento falhará."
+    ),
+    "execution": (
+        "O assistente não executa manutenção nem comanda o equipamento. "
+        "Qualquer intervenção exige uma pessoa qualificada."
+    ),
+}
 
 
 class RagAssistantService:
@@ -331,26 +349,8 @@ def _out_of_scope_response(
     trace_id,
     started: float,
 ) -> AssistantQueryResponse:
-    messages = {
-        "root_cause": (
-            "Não posso determinar causa raiz. Posso apresentar somente "
-            "evidências do manual e do assessment atual para validação humana."
-        ),
-        "probability": (
-            "Não posso estimar probabilidade de falha. Posso apresentar somente "
-            "evidências observadas, sem converter scores em probabilidade."
-        ),
-        "rul": (
-            "Não posso estimar vida útil restante (RUL) nem prever quando o "
-            "equipamento falhará."
-        ),
-        "execution": (
-            "O assistente não executa manutenção nem comanda o equipamento. "
-            "Qualquer intervenção exige uma pessoa qualificada."
-        ),
-    }
     return _response(
-        manual=messages[reason],
+        manual=OUT_OF_SCOPE_MESSAGES[reason],
         current_state=_deterministic_current_state(operational),
         grounding_status="out_of_scope",
         citations=[],

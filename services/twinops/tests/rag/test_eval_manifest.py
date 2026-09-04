@@ -3,6 +3,8 @@ from pathlib import Path
 import subprocess
 import sys
 
+import pytest
+
 
 ROOT = Path(__file__).parents[4]
 MANIFEST = ROOT / "evals" / "rag" / "forzy-motor-01-v1.jsonl"
@@ -19,6 +21,10 @@ def test_evaluation_manifest_has_at_least_30_versioned_non_invented_cases():
     assert len(cases) >= 30
     assert len({case["id"] for case in cases}) == len(cases)
     assert all(case["schemaVersion"] == "1.0" for case in cases)
+    assert all(
+        case["manualExpectation"] in {None, "supported", "absent", "out_of_scope"}
+        for case in cases
+    )
     assert all(
         case["expectedManualEvidence"] == []
         for case in cases
@@ -71,6 +77,7 @@ def _write_cases(tmp_path, cases):
 
 def _real_manual_anchors(case):
     case["status"] = "complete"
+    case["manualExpectation"] = "supported"
     case["manualIdentity"] = {
         "manufacturer": "WEG",
         "equipmentModel": "W22",
@@ -113,12 +120,26 @@ def test_completed_real_manual_case_rejects_empty_or_unverifiable_evidence(tmp_p
     real_case = next(case for case in cases if case["caseKind"] == "real_manual")
     real_case["status"] = "complete"
     real_case["manualIdentity"] = None
+    real_case["manualExpectation"] = "supported"
     real_case["expectedManualEvidence"] = []
 
     result = _run(_write_cases(tmp_path, cases))
 
     assert result.returncode == 1
     assert "completed real manual" in result.stderr
+
+
+@pytest.mark.parametrize("expectation", ["absent", "out_of_scope"])
+def test_completed_real_refusal_case_requires_empty_evidence(tmp_path, expectation):
+    cases = _cases()
+    real_case = next(case for case in cases if case["caseKind"] == "real_manual")
+    _real_manual_anchors(real_case)
+    real_case["manualExpectation"] = expectation
+
+    result = _run(_write_cases(tmp_path, cases))
+
+    assert result.returncode == 1
+    assert "requires empty evidence" in result.stderr
 
 
 def test_require_complete_accepts_real_manual_cases_only_with_verifiable_anchors(
@@ -146,3 +167,29 @@ def test_require_complete_rejects_fixture_only_manifest_with_empty_evidence(tmp_
 
     assert result.returncode == 1
     assert "completed real manual cases" in result.stderr
+
+
+@pytest.mark.parametrize(
+    "invalid_evidence",
+    [
+        ["chunk-without-fixture-prefix"],
+        [1],
+        [{"chunkId": "fixture:chunk-safe-001"}],
+    ],
+)
+def test_supported_synthetic_fixture_requires_canonical_string_anchors(
+    tmp_path, invalid_evidence
+):
+    cases = _cases()
+    fixture = next(
+        case
+        for case in cases
+        if case["caseKind"] == "synthetic_fixture"
+        and case["manualExpectation"] == "supported"
+    )
+    fixture["expectedManualEvidence"] = invalid_evidence
+
+    result = _run(_write_cases(tmp_path, cases))
+
+    assert result.returncode == 1
+    assert "fixture anchors" in result.stderr

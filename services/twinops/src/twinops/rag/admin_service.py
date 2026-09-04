@@ -1,5 +1,7 @@
 """Administrative orchestration for draft ingestion and atomic publication."""
 
+import asyncio
+
 from uuid import uuid4
 
 from twinops.rag.chunking import chunk_pages
@@ -22,6 +24,13 @@ from twinops.rag.models import (
 )
 from twinops.rag.pdf import extract_searchable_pdf
 from twinops.rag.repository import RagRepository
+from twinops.rag.retrieval import (
+    FINAL_HIT_LIMIT,
+    LEXICAL_CANDIDATE_LIMIT,
+    VECTOR_CANDIDATE_LIMIT,
+    FusedRetrievalHit,
+    reciprocal_rank_fusion,
+)
 
 
 MAX_EMBEDDING_BATCH_SIZE = 64
@@ -167,18 +176,32 @@ class RagAdminService:
 
     async def test_retrieval(
         self, corpus_id: str, query: str, *, limit: int = 6
-    ) -> list[RagChunk]:
+    ) -> list[FusedRetrievalHit]:
         if not isinstance(query, str) or not query.strip() or len(query) > 500:
             raise InvalidAdminInputError("invalid_retrieval_query")
-        if not 1 <= limit <= 12:
+        if not 1 <= limit <= FINAL_HIT_LIMIT:
             raise InvalidAdminInputError("invalid_retrieval_limit")
         corpus = self._require_corpus(corpus_id)
         self._require_compatible(corpus)
         vector = (await self.embeddings.embed([query]))[0]
-        return self.repository.preview_search(
+        vector_work = asyncio.to_thread(
+            self.repository.exact_vector_search,
+            corpus_id,
+            query_embedding=vector,
+            limit=VECTOR_CANDIDATE_LIMIT,
+        )
+        lexical_work = asyncio.to_thread(
+            self.repository.lexical_search,
             corpus_id,
             query=query,
-            query_embedding=vector,
+            limit=LEXICAL_CANDIDATE_LIMIT,
+        )
+        vector_candidates, lexical_candidates = await asyncio.gather(
+            vector_work, lexical_work
+        )
+        return reciprocal_rank_fusion(
+            vector_candidates,
+            lexical_candidates,
             limit=limit,
         )
 

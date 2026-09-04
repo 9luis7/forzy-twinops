@@ -1,3 +1,5 @@
+import threading
+
 import pytest
 
 from twinops.rag.admin_service import DuplicateDocumentError, RagAdminService
@@ -34,7 +36,9 @@ async def test_admin_flow_stays_draft_until_explicit_publish_and_supports_reacti
         manufacturer="WEG",
         equipment_model="W22",
     )
-    first = service.create_draft(asset_id="forzy-motor-01")
+    first = service.create_draft(
+        asset_id="forzy-motor-01", min_relevance_score=0.2
+    )
     uploaded = await service.upload_document(
         first.corpus_id,
         filename="manual.pdf",
@@ -50,7 +54,9 @@ async def test_admin_flow_stays_draft_until_explicit_publish_and_supports_reacti
     assert service.test_retrieval is not None
 
     first_activation = service.publish(first.corpus_id)
-    second = service.create_draft(asset_id="forzy-motor-01")
+    second = service.create_draft(
+        asset_id="forzy-motor-01", min_relevance_score=0.2
+    )
     await service.upload_document(
         second.corpus_id,
         filename="manual-v2.pdf",
@@ -96,3 +102,50 @@ async def test_duplicate_sha_is_rejected_before_embedding_is_repeated():
             payload=payload,
             metadata=_metadata(),
         )
+
+
+@pytest.mark.asyncio
+async def test_draft_retrieval_uses_public_hybrid_fusion_and_keeps_db_off_loop():
+    loop_thread = threading.get_ident()
+
+    class TrackingRepository(InMemoryRagRepository):
+        def __init__(self):
+            super().__init__()
+            self.search_threads = []
+
+        def exact_vector_search(self, *args, **kwargs):
+            self.search_threads.append(threading.get_ident())
+            return super().exact_vector_search(*args, **kwargs)
+
+        def lexical_search(self, *args, **kwargs):
+            self.search_threads.append(threading.get_ident())
+            return super().lexical_search(*args, **kwargs)
+
+    repository = TrackingRepository()
+    service = RagAdminService(
+        repository,
+        _Embeddings(),
+        manufacturer="WEG",
+        equipment_model="W22",
+    )
+    corpus = service.create_draft(asset_id="forzy-motor-01")
+    await service.upload_document(
+        corpus.corpus_id,
+        filename="manual.pdf",
+        content_type="application/pdf",
+        payload=searchable_pdf("MAINTENANCE bearing lubrication"),
+        metadata=_metadata(),
+    )
+
+    hits = await service.test_retrieval(corpus.corpus_id, "bearing", limit=6)
+
+    assert len(hits) == 1
+    hit = hits[0]
+    assert hit.candidate.chunk.corpus_id == corpus.corpus_id
+    assert hit.candidate.document.manufacturer == "WEG"
+    assert hit.absolute_score == pytest.approx(1.0)
+    assert hit.rank_score == pytest.approx(1.0)
+    assert hit.vector_rank == 1
+    assert hit.lexical_rank == 1
+    assert repository.search_threads
+    assert all(thread_id != loop_thread for thread_id in repository.search_threads)

@@ -1,6 +1,8 @@
 from pathlib import Path
 from datetime import datetime, timezone
 
+import pytest
+
 from twinops.rag.repository import PostgresRagRepository
 
 
@@ -77,6 +79,35 @@ class _ActivationConnection(_Connection):
         return _Result()
 
 
+class _PublishedActivationConnection(_Connection):
+    def __init__(self, calls, *, threshold):
+        super().__init__(calls)
+        self.threshold = threshold
+
+    def execute(self, sql, parameters):
+        self.calls.append((sql, parameters))
+        if "FROM rag_corpora WHERE corpus_id" in sql:
+            return _Result(
+                one={
+                    "corpus_id": "legacy",
+                    "asset_id": "forzy-motor-01",
+                    "manufacturer": "Approved Manufacturer",
+                    "equipment_model": "Approved Model",
+                    "status": "published",
+                    "embedding_model": "embed-v1",
+                    "embedding_dimensions": 3,
+                    "chunk_target_tokens": 700,
+                    "chunk_overlap_tokens": 100,
+                    "min_relevance_score": self.threshold,
+                    "created_at": datetime(2026, 9, 3, tzinfo=timezone.utc),
+                    "published_at": datetime(2026, 9, 3, tzinfo=timezone.utc),
+                }
+            )
+        if "FROM rag_active_corpus" in sql:
+            return _Result(one={"corpus_id": "current"})
+        return _Result()
+
+
 def test_postgres_preview_keeps_query_and_vector_out_of_sql_text():
     calls = []
     repository = PostgresRagRepository(
@@ -150,3 +181,33 @@ def test_postgres_publication_serializes_pointer_changes_by_asset():
     assert calls[lock_index][1] == ("forzy-motor-01",)
     assert any("manufacturer<>" in sql for sql, _ in calls)
     assert changed.previous_corpus_id == "c1"
+
+
+def test_postgres_legacy_zero_threshold_reactivation_fails_before_pointer_write():
+    calls = []
+    repository = PostgresRagRepository(
+        "postgresql://unused",
+        connection_factory=lambda: _PublishedActivationConnection(
+            calls, threshold=0.0
+        ),
+    )
+
+    with pytest.raises(ValueError, match="calibrated"):
+        repository.activate_published_corpus("forzy-motor-01", "legacy")
+
+    assert not any("INSERT INTO rag_active_corpus" in sql for sql, _ in calls)
+
+
+def test_postgres_positive_published_rollback_still_swaps_pointer():
+    calls = []
+    repository = PostgresRagRepository(
+        "postgresql://unused",
+        connection_factory=lambda: _PublishedActivationConnection(
+            calls, threshold=0.2
+        ),
+    )
+
+    changed = repository.activate_published_corpus("forzy-motor-01", "legacy")
+
+    assert changed.previous_corpus_id == "current"
+    assert any("INSERT INTO rag_active_corpus" in sql for sql, _ in calls)

@@ -209,7 +209,7 @@ export function createGatewayRagDataSource({ baseUrl = "", fetchImpl = fetch } =
     async testRetrieval(corpusId, input, { signal } = {}) {
       assertExactInput(input, "testRetrieval", ["query", "limit"]);
       const query = assertIdentifier(input.query, "query", 500);
-      const limit = assertFiniteRange(input.limit ?? 6, "limit", 1, 12, { integer: true });
+      const limit = assertFiniteRange(input.limit ?? 6, "limit", 1, 6, { integer: true });
       return jsonRequest(
         corpusPath(assertIdentifier(corpusId, "corpusId"), "retrieval-test"),
         "POST",

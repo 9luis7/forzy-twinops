@@ -69,6 +69,125 @@ def test_deploy_accepts_pooled_tls_neon_and_exact_runtime_anchors():
     assert "secret" not in repr(report)
 
 
+def test_enabled_rag_requires_every_backend_anchor_by_variable_name_only():
+    report = verify_deploy_env(_valid_deploy_env(TWINOPS_RAG_ENABLED="true"))
+
+    assert set(report.missing) == {
+        "AI_GATEWAY_API_KEY",
+        "TWINOPS_RAG_EMBEDDING_DIMENSIONS",
+        "TWINOPS_RAG_EMBEDDING_MODEL",
+        "TWINOPS_RAG_EQUIPMENT_MODEL",
+        "TWINOPS_RAG_GATEWAY_TIMEOUT_SECONDS",
+        "TWINOPS_RAG_GENERATION_MODEL",
+        "TWINOPS_RAG_MANUFACTURER",
+        "TWINOPS_RAG_QUERY_TIMEOUT_SECONDS",
+    }
+    assert report.invalid == ()
+
+
+def test_enabled_rag_rejects_wrong_models_identity_dimensions_and_timeouts_safely():
+    env = _valid_deploy_env(
+        TWINOPS_RAG_ENABLED="true",
+        AI_GATEWAY_API_KEY="never-print-this",
+        TWINOPS_RAG_MANUFACTURER=" WEG",
+        TWINOPS_RAG_EQUIPMENT_MODEL="",
+        TWINOPS_RAG_EMBEDDING_MODEL="other/embed",
+        TWINOPS_RAG_EMBEDDING_DIMENSIONS="0",
+        TWINOPS_RAG_GENERATION_MODEL="other/chat",
+        TWINOPS_RAG_GATEWAY_TIMEOUT_SECONDS="11",
+        TWINOPS_RAG_QUERY_TIMEOUT_SECONDS="12",
+    )
+
+    report = verify_deploy_env(env)
+
+    assert set(report.invalid) == {
+        "TWINOPS_RAG_MANUFACTURER",
+        "TWINOPS_RAG_EMBEDDING_MODEL",
+        "TWINOPS_RAG_EMBEDDING_DIMENSIONS",
+        "TWINOPS_RAG_GENERATION_MODEL",
+        "TWINOPS_RAG_GATEWAY_TIMEOUT_SECONDS",
+        "TWINOPS_RAG_QUERY_TIMEOUT_SECONDS",
+    }
+    assert report.missing == ("TWINOPS_RAG_EQUIPMENT_MODEL",)
+    assert "never-print-this" not in repr(report)
+
+
+def test_rag_admin_flags_are_valid_only_for_preview_and_public_ui_has_no_secret():
+    common = _valid_deploy_env(
+        RAG_ADMIN_ENABLED="true",
+        VITE_RAG_ADMIN_ENABLED="true",
+        VERCEL_ENV="production",
+        AI_GATEWAY_API_KEY="backend-only",
+        TWINOPS_RAG_MANUFACTURER="WEG",
+        TWINOPS_RAG_EQUIPMENT_MODEL="W22",
+        TWINOPS_RAG_EMBEDDING_MODEL="google/text-multilingual-embedding-002",
+        TWINOPS_RAG_EMBEDDING_DIMENSIONS="768",
+        TWINOPS_RAG_GENERATION_MODEL="openai/gpt-5.6-luna",
+        TWINOPS_RAG_GATEWAY_TIMEOUT_SECONDS="10",
+        TWINOPS_RAG_QUERY_TIMEOUT_SECONDS="10",
+        RAG_PREVIEW_DATABASE_NAME="twinops_preview",
+        RAG_PREVIEW_DATABASE_USER="preview_user",
+    )
+
+    invalid = verify_deploy_env(common)
+    common["VERCEL_ENV"] = "preview"
+    valid = verify_deploy_env(common)
+
+    assert set(invalid.invalid) == {"RAG_ADMIN_ENABLED", "VERCEL_ENV", "VITE_RAG_ADMIN_ENABLED"}
+    assert valid.ok is True
+    assert not any(name.startswith("VITE_") and "KEY" in name for name in common)
+
+
+def test_preview_admin_requires_external_database_identity_allowlist_by_name():
+    report = verify_deploy_env(
+        _valid_deploy_env(
+            RAG_ADMIN_ENABLED="true",
+            VITE_RAG_ADMIN_ENABLED="true",
+            VERCEL_ENV="preview",
+            AI_GATEWAY_API_KEY="backend-only",
+            TWINOPS_RAG_MANUFACTURER="WEG",
+            TWINOPS_RAG_EQUIPMENT_MODEL="W22",
+            TWINOPS_RAG_EMBEDDING_MODEL="google/text-multilingual-embedding-002",
+            TWINOPS_RAG_EMBEDDING_DIMENSIONS="768",
+            TWINOPS_RAG_GENERATION_MODEL="openai/gpt-5.6-luna",
+            TWINOPS_RAG_GATEWAY_TIMEOUT_SECONDS="10",
+            TWINOPS_RAG_QUERY_TIMEOUT_SECONDS="10",
+        )
+    )
+
+    assert set(report.missing) == {
+        "RAG_PREVIEW_DATABASE_NAME",
+        "RAG_PREVIEW_DATABASE_USER",
+    }
+    assert report.invalid == ()
+
+
+def test_preview_database_identity_allowlist_rejects_untrimmed_values_safely():
+    env = _valid_deploy_env(
+        RAG_ADMIN_ENABLED="true",
+        VERCEL_ENV="preview",
+        AI_GATEWAY_API_KEY="backend-only",
+        TWINOPS_RAG_MANUFACTURER="WEG",
+        TWINOPS_RAG_EQUIPMENT_MODEL="W22",
+        TWINOPS_RAG_EMBEDDING_MODEL="google/text-multilingual-embedding-002",
+        TWINOPS_RAG_EMBEDDING_DIMENSIONS="768",
+        TWINOPS_RAG_GENERATION_MODEL="openai/gpt-5.6-luna",
+        TWINOPS_RAG_GATEWAY_TIMEOUT_SECONDS="10",
+        TWINOPS_RAG_QUERY_TIMEOUT_SECONDS="10",
+        RAG_PREVIEW_DATABASE_NAME=" twinops_preview",
+        RAG_PREVIEW_DATABASE_USER="preview_user ",
+    )
+
+    report = verify_deploy_env(env)
+
+    assert set(report.invalid) == {
+        "RAG_PREVIEW_DATABASE_NAME",
+        "RAG_PREVIEW_DATABASE_USER",
+    }
+    assert "twinops_preview" not in repr(report)
+    assert "preview_user" not in repr(report)
+
+
 @pytest.mark.parametrize(
     "database_url",
     [

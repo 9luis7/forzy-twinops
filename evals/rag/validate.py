@@ -13,6 +13,7 @@ MINIMUM_CASES = 30
 MINIMUM_REAL_MANUAL_CASES = 15
 VALID_STATUSES = {"complete", "pending_manual"}
 VALID_CASE_KINDS = {"real_manual", "synthetic_fixture"}
+VALID_MANUAL_EXPECTATIONS = {"supported", "absent", "out_of_scope"}
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 
 
@@ -53,6 +54,13 @@ def validate(path: Path, *, require_complete: bool = False) -> list[str]:
         if not isinstance(case.get("question"), str) or not case["question"].strip():
             errors.append(f"{identifier}: question is required")
         evidence = case.get("expectedManualEvidence")
+        expectation = case.get("manualExpectation")
+        if status == "complete" and expectation not in VALID_MANUAL_EXPECTATIONS:
+            errors.append(f"{identifier}: completed case requires manualExpectation")
+        if status == "pending_manual" and expectation not in {None, "out_of_scope"}:
+            errors.append(
+                f"{identifier}: pending case expectation must be null or out_of_scope"
+            )
         if not isinstance(evidence, list):
             errors.append(f"{identifier}: expectedManualEvidence must be a list")
         elif status == "pending_manual" and evidence:
@@ -64,6 +72,17 @@ def validate(path: Path, *, require_complete: bool = False) -> list[str]:
                 errors.append(f"{identifier}: synthetic fixtures must be complete")
             if case.get("manualIdentity") is not None:
                 errors.append(f"{identifier}: synthetic fixtures have no manual identity")
+            if expectation == "supported" and not evidence:
+                errors.append(f"{identifier}: supported fixture requires evidence")
+            if expectation == "supported" and isinstance(evidence, list) and not all(
+                isinstance(anchor, str) and anchor.startswith("fixture:")
+                for anchor in evidence
+            ):
+                errors.append(
+                    f"{identifier}: supported fixture requires canonical fixture anchors"
+                )
+            if expectation in {"absent", "out_of_scope"} and evidence:
+                errors.append(f"{identifier}: refusal fixture requires empty evidence")
         if case_kind == "real_manual" and status == "pending_manual":
             if case.get("manualIdentity") is not None:
                 errors.append(f"{identifier}: pending real manual identity must be null")
@@ -106,9 +125,14 @@ def _validate_completed_real_manual(
         )
 
     evidence = case.get("expectedManualEvidence")
-    if not isinstance(evidence, list) or not evidence:
+    expectation = case.get("manualExpectation")
+    if expectation in {"absent", "out_of_scope"}:
+        if evidence:
+            errors.append(f"{identifier}: {expectation} requires empty evidence")
+        return errors
+    if expectation != "supported" or not isinstance(evidence, list) or not evidence:
         errors.append(
-            f"{identifier}: completed real manual requires non-empty evidence"
+            f"{identifier}: completed real manual supported case requires non-empty evidence"
         )
         return errors
     for index, anchor in enumerate(evidence):

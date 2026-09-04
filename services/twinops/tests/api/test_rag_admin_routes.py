@@ -267,10 +267,13 @@ def test_publish_and_reactivate_domain_conflicts_are_sanitized():
     assert reactivate_draft.json() == {"detail": "corpus_not_reactivatable"}
 
 
-def _new_corpus(client):
+def _new_corpus(client, *, calibrated=False):
     return client.post(
         "/api/v2/admin/rag/corpora",
-        json={"assetId": "forzy-motor-01"},
+        json={
+            "assetId": "forzy-motor-01",
+            "minRelevanceScore": 0.2 if calibrated else 0.0,
+        },
     ).json()["corpusId"]
 
 
@@ -286,7 +289,7 @@ def _manual_form():
 
 def test_upload_invalid_extension_is_422_and_published_corpus_is_409():
     client = _client(environment="preview", enabled=True)
-    corpus_id = _new_corpus(client)
+    corpus_id = _new_corpus(client, calibrated=True)
     payload = searchable_pdf("searchable manual")
 
     invalid = client.post(

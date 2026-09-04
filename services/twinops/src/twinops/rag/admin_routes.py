@@ -34,7 +34,7 @@ class CreateCorpusRequest(BaseModel):
 
 class RetrievalTestRequest(BaseModel):
     query: str = Field(min_length=1, max_length=500)
-    limit: int = Field(6, ge=1, le=12)
+    limit: int = Field(6, ge=1, le=6)
 
 
 def create_rag_admin_router() -> APIRouter:
@@ -230,7 +230,8 @@ def _coverage_json(item):
     }
 
 
-def _chunk_json(item):
+def _chunk_json(hit):
+    item = hit.candidate.chunk
     return {
         "chunkId": item.chunk_id,
         "documentId": item.document_id,
@@ -239,6 +240,10 @@ def _chunk_json(item):
         "section": item.section,
         "excerpt": item.text[:500],
         "contentHash": item.content_hash,
+        "absoluteScore": hit.absolute_score,
+        "rankScore": hit.rank_score,
+        "vectorRank": hit.vector_rank,
+        "lexicalRank": hit.lexical_rank,
     }
 
 

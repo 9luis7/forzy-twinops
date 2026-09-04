@@ -166,6 +166,10 @@ describe("RAG Preview admin contracts", () => {
       section: "INSTALLATION",
       excerpt: "Ground the motor before energizing it.",
       contentHash: "c".repeat(64),
+      absoluteScore: 0.82,
+      rankScore: 1,
+      vectorRank: 1,
+      lexicalRank: 2,
     }] }).items).toHaveLength(1);
     expect(assertRagActivation({
       assetId: "forzy-motor-01",
@@ -195,5 +199,25 @@ describe("RAG Preview admin contracts", () => {
       },
       coverage,
     })).toThrow(/corpusId/);
+  });
+
+  it("rejects retrieval calibration ranks and scores outside their domains", () => {
+    const item = {
+      chunkId: "chunk-1",
+      documentId: "document-1",
+      pageStart: 2,
+      pageEnd: 3,
+      section: null,
+      excerpt: "Ground the motor before energizing it.",
+      contentHash: "c".repeat(64),
+      absoluteScore: 1.2,
+      rankScore: 0.5,
+      vectorRank: 1,
+      lexicalRank: null,
+    };
+    expect(() => assertRagRetrievalResults({ items: [item] })).toThrow(/absoluteScore/);
+    expect(() => assertRagRetrievalResults({
+      items: [{ ...item, absoluteScore: 0.5, vectorRank: 0 }],
+    })).toThrow(/vectorRank/);
   });
 });

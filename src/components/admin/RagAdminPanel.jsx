@@ -315,6 +315,13 @@ export default function RagAdminPanel({ dataSource, assetId }) {
                   <details key={item.chunkId}>
                     <summary>Páginas {item.pageStart}–{item.pageEnd} · {item.section ?? "Seção não identificada"}</summary>
                     <blockquote>{item.excerpt}</blockquote>
+                    <div className="rag-calibration-scores" aria-label={`Scores de calibração do chunk ${item.chunkId}`}>
+                      <p>Score absoluto de relevância: {item.absoluteScore.toFixed(3)}</p>
+                      <p>Score de ranking híbrido: {item.rankScore.toFixed(3)}</p>
+                    </div>
+                    <p>
+                      Ranks: vetorial {item.vectorRank ?? "sem resultado"} · lexical {item.lexicalRank ?? "sem resultado"}
+                    </p>
                     <code>SHA-256 {item.contentHash}</code>
                   </details>
                 ))}

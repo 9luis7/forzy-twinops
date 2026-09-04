@@ -6,7 +6,14 @@ from twinops.rag.models import RagChunk, RagCorpus, RagDocument
 from twinops.rag.repository import InMemoryRagRepository
 
 
-def _corpus(corpus_id, *, asset_id="forzy-motor-01", model="embed-v1", dimension=3):
+def _corpus(
+    corpus_id,
+    *,
+    asset_id="forzy-motor-01",
+    model="embed-v1",
+    dimension=3,
+    threshold=0.2,
+):
     return RagCorpus.draft(
         corpus_id=corpus_id,
         asset_id=asset_id,
@@ -14,6 +21,7 @@ def _corpus(corpus_id, *, asset_id="forzy-motor-01", model="embed-v1", dimension
         equipment_model="W22",
         embedding_model=model,
         embedding_dimensions=dimension,
+        min_relevance_score=threshold,
     )
 
 
@@ -105,12 +113,41 @@ def test_publish_and_rollback_swap_active_pointer_without_mutating_versions():
     assert repository.get_corpus("c2").status == "published"
 
 
+def test_exploration_draft_without_positive_calibration_cannot_be_published():
+    repository = InMemoryRagRepository()
+    repository.create_corpus(_corpus("c1", threshold=0.0))
+    repository.add_document(_document("d1", "c1", "a" * 64), [])
+
+    with pytest.raises(ValueError, match="calibrated"):
+        repository.publish_corpus("forzy-motor-01", "c1")
+
+    assert repository.get_active_corpus("forzy-motor-01") is None
+
+
 def test_draft_cannot_be_activated_as_a_rollback():
     repository = InMemoryRagRepository()
     repository.create_corpus(_corpus("c1"))
 
     with pytest.raises(ValueError, match="published"):
         repository.activate_published_corpus("forzy-motor-01", "c1")
+
+
+def test_legacy_published_zero_threshold_cannot_replace_active_pointer():
+    repository = InMemoryRagRepository()
+    repository.create_corpus(_corpus("current"))
+    repository.add_document(_document("d-current", "current", "a" * 64), [])
+    repository.publish_corpus("forzy-motor-01", "current")
+    legacy = replace(
+        _corpus("legacy", threshold=0.0),
+        status="published",
+        published_at=repository.get_corpus("current").published_at,
+    )
+    repository.create_corpus(legacy)
+
+    with pytest.raises(ValueError, match="calibrated"):
+        repository.activate_published_corpus("forzy-motor-01", "legacy")
+
+    assert repository.get_active_corpus("forzy-motor-01").corpus_id == "current"
 
 
 def test_published_version_must_use_explicit_reactivation_path():

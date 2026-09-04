@@ -247,7 +247,7 @@ async def test_persisted_threshold_marks_manual_insufficient():
 
 
 @pytest.mark.asyncio
-async def test_uncalibrated_zero_threshold_fails_closed_before_embedding():
+async def test_uncalibrated_zero_threshold_cannot_be_published():
     repository = InMemoryRagRepository()
     repository.create_corpus(_corpus("c1", threshold=0.0))
     document = _document("c1")
@@ -263,13 +263,10 @@ async def test_uncalibrated_zero_threshold_fails_closed_before_embedding():
             )
         ],
     )
-    repository.publish_corpus(ASSET_ID, "c1")
     embeddings = _Embeddings()
-    retriever = _retriever(repository, embeddings)
 
-    assert retriever.healthy(ASSET_ID) is False
-    with pytest.raises(CorpusUnavailableError, match="corpus_not_calibrated"):
-        await retriever.retrieve(ASSET_ID, "bearing")
+    with pytest.raises(ValueError, match="positive calibrated relevance threshold"):
+        repository.publish_corpus(ASSET_ID, "c1")
     assert embeddings.calls == []
 
 

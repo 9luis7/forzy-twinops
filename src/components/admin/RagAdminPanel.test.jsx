@@ -69,6 +69,10 @@ describe("RagAdminPanel", () => {
         section: "INSTALLATION",
         excerpt: "Ground the motor before energizing it.",
         contentHash: "c".repeat(64),
+        absoluteScore: 0.82,
+        rankScore: 1,
+        vectorRank: 1,
+        lexicalRank: 2,
       }] }),
       publish: vi.fn().mockResolvedValue(activation()),
       reactivate: vi.fn().mockResolvedValue(activation("corpus-previous")),
@@ -120,6 +124,10 @@ describe("RagAdminPanel", () => {
     fireEvent.submit(retrievalForm);
     expect(await screen.findByText("Ground the motor before energizing it.")).toBeInTheDocument();
     expect(screen.getByText("Páginas 2–3 · INSTALLATION")).toBeInTheDocument();
+    expect(screen.getByText("Score absoluto de relevância: 0.820")).toBeInTheDocument();
+    expect(screen.getByText("Score de ranking híbrido: 1.000")).toBeInTheDocument();
+    expect(screen.getByText("Ranks: vetorial 1 · lexical 2")).toBeInTheDocument();
+    expect(screen.queryByText(/probabilidade de falha/i)).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "Publicar corpus" }));
     expect(dataSource.publish).not.toHaveBeenCalled();

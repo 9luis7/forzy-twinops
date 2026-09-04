@@ -173,6 +173,7 @@ class InMemoryRagRepository:
                 raise ValueError("corpus asset does not match activation asset")
             if corpus.status != "draft":
                 raise ValueError("only a draft corpus can be published")
+            _require_calibrated_threshold(corpus)
             if not any(
                 item.corpus_id == corpus_id for item in self._documents.values()
             ):
@@ -199,6 +200,7 @@ class InMemoryRagRepository:
                 raise ValueError("corpus asset does not match activation asset")
             if corpus.status != "published":
                 raise ValueError("only a published corpus can be reactivated")
+            _require_calibrated_threshold(corpus)
             return self._activate(asset_id, corpus_id)
 
     def get_active_corpus(self, asset_id: str) -> RagCorpus | None:
@@ -529,6 +531,7 @@ class PostgresRagRepository:
                 raise ValueError("only a draft corpus can be published")
             if not allow_draft and corpus.status != "published":
                 raise ValueError("only a published corpus can be reactivated")
+            _require_calibrated_threshold(corpus)
             if allow_draft:
                 has_document = connection.execute(
                     "SELECT 1 FROM rag_documents WHERE corpus_id=%s LIMIT 1",
@@ -663,6 +666,14 @@ def _validated_vector(values: Sequence[float], dimensions: int) -> tuple[float, 
 def _validate_public_search_limit(limit: int) -> None:
     if not isinstance(limit, int) or not 1 <= limit <= 12:
         raise ValueError("retrieval limit must be between 1 and 12")
+
+
+def _require_calibrated_threshold(corpus: RagCorpus) -> None:
+    if (
+        not math.isfinite(corpus.min_relevance_score)
+        or corpus.min_relevance_score <= 0
+    ):
+        raise ValueError("corpus requires a positive calibrated relevance threshold")
 
 
 def _vector_literal(values: Sequence[float]) -> str:
