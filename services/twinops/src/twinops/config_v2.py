@@ -13,9 +13,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 _SAFE_SSL_MODES = frozenset({"require", "verify-ca", "verify-full"})
 _DNS_LABEL = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?")
 _RAG_PROVIDERS = frozenset({"gateway", "gemini"})
-_GEMINI_OPENAI_BASE_URL = (
-    "https://generativelanguage.googleapis.com/v1beta/openai"
-)
+_GEMINI_API_BASE_URL = "https://generativelanguage.googleapis.com/v1beta"
 
 
 def normalize_https_origin(value: str) -> str:
@@ -305,7 +303,7 @@ class SettingsV2:
     @property
     def rag_chat_base_url(self) -> str:
         if self.rag_provider == "gemini":
-            return _GEMINI_OPENAI_BASE_URL
+            return _GEMINI_API_BASE_URL
         return "https://ai-gateway.vercel.sh/v1"
 
     def for_deploy(self) -> Self:

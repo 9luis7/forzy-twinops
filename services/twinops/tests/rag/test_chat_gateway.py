@@ -5,6 +5,9 @@ import logging
 import httpx
 import pytest
 
+from twinops import main_v2
+from twinops.config_v2 import SettingsV2
+from twinops.rag import generation as generation_module
 from twinops.rag.generation import ChatGatewayClient, ChatGatewayError
 
 
@@ -111,6 +114,83 @@ async def test_chat_gateway_requests_minimal_reasoning_for_flash_lite_latency():
     _, kwargs = http.calls[0]
     assert kwargs["json"]["reasoning_effort"] == "minimal"
     assert "temperature" not in kwargs["json"]
+
+
+@pytest.mark.asyncio
+async def test_native_gemini_chat_uses_fixed_schema_and_minimal_thinking():
+    client_type = getattr(generation_module, "GeminiChatClient", None)
+    assert client_type is not None, "native Gemini chat client is missing"
+    http = _Http(
+        _Response(
+            {
+                "candidates": [
+                    {"content": {"parts": [{"text": _content()}]}}
+                ]
+            }
+        )
+    )
+    client = client_type(
+        http,
+        api_key="server-secret",
+        model="gemini-3.5-flash-lite",
+        timeout_seconds=7,
+    )
+
+    result = await client.generate(
+        [
+            {"role": "system", "content": "fixed policy"},
+            {"role": "user", "content": "fixed evidence"},
+        ]
+    )
+
+    url, kwargs = http.calls[0]
+    assert url == (
+        "https://generativelanguage.googleapis.com/v1beta/models/"
+        "gemini-3.5-flash-lite:generateContent"
+    )
+    assert kwargs["headers"]["x-goog-api-key"] == "server-secret"
+    assert kwargs["json"]["systemInstruction"] == {
+        "parts": [{"text": "fixed policy"}]
+    }
+    assert kwargs["json"]["contents"] == [
+        {"role": "user", "parts": [{"text": "fixed evidence"}]}
+    ]
+    config = kwargs["json"]["generationConfig"]
+    assert config["thinkingConfig"] == {"thinkingLevel": "MINIMAL"}
+    assert config["responseFormat"]["text"]["mimeType"] == (
+        "application/json"
+    )
+    assert config["responseFormat"]["text"]["schema"][
+        "additionalProperties"
+    ] is False
+    assert config["maxOutputTokens"] == 1200
+    assert kwargs["timeout"] == 7
+    assert result.manual_citations[0].chunk_id == "chunk-1"
+
+
+def test_chat_composition_selects_native_gemini_and_preserves_gateway_client():
+    builder = getattr(main_v2, "_build_chat_client", None)
+    assert builder is not None, "RAG chat client composition is missing"
+    http = _Http(_Response({}))
+    gemini = SettingsV2.from_env(
+        {
+            "TWINOPS_UPSTREAM_BASE_URL": "https://upstream.invalid",
+            "TWINOPS_RAG_PROVIDER": "gemini",
+            "GEMINI_API_KEY": "gemini-secret",
+        }
+    )
+    gateway = SettingsV2.from_env(
+        {
+            "TWINOPS_UPSTREAM_BASE_URL": "https://upstream.invalid",
+            "AI_GATEWAY_API_KEY": "gateway-secret",
+        }
+    )
+
+    gemini_client = builder(http, gemini)
+    gateway_client = builder(http, gateway)
+
+    assert isinstance(gemini_client, generation_module.GeminiChatClient)
+    assert isinstance(gateway_client, ChatGatewayClient)
 
 
 @pytest.mark.asyncio

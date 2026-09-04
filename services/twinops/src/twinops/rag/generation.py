@@ -6,7 +6,10 @@ from typing import Protocol, Sequence
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-from twinops.rag.embeddings import DEFAULT_GATEWAY_BASE_URL
+from twinops.rag.embeddings import (
+    DEFAULT_GATEWAY_BASE_URL,
+    DEFAULT_GEMINI_BASE_URL,
+)
 from twinops.rag.retrieval import RetrievalResult
 
 
@@ -130,6 +133,118 @@ class ChatGatewayClient:
             raise ChatGatewayError("transport") from None
         except (KeyError, IndexError, TypeError, ValueError, ValidationError):
             raise ChatGatewayError("invalid_response") from None
+
+
+class GeminiChatClient:
+    """Native Gemini structured generation without compatibility translation."""
+
+    def __init__(
+        self,
+        http,
+        *,
+        api_key: str,
+        model: str,
+        timeout_seconds: float = 10.0,
+        base_url: str = DEFAULT_GEMINI_BASE_URL,
+    ) -> None:
+        if not api_key or not model.strip() or timeout_seconds <= 0:
+            raise ValueError("Gemini chat configuration is incomplete")
+        self._http = http
+        self._api_key = api_key
+        self.model = model
+        self._timeout_seconds = timeout_seconds
+        self._base_url = base_url.rstrip("/")
+
+    async def generate(
+        self, messages: Sequence[dict[str, str]]
+    ) -> GeneratedAssistantPayload:
+        try:
+            payload = _native_gemini_payload(messages, model=self.model)
+            response = await self._http.post(
+                f"{self._base_url}/models/{self.model}:generateContent",
+                headers={
+                    "x-goog-api-key": self._api_key,
+                    "Content-Type": "application/json",
+                },
+                json=payload,
+                timeout=self._timeout_seconds,
+            )
+            response.raise_for_status()
+            parts = response.json()["candidates"][0]["content"]["parts"]
+            if not isinstance(parts, list):
+                raise ValueError
+            content = next(
+                item["text"]
+                for item in reversed(parts)
+                if isinstance(item, dict)
+                and not item.get("thought", False)
+                and isinstance(item.get("text"), str)
+            )
+            return GeneratedAssistantPayload.model_validate_json(content)
+        except httpx.TimeoutException:
+            raise ChatGatewayError("timeout") from None
+        except httpx.HTTPStatusError as error:
+            raise ChatGatewayError(
+                "http_status",
+                status_code=error.response.status_code,
+            ) from None
+        except httpx.HTTPError:
+            raise ChatGatewayError("transport") from None
+        except (
+            KeyError,
+            IndexError,
+            StopIteration,
+            TypeError,
+            ValueError,
+            ValidationError,
+        ):
+            raise ChatGatewayError("invalid_response") from None
+
+
+def _native_gemini_payload(
+    messages: Sequence[dict[str, str]], *, model: str
+) -> dict[str, object]:
+    system_parts: list[dict[str, str]] = []
+    contents: list[dict[str, object]] = []
+    for message in messages:
+        role = message.get("role")
+        content = message.get("content")
+        if not isinstance(content, str) or not content:
+            raise ValueError("Gemini messages require non-empty text")
+        if role == "system":
+            system_parts.append({"text": content})
+        elif role in {"user", "assistant"}:
+            contents.append(
+                {
+                    "role": "model" if role == "assistant" else "user",
+                    "parts": [{"text": content}],
+                }
+            )
+        else:
+            raise ValueError("Gemini message role is unsupported")
+    if not system_parts or not contents:
+        raise ValueError("Gemini messages require system and content")
+    return {
+        "systemInstruction": {"parts": system_parts},
+        "contents": contents,
+        "generationConfig": {
+            "thinkingConfig": {
+                "thinkingLevel": (
+                    "MINIMAL"
+                    if model.startswith("gemini-3.")
+                    and model.endswith("-flash-lite")
+                    else "LOW"
+                )
+            },
+            "responseFormat": {
+                "text": {
+                    "mimeType": "application/json",
+                    "schema": _gateway_schema(),
+                }
+            },
+            "maxOutputTokens": 1200,
+        },
+    }
 
 
 def build_gateway_messages(

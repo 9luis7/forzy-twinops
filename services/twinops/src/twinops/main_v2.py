@@ -25,7 +25,7 @@ from twinops.rag.embeddings import (
     EmbeddingGatewayClient,
     GeminiEmbeddingClient,
 )
-from twinops.rag.generation import ChatGatewayClient
+from twinops.rag.generation import ChatGatewayClient, GeminiChatClient
 from twinops.rag.public_service import RagAssistantService
 from twinops.rag.repository import PostgresRagRepository, RagRepository
 from twinops.rag.request_limits import (
@@ -80,6 +80,18 @@ def _build_embedding_clients(
         )
     gateway_client = EmbeddingGatewayClient(http, **common)
     return gateway_client, gateway_client
+
+
+def _build_chat_client(http, settings: SettingsV2):
+    common = {
+        "api_key": settings.rag_api_key or "",
+        "model": settings.rag_generation_model,
+        "timeout_seconds": settings.rag_gateway_timeout_seconds,
+        "base_url": settings.rag_chat_base_url,
+    }
+    if settings.rag_provider == "gemini":
+        return GeminiChatClient(http, **common)
+    return ChatGatewayClient(http, **common)
 
 
 def create_app_v2(
@@ -208,13 +220,7 @@ def _runtime_lifespan(
                         manufacturer=settings.rag_manufacturer,
                         equipment_model=settings.rag_equipment_model,
                     ),
-                    ChatGatewayClient(
-                        http,
-                        api_key=settings.rag_api_key or "",
-                        model=settings.rag_generation_model,
-                        timeout_seconds=settings.rag_gateway_timeout_seconds,
-                        base_url=settings.rag_chat_base_url,
-                    ),
+                    _build_chat_client(http, settings),
                     query_timeout_seconds=settings.rag_query_timeout_seconds,
                 )
             if (
@@ -232,13 +238,7 @@ def _runtime_lifespan(
                     query_embeddings=query_embedding_client,
                     manufacturer=settings.rag_manufacturer,
                     equipment_model=settings.rag_equipment_model,
-                    acceptance_chat=ChatGatewayClient(
-                        http,
-                        api_key=settings.rag_api_key or "",
-                        model=settings.rag_generation_model,
-                        timeout_seconds=settings.rag_gateway_timeout_seconds,
-                        base_url=settings.rag_chat_base_url,
-                    ),
+                    acceptance_chat=_build_chat_client(http, settings),
                     query_timeout_seconds=settings.rag_query_timeout_seconds,
                 )
                 app.state.rag_document_fetcher = OfficialPdfSourceFetcher(
