@@ -6,7 +6,10 @@ The repository is the authorization, revision and immutable event boundary.
 
 import asyncio
 from datetime import datetime
+import re
 from uuid import uuid4
+
+import psycopg
 
 from twinops.contracts.models import AssetConditionAssessment
 from twinops.rag.embeddings import EmbeddingGatewayError
@@ -25,6 +28,27 @@ DEMO_TOTAL_SECONDS = 40.0
 DEMO_GENERATION_SECONDS = 30.0
 DEMO_LEASE_SECONDS = 60
 MAX_EVENT_ATTEMPTS = 3
+# SQLSTATEs are deliberately allowlisted: authentication, schema, data and
+# protocol errors are permanent even when psycopg uses OperationalError.
+_TRANSIENT_DATABASE_STATES = frozenset({
+    "08000", "08001", "08003", "08006", "08007",  # connection availability
+    "40001", "40P01", "55P03",                  # serialization/deadlock/lock
+    "57014", "57P01", "57P02", "57P03",         # timeout/server availability
+    "53300",                                    # too many connections
+})
+_PERMANENT_CONNECTION_ERROR = re.compile(
+    r"authentication|password|pg_hba\.conf|certificate verify failed|"
+    r"(?:database|role) .+ does not exist|invalid connection option|invalid dsn",
+    re.IGNORECASE,
+)
+_TRANSIENT_CONNECTION_ERROR = re.compile(
+    r"connection (?:reset|refused|timed out|is closed|is bad)|"
+    r"timeout expired|connection timeout|server closed .{0,40}connection|"
+    r"server disconnected|network is unreachable|temporary failure|"
+    r"could not (?:receive|send) data|ssl syscall error|"
+    r"ssl connection has been closed unexpectedly",
+    re.IGNORECASE,
+)
 DEMO_LIMITATIONS = (
     "Cobertura documental: motor WEG W22 (S1). O corpus não cobre a bomba (S2); "
     "orientações do motor não são procedimentos de manutenção da bomba.",
@@ -238,4 +262,19 @@ def _failure(error):
         return transient, "generation_" + error.reason
     if isinstance(error, GeneratedOutputError):
         return False, "invalid_citation"
+    if isinstance(error, psycopg.Error):
+        return _transient_database_failure(error), "retrieval_database_unavailable"
     return False, "recommendation_unavailable"
+
+
+def _transient_database_failure(error):
+    if error.sqlstate:
+        return error.sqlstate in _TRANSIENT_DATABASE_STATES
+    if not isinstance(error, psycopg.OperationalError):
+        return False
+    # libpq connection failures may omit SQLSTATE, including bad credentials.
+    # Inspect narrowly for availability signatures; never log or publish the
+    # message, which may contain connection details or credential material.
+    message = str(error)
+    return (not _PERMANENT_CONNECTION_ERROR.search(message)
+            and bool(_TRANSIENT_CONNECTION_ERROR.search(message)))

@@ -164,7 +164,12 @@ def test_new_session_performs_bounded_expiry_cleanup():
     repository, service, _, clock = setup()
     expired = service.create_run('dataset-test', 'full', 1)
     clock.now += timedelta(hours=25)
+    assert_error(410, 'run_expired', lambda: service.context(expired['runId'], expired['token']))
+    assert_error(404, 'run_not_found', lambda: service.context(expired['runId'], 'wrong-token'))
     service.create_run('dataset-test', 'full', 1)
+    # Garbage collection intentionally discards expired identities; no unbounded tombstones.
+    assert_error(404, 'run_not_found', lambda: service.context(expired['runId'], expired['token']))
+    assert_error(404, 'run_not_found', lambda: service.context(expired['runId'], 'wrong-token'))
     with repository.transaction() as connection:
         assert repository.sql(connection, 'SELECT COUNT(*) AS n FROM demo_runs').fetchone()['n'] == 1
 
@@ -375,3 +380,53 @@ def test_import_rejects_nonfinite(tmp_path):
     path.write_text('\n'.join(';'.join(row) for row in rows), encoding='utf-8')
     with pytest.raises(ValueError, match='non-finite'):
         read_history(path)
+
+
+def test_import_cli_sanitizes_missing_private_source_in_subprocess(tmp_path):
+    import os
+    import subprocess
+    import sys
+    root = Path(__file__).resolve().parents[4]
+    sentinel = 'PRIVATE-SOURCE-PATH-SENTINEL'
+    source = tmp_path / sentinel / 'absent.csv'
+    environment = dict(os.environ, DEMO_DATABASE_URL='sqlite:///:memory:')
+    result = subprocess.run([sys.executable, str(root / 'scripts/import_demo_history.py'), str(source),
+                             '--expected-hash', 'f' * 64], capture_output=True, text=True,
+                            env=environment, check=False)
+    assert result.returncode == 1
+    assert result.stdout == ''
+    assert result.stderr.strip() == 'demo_import_failed'
+    assert sentinel not in result.stdout + result.stderr
+    assert 'Traceback' not in result.stderr
+
+
+def test_import_cli_sanitizes_native_database_diagnostics(monkeypatch, capsys):
+    import scripts.import_demo_history as command_module
+    import sys
+    def broken_repository(*args, **kwargs):
+        raise RuntimeError('postgresql://PRIVATE-DSN-SENTINEL:secret@private-host/db')
+    monkeypatch.setenv('DEMO_DATABASE_URL', 'postgresql://PRIVATE-DSN-SENTINEL:secret@private-host/db')
+    monkeypatch.setattr(command_module, 'DemoRepository', broken_repository)
+    monkeypatch.setattr(sys, 'argv', ['import_demo_history.py', 'unused', '--expected-hash', 'f' * 64])
+    assert command_module.main() == 1
+    output = capsys.readouterr()
+    assert output.out == ''
+    assert output.err.strip() == 'demo_import_failed'
+    assert 'PRIVATE-DSN-SENTINEL' not in output.err
+
+
+def test_import_cli_success_prints_only_public_metadata(tmp_path):
+    import os
+    import subprocess
+    import sys
+    root = Path(__file__).resolve().parents[4]
+    source = tmp_path / 'PRIVATE-SOURCE-PATH-SENTINEL.csv'
+    source.write_text('\n'.join(';'.join(row) for row in history_rows()), encoding='utf-8')
+    environment = dict(os.environ, DEMO_DATABASE_URL='sqlite:///:memory:')
+    result = subprocess.run([sys.executable, str(root / 'scripts/import_demo_history.py'), str(source),
+                             '--expected-hash', sha256(source.read_bytes()).hexdigest(), '--initialize'],
+                            capture_output=True, text=True, env=environment, check=False)
+    assert result.returncode == 0
+    assert result.stderr == ''
+    assert json.loads(result.stdout)['pairCount'] == 2
+    assert 'PRIVATE' not in result.stdout

@@ -1,7 +1,9 @@
 import asyncio
 from copy import deepcopy
+import json
 from uuid import uuid4
 
+import psycopg
 import pytest
 
 from twinops.rag.demo_service import (
@@ -223,6 +225,97 @@ async def test_provider_failure_taxonomy_stays_sanitized(reason, status, retryab
     assert event["status"] == ("pending" if retryable else "degraded")
     assert event["errorCode"] == "generation_" + reason
     assert event["recommendation"] is None
+
+
+@pytest.mark.asyncio
+async def test_temporary_postgres_retrieval_failure_retries_then_ready_with_valid_citation():
+    retriever = _Retriever(failure=psycopg.OperationalError("temporary connection reset: private-marker"))
+    repo, chat = Repo(), _Chat()
+    assistant = DemoAssistantService(repo, DemoRagAssistantService(retriever, chat))
+    first = await assistant.recommendation("run", "secret", "event-1")
+    assert first["status"] == "pending"
+    assert first["retryable"] is True
+    assert first["attempts"] == 1
+    assert first["errorCode"] == "retrieval_database_unavailable"
+    assert "private-marker" not in json.dumps(first)
+    assert not chat.calls
+    retriever.failure = None
+    ready = await assistant.recommendation("run", "secret", "event-1")
+    assert ready["status"] == "ready"
+    assert ready["attempts"] == 2
+    assert ready["retryable"] is False
+    assert ready["errorCode"] is None
+    assert ready["recommendation"]["fallbackUsed"] is False
+    manual = [citation for citation in ready["recommendation"]["citations"]
+              if citation["type"] == "manual"]
+    assert manual[0]["chunkId"] == "chunk-1"
+    assert manual[0]["excerpt"] == "Inspect bearing lubrication before startup."
+    assert len(retriever.calls) == 2
+    assert len(chat.calls) == 1
+    assert await assistant.recommendation("run", "secret", "event-1") == ready
+
+
+@pytest.mark.asyncio
+async def test_persistent_postgres_retrieval_failure_becomes_terminal_on_third_attempt():
+    retriever = _Retriever(failure=psycopg.OperationalError("connection reset by peer"))
+    chat = _Chat()
+    assistant = DemoAssistantService(Repo(), DemoRagAssistantService(retriever, chat))
+    for attempt in (1, 2, 3):
+        event = await assistant.recommendation("run", "secret", "event-1")
+        assert event["attempts"] == attempt
+        assert event["retryable"] is (attempt < 3)
+        assert event["status"] == ("pending" if attempt < 3 else "degraded")
+    assert event["errorCode"] == "retrieval_database_unavailable"
+    assert event["recommendation"] is None
+    assert await assistant.recommendation("run", "secret", "event-1") == event
+    assert len(retriever.calls) == 3
+    assert not chat.calls
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("error_type", [
+    psycopg.errors.ConnectionFailure, psycopg.errors.ConnectionDoesNotExist,
+    psycopg.errors.QueryCanceled, psycopg.errors.LockNotAvailable,
+    psycopg.errors.SerializationFailure, psycopg.errors.DeadlockDetected,
+    psycopg.errors.AdminShutdown, psycopg.errors.CrashShutdown,
+    psycopg.errors.CannotConnectNow, psycopg.errors.TooManyConnections,
+])
+async def test_temporary_postgres_sqlstate_is_retryable(error_type):
+    retriever = _Retriever(failure=error_type("private-marker"))
+    assistant = DemoAssistantService(Repo(), DemoRagAssistantService(retriever, _Chat()))
+    event = await assistant.recommendation("run", "secret", "event-1")
+    assert event["status"] == "pending"
+    assert event["retryable"] is True
+    assert event["errorCode"] == "retrieval_database_unavailable"
+    assert "private-marker" not in json.dumps(event)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", [
+    psycopg.errors.InvalidPassword("private-marker"),
+    psycopg.errors.InvalidAuthorizationSpecification("private-marker"),
+    psycopg.errors.UndefinedTable("private-marker"),
+    psycopg.errors.InvalidSchemaName("private-marker"),
+    psycopg.errors.InsufficientPrivilege("private-marker"),
+    psycopg.errors.InvalidTextRepresentation("private-marker"),
+    psycopg.errors.ProtocolViolation("private-marker"),
+    psycopg.OperationalError('connection reset: password authentication failed for user "private-marker"'),
+    psycopg.OperationalError('connection reset: no pg_hba.conf entry for host "private-marker"'),
+    psycopg.OperationalError('connection reset: database "private-marker" does not exist'),
+    psycopg.OperationalError("private-marker unspecified operational error"),
+])
+async def test_permanent_or_unclassified_postgres_error_is_immediately_terminal(failure):
+    retriever, chat = _Retriever(failure=failure), _Chat()
+    assistant = DemoAssistantService(Repo(), DemoRagAssistantService(retriever, chat))
+    event = await assistant.recommendation("run", "secret", "event-1")
+    assert event["status"] == "degraded"
+    assert event["retryable"] is False
+    assert event["attempts"] == 1
+    assert event["errorCode"] == "retrieval_database_unavailable"
+    assert "private-marker" not in json.dumps(event)
+    assert await assistant.recommendation("run", "secret", "event-1") == event
+    assert len(retriever.calls) == 1
+    assert not chat.calls
 
 
 @pytest.mark.asyncio
