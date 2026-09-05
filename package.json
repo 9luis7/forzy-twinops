@@ -24,7 +24,7 @@
     "three": "0.169.0"
   },
   "devDependencies": {
-    "@playwright/test": "1.47.2",
+    "@playwright/test": "1.63.0",
     "@testing-library/jest-dom": "6.6.3",
     "@testing-library/react": "16.1.0",
     "@vitejs/plugin-react": "^4.3.1",
