@@ -2,6 +2,8 @@
 
 Status: execução autorizada pelo goal. Base: d29ea706969bd39ab92ca9d03acee05f35a66ca6. Branch: luis/twin-3d-replay-demo.
 
+Atualização aprovada em 05/09: seguir a [meta de entrega hospedada com custo zero](2026-09-05-hosted-zero-cost-goal.md). Supabase Free dedicado à demonstração, Neon/live preservados, inicialização e corpus demo independentes, entrega e congelamento até 08/09 para o pitch de 10/09. Essa decisão substitui abaixo a exigência de usar o mesmo PostgreSQL/corpus físico; contratos e critérios de aceite permanecem.
+
 ## Objetivo e aceite
 
 Publicar `/demo` no projeto Vercel existente com histórico real chegando pelo backend, avaliações causais por sensor, 3D e gráficos na mesma revisão, e resposta real do RAG a um evento real com citações. O fluxo live permanece compatível. O usuário autorizou implementação, dependências, subagentes independentes, migrations aditivas, importação, Git/PR e publicação. Coleta semanal, ordens de serviço e simulação mecânica não fazem parte deste objetivo.
@@ -10,7 +12,7 @@ Publicar `/demo` no projeto Vercel existente com histórico real chegando pelo b
 
 - Fonte: 7.183 pares e 14.366 leituras, arquivo OOXML com extensão .csv; preservar valores, ordem, timestamps, repetições e lacunas. Nunca incluir arquivo original, PDI, credenciais ou caminhos privados nas respostas HTTP, logs, Git ou bundle.
 - S1 = canal 1 / motor junto ao acoplamento; S2 = canal 2 / bomba junto ao acoplamento. Posições assumidas para demonstração, não validadas fisicamente.
-- PostgreSQL existente; novas tabelas `demo_*`, migração 004 aditiva. SQLite permitido somente como implementação local/testes. Sessões com token opaco, validade de 24 h, isolamento, comandos idempotentes e concorrência atômica.
+- PostgreSQL Supabase Free dedicado à demonstração; tabelas `demo_*` e estruturas RAG aditivas apenas nesse destino. Preservar Neon/live e permitir sua indisponibilidade sem abortar a demo. SQLite permitido somente como implementação local/testes. Sessões com token opaco, validade de 24 h, isolamento, comandos idempotentes e concorrência atômica.
 - Roteiro guiado: linhas de dados 141..440 (sem as três linhas de cabeçalho), 300 pares. Modo livre: todo o conjunto. Ritmos 1, 2 e 5 pares por segundo; processar cada par mesmo em lote.
 - `observedAt` original e `receivedAt` atual separados. Cálculos, persistência de condição e gap usam relógio original; atividade de transporte usa chegada atual. Sem dados futuros. Lacunas >15 s aparecem nos gráficos e invalidam continuidade; não precisam esperar o tempo real no replay.
 - Repetições continuam no histórico/progresso. Avaliar prefixo bruto, incluindo repetições, quando a tupla de medidas muda; reaproveitar última avaliação no máximo 30 s de relógio original, invalidando na lacuna. Não remover duplicados antes de calcular cadência.
@@ -18,7 +20,7 @@ Publicar `/demo` no projeto Vercel existente com histórico real chegando pelo b
 - ML existente com artefatos e hashes fixados. Aceleração é exibida, não usada no score. Score relativo ao baseline, não probabilidade de falha ou validação de antecipação fora da amostra.
 - Uma revisão atômica alimenta modelo 3D, gráficos, avaliações e contexto manual. Eventos guardam contexto imutável; resposta atrasada nunca assume ser avaliação atual.
 - RAG automático: watch sustentado >=5 s originais e >=3 observações novas; escalada a alert respeita persistência do scorer (30 s); recuperação normal >=10 s originais e >=3 observações novas. Dados insuficientes não significam recuperação. Deduplicar por episódio, não por recibo.
-- RAG tem requisição independente de telemetria, um processamento automático por sessão, lease e recuperação após interrupção. Orçamento demo total 40 s / geração até 30 s; preservar orçamento live. Mesmo provedor e corpus WEG existentes; não afirmar cobertura documental de bomba.
+- RAG tem requisição independente de telemetria, um processamento automático por sessão, lease e recuperação após interrupção. Orçamento demo total 40 s / geração até 30 s; preservar orçamento live. Mesmo provedor Gemini, com plano gratuito confirmado, e conteúdo WEG existente, reindexado no destino demo com nova identidade verificável; não afirmar cobertura documental de bomba.
 - Estados terminais de recomendação imutáveis; falhas transitórias recuperáveis antes da finalização, sem respostas duplicadas. Geração real com citação válida é necessária ao aceite; fallback isolado não basta.
 
 ## Contrato compartilhado demo v1

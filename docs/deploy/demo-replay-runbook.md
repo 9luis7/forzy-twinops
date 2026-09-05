@@ -28,13 +28,23 @@ S1 representa o canal 1 na carcaça do motor, junto ao acoplamento; S2 represent
 
 ## Operação e recuperação
 
-`DEMO_ENABLED=true` habilita as rotas. A migração aditiva `004_demo_replay_v1.sql` e a importação devem existir antes de habilitar uma instalação nova. O ambiente atual usa o PostgreSQL, Gemini e corpus já existentes. O orçamento específico do RAG demo é 40 s no total, até 30 s na geração, dentro do limite da função de 60 s; o orçamento live permanece preservado.
+`DEMO_ENABLED=true` habilita as rotas. `DEMO_DATABASE_URL` seleciona opcionalmente um PostgreSQL dedicado para replay e corpus RAG da demonstração. Sem essa variável, o comportamento compartilhado anterior usa `DATABASE_URL`. A decisão de 05/09 é usar Supabase Free dedicado, mantendo `DATABASE_URL` no Neon e a entrega hospedada no projeto Vercel existente, conforme a [meta atualizada](../superpowers/plans/2026-09-05-hosted-zero-cost-goal.md).
+
+Para Supabase, usar o **session pooler na porta 5432**, com TLS explícito. A variável fornecida pela integração como `DEMO_SUPABASE_POSTGRES_URL_NON_POOLING` utiliza esse endpoint; conferir host, usuário vinculado ao projeto, porta e `sslmode` antes de configurar `DEMO_DATABASE_URL`. Não usar o transaction pooler 6543 com os drivers atuais. A integração deve ser conectada com prefixo próprio e escopo Preview primeiro, preservando a conexão live; nenhuma variável de conexão pode usar prefixo `VITE_`.
+
+No destino dedicado, aplicar `003_rag_asset_aware_v1.sql`, `004_demo_replay_v1.sql` e `005_demo_private_access.sql` na mesma transação antes de importar. A terceira migração habilita RLS e revoga privilégios de `PUBLIC`, `anon` e `authenticated` apenas nas oito tabelas demo/RAG: o acesso ocorre pelo backend e pelos tokens de sessão, sem disponibilizar o corpus ou o histórico completo pela Data API do Supabase. O usuário proprietário PostgreSQL usado pelo backend conserva seu acesso. Não aplicar esse procedimento ao Neon ou a outro projeto Supabase.
+
+Com uma conexão demo distinta e a demo habilitada, o startup não inicializa o Neon. Uma rota live tenta inicializá-lo sob demanda; falha retorna `503 live_unavailable`, `Cache-Control: no-store` e `Retry-After: 30`. Depois desse intervalo uma nova solicitação pode tentar recuperar o live. O replay e a busca no corpus dedicado permanecem independentes, sem substituir um corpus ausente pelo corpus live.
+
+Gemini direto e os modelos existentes continuam em uso. Confirmar que o projeto exato da chave está no plano gratuito antes de embeddings ou geração. Enquanto essa confirmação/credencial faltar, manter `TWINOPS_RAG_ENABLED=false` e `RAG_ADMIN_ENABLED=false` na branch do novo Preview. A disponibilidade de um modelo Free não comprova o plano da conta; uma chave Sensitive já salva na Vercel pode não ser recuperável por `env pull`. Não colocar chaves no Git ou em mensagens.
+
+O orçamento específico do RAG demo é 40 s no total, até 30 s na geração, dentro do limite da função de 60 s; o orçamento live permanece preservado. A reconstrução do índice WEG no destino dedicado utiliza IDs novos, com verificação do mesmo PDF, páginas e hashes. Integridade da indexação e testes com provedor simulado não substituem o aceite publicado com geração real.
 
 A função usa `gru1` (São Paulo), próxima ao PostgreSQL existente em `sa-east-1`. Cada avanço confirma várias operações na mesma transação; manter função e banco próximos evita acumular latência entre regiões. A região está versionada em `vercel.json` e só passa a valer em um novo deployment. Validar a duração HTTP e o roteiro completo no Preview antes de promover a versão final.
 
 O dataset é imutável e fica em cache na instância do repositório, limitado a duas entradas e 16 MiB de JSON UTF-8. Cada consumidor recebe uma cópia isolada; sessões, tokens, revisões, comandos e eventos continuam dependendo do banco. Isso evita transferir novamente os aproximadamente 5,33 MB do histórico em cada avanço de uma instância aquecida. Instâncias novas e datasets removidos do cache fazem uma nova leitura; o limite não inclui objetos temporários decodificados nem o overhead do interpretador.
 
-Se o PostgreSQL recusar conexões com `Your project has exceeded the data transfer quota`, suspender testes publicados e restabelecer a cota na instalação Neon existente antes de continuar. Cache e rollback de código não liberam uma cota já esgotada. Confirmar o acesso ao dataset e validar o roteiro no novo deployment depois da recuperação; evidências anteriores não comprovam a disponibilidade atual.
+Uma cota esgotada no Neon impede o live, mas não deve impedir o cenário demonstrativo configurado no banco dedicado. Cache e rollback de código não liberam cotas. Se o banco demo recusar conexões por cota, suspender os testes e verificar consumo/limites sem contratar upgrades ou autorizar cobrança. Evidências de execuções anteriores não comprovam a disponibilidade atual. O custo adicional máximo aprovado é zero.
 
 Sessões duram 24 h e usam token separado por aba. Uma única requisição de avanço pode ficar pendente por sessão. Conflitos de revisão exigem leitura do contexto; não repetir automaticamente um avanço ambíguo. Todos os IDs de comandos ficam registrados durante a sessão, com respostas completas dos oito mais recentes. Repetir um ID antigo retorna `command_response_expired` sem reexecutar.
 
@@ -50,13 +60,25 @@ Executar na raiz do checkout, com as dependências Python/Node instaladas e `PYT
 python -m pytest services/twinops/tests -q
 npm.cmd run test:run
 npm.cmd run build
-python scripts/verify_demo_import.py --source <arquivo-original> --env-file <env-local> --environment preview --output <evidencia.json>
-python scripts/verify_demo_postgres.py --env-file <env-local> --output <evidencia.json>
+python scripts/verify_demo_import.py --source <arquivo-original> --env-file <env-local> --environment preview --demo-project-ref <projeto-Supabase-dedicado> --output <evidencia-importacao.json>
+python scripts/verify_demo_postgres.py --env-file <env-local> --demo-project-ref <mesmo-projeto> --output <evidencia-sessoes.json>
+python scripts/prepare_demo_rag.py <manual-original.pdf> --output <novo-preflight-offline.json>
 ```
 
-Usar `--initialize` no importador somente quando a migração demo ainda precisar ser aplicada. Os scripts não imprimem DSNs, chaves ou conteúdo bruto. A verificação PostgreSQL cria somente sessões demo próprias. Não apontar fixtures destrutivas de testes para o banco compartilhado.
+No modo dedicado, os verificadores exigem `DEMO_DATABASE_URL` compatível com o projeto informado e nunca abrem a conexão live. A evidência declara explicitamente que o fingerprint live não foi reconsultado; conferir separadamente a preservação da configuração Neon. Sem `--demo-project-ref`, os scripts mantêm o modo legado compartilhado e suas verificações de fingerprint.
 
-Evidências versionadas: `demo-replay-import-evidence.json` comprova leitura exata e importação idempotente, com fingerprint live idêntico antes/depois. `demo-replay-postgres-evidence.json` comprova três sessões simultâneas, 30 posições comparáveis em 1/2/5 pares/s, scores/evidências/eventos iguais e comando concorrente aplicado uma única vez. O aceite publicado deve adicionar URL, SHA, resposta real sem fallback e citações documentais válidas.
+Usar `--initialize` no importador apenas em destinos cujo esquema demo ainda precise ser aplicado; no Supabase dedicado, aplicar primeiro o conjunto 003/004/005 para preservar o acesso privado desde o início. Os scripts não imprimem DSNs, chaves ou conteúdo bruto. A verificação PostgreSQL cria somente sessões demo próprias. O teste de RLS roda exclusivamente no PostgreSQL descartável do CI; nunca apontar fixtures destrutivas ao banco hospedado.
+
+Depois de confirmar a conta Free e disponibilizar a credencial pelo canal privado, executar a indexação e a publicação separadamente, mantendo o mesmo UUID novo nas repetições:
+
+```text
+python scripts/prepare_demo_rag.py <manual-original.pdf> --execute --expected-project-ref <projeto-Supabase-dedicado> --corpus-id <novo-UUID4> --gemini-free-tier-verified --output <nova-evidencia-indexacao.json>
+python scripts/prepare_demo_rag.py <manual-original.pdf> --execute --publish --expected-project-ref <mesmo-projeto> --corpus-id <mesmo-UUID4> --gemini-free-tier-verified --output <nova-evidencia-publicacao.json>
+```
+
+`--gemini-free-tier-verified` registra uma atestação do operador; não consulta nem altera o faturamento. O script exige conta verificada antes desse parâmetro, usa Gemini direto sem fallback pago e não faz retry automático de cota. O preflight padrão é offline. A receita não aplica migrations e exige arquivo de evidência novo, para preservar resultados anteriores.
+
+Evidências anteriores ao bloqueio Neon: `demo-replay-import-evidence.json` registra leitura exata e importação idempotente, com fingerprint live idêntico antes/depois; `demo-replay-postgres-evidence.json` registra três sessões simultâneas, 30 posições comparáveis em 1/2/5 pares/s e comando concorrente aplicado uma única vez. As novas evidências operacionais da base dedicada ficam em arquivos privados ignorados pelo Git, com prefixo `demo-replay-supabase-`, sem reinterpretar a evidência histórica como leitura live atual. Não incluir esses artefatos no repositório público. O aceite publicado deve registrar privadamente URL, SHA, resposta real sem fallback e citações documentais válidas.
 
 ## Rollback
 
@@ -66,4 +88,4 @@ Deployment anterior preservado: `dpl_Hyb5X1iSfwRvmiUDYX1sudBFpLmB`, URL `https:/
 vercel rollback https://forzy-twinops-4w9ptjani-9luis7s-projects.vercel.app --yes
 ```
 
-Alternativamente, configurar `DEMO_ENABLED=false` e publicar um novo deployment. Alterar a variável sozinha não modifica deployments imutáveis já publicados. As tabelas demo são aditivas e podem permanecer; rollback não precisa apagar dados nem alterar tabelas live. A correção da coleta semanal e integrações com ordens de serviço ficam fora desta entrega.
+Alternativamente, configurar `DEMO_ENABLED=false` e publicar um novo deployment. Alterar a variável sozinha não modifica deployments imutáveis já publicados. Desabilitar a demo ou voltar ao deployment anterior restaura a dependência original do Neon; isso não recupera uma conexão ainda bloqueada por cota. As tabelas dedicadas podem permanecer e o rollback não precisa apagar dados ou alterar tabelas live. A correção da coleta semanal e integrações com ordens de serviço ficam fora desta entrega.

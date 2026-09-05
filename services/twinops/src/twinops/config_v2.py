@@ -86,7 +86,7 @@ def normalize_https_origin(value: str) -> str:
     return f"https://{authority}"
 
 
-def is_secure_pooled_database_url(value: str) -> bool:
+def is_secure_pooled_database_url(value: str, *, known_provider_only: bool = False) -> bool:
     """Return whether a libpq URI selects one secure mode on a pooled host."""
 
     if (
@@ -114,10 +114,33 @@ def is_secure_pooled_database_url(value: str) -> bool:
         return False
 
     ssl_modes = [query_value for name, query_value in query if name == "sslmode"]
+    hostname = (parsed.hostname or "").lower()
+    supabase_pooler = bool(re.fullmatch(
+        r"aws-[0-9]+-[a-z0-9-]+\.pooler\.supabase\.com", hostname
+    ))
+    # Session pooling preserves the drivers' prepared-statement behavior.
+    # Transaction pooling on 6543 requires a separate driver configuration.
+    # Connection-target overrides in URI query parameters must not bypass it.
+    safe_query = all(
+        name in {"sslmode", "channel_binding", "connect_timeout", "application_name"}
+        for name, _ in query
+    )
+    supabase_safe = (
+        supabase_pooler
+        and port in (None, 5432)
+        and safe_query
+    )
+    if known_provider_only and not (
+        supabase_safe
+        or (hostname.endswith(".neon.tech") and "-pooler" in hostname.split(".")[0]
+            and port in (None, 5432)
+            and safe_query)
+    ):
+        return False
     return (
         parsed.scheme in {"postgres", "postgresql"}
         and parsed.hostname is not None
-        and "-pooler" in parsed.hostname.lower()
+        and ("-pooler" in hostname or supabase_safe)
         and not parsed.fragment
         and (port is None or 1 <= port <= 65535)
         and len(ssl_modes) == 1
@@ -128,7 +151,8 @@ def is_secure_pooled_database_url(value: str) -> bool:
 @dataclass(frozen=True)
 class SettingsV2:
     upstream_base_url: str
-    database_url: str | None = None
+    database_url: str | None = field(default=None, repr=False)
+    demo_database_url: str | None = field(default=None, repr=False)
     database_path: Path = Path("var/twinops.sqlite3")
     asset_id: str = "forzy-motor-01"
     poll_interval_seconds: float = 5.0
@@ -153,6 +177,12 @@ class SettingsV2:
     rag_equipment_model: str | None = None
 
     def __post_init__(self) -> None:
+        if self.demo_database_url is not None and not is_secure_pooled_database_url(
+            self.demo_database_url, known_provider_only=True
+        ):
+            raise ValueError(
+                "DEMO_DATABASE_URL must use a pooled PostgreSQL host with one safe sslmode"
+            )
         try:
             ZoneInfo(self.timezone_name)
         except (ZoneInfoNotFoundError, ValueError):
@@ -254,6 +284,7 @@ class SettingsV2:
         return cls(
             upstream_base_url=upstream_base_url,
             database_url=env.get("DATABASE_URL") or None,
+            demo_database_url=env.get("DEMO_DATABASE_URL") or None,
             database_path=Path(env.get("TWINOPS_DATABASE_PATH", "var/twinops.sqlite3")),
             asset_id=env.get("TWINOPS_ASSET_ID", "forzy-motor-01"),
             poll_interval_seconds=poll_interval_seconds,
@@ -319,3 +350,14 @@ class SettingsV2:
                 "DATABASE_URL must use a pooled PostgreSQL host with one safe sslmode"
             )
         return self
+
+    @property
+    def effective_demo_database_url(self) -> str | None:
+        return self.demo_database_url or self.database_url
+
+    @property
+    def has_dedicated_demo_database(self) -> bool:
+        return bool(
+            self.demo_enabled and self.demo_database_url
+            and self.demo_database_url != self.database_url
+        )

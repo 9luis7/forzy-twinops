@@ -7,7 +7,7 @@ from pathlib import Path
 from time import perf_counter
 from uuid import uuid4
 
-from scripts.verify_demo_import import load_environment
+from scripts.verify_demo_import import dedicated_demo_url, load_environment
 from twinops.demo.repository import DemoError, DemoRepository
 from twinops.demo.service import DemoService
 from twinops.ml.runtime import load_assessment_scorer
@@ -31,9 +31,12 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--env-file", required=True)
     parser.add_argument("--output", required=True)
+    parser.add_argument("--demo-project-ref", help="Use only the explicitly named dedicated demo database")
     args = parser.parse_args()
     settings = load_environment(args.env_file)
-    repository = DemoRepository(settings["DATABASE_URL"], initialize=False)
+    url = (dedicated_demo_url(settings, args.demo_project_ref)
+           if args.demo_project_ref is not None else settings["DATABASE_URL"])
+    repository = DemoRepository(url, initialize=False)
     scorer = load_assessment_scorer(
         settings["TWINOPS_ML_ARTIFACT_PATH"],
         expected_manifest_hash=settings["TWINOPS_ML_MANIFEST_HASH"],
@@ -98,7 +101,9 @@ def main():
     for result in results:
         result.pop("signatures")
     report = {
-        "verifiedAt": datetime.now(timezone.utc).isoformat(), "database": "existing-postgresql",
+        "verifiedAt": datetime.now(timezone.utc).isoformat(),
+        "database": "dedicated-demo" if args.demo_project_ref else "existing-postgresql",
+        "demoProjectRef": args.demo_project_ref,
         "modelManifestHash": settings["TWINOPS_ML_MANIFEST_HASH"],
         "modelHash": settings["TWINOPS_ML_MODEL_HASH"], "concurrentSessions": 3,
         "matchedSourceCursorsAcrossAllRates": list(range(10, 301, 10)),

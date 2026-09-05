@@ -3,10 +3,13 @@
 from collections.abc import Callable, Mapping
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
+import asyncio
 import logging
 import os
+from time import monotonic
 
 import httpx
+import psycopg
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
@@ -51,6 +54,54 @@ class _UnavailableAssessmentScorer:
 class _UnavailableRefreshService:
     async def refresh(self, now):
         raise RuntimeError("application_not_started")
+
+
+class _LiveAvailability:
+    """Lazy live initialization isolates a dedicated demo and permits recovery."""
+
+    retry_seconds = 30
+
+    def __init__(self, repository: TelemetryRepositoryV2):
+        self.repository = repository
+        self.ready = False
+        self.retry_at = 0.0
+        self.lock = asyncio.Lock()
+
+    def failed(self, error: Exception) -> None:
+        self.ready = False
+        self.retry_at = monotonic() + self.retry_seconds
+        logging.getLogger("twinops.api").warning(
+            "live_database_unavailable error_type=%s", type(error).__name__
+        )
+
+    async def ensure_ready(self) -> bool:
+        if self.ready:
+            return True
+        if monotonic() < self.retry_at:
+            return False
+        async with self.lock:
+            if self.ready:
+                return True
+            if monotonic() < self.retry_at:
+                return False
+            try:
+                await asyncio.to_thread(self.repository.initialize)
+            except Exception as error:
+                self.failed(error)
+                return False
+            self.ready = True
+            return True
+
+
+def _is_live_database_route(path: str) -> bool:
+    asset_prefix = f'/api/v2/assets/{PUBLIC_ASSET_ID}/'
+    return (
+        path == '/api/v2/integration/health'
+        or path.startswith('/api/v2/admin/rag/')
+        or (path.startswith(asset_prefix) and path[len(asset_prefix):] in {
+            'snapshot', 'twin-context', 'history', 'refresh', 'assistant/query',
+        })
+    )
 
 
 def utc_now() -> datetime:
@@ -125,6 +176,7 @@ def create_app_v2(
     app.state.rag_assistant_service = rag_assistant_service
     app.state.demo_service = demo_service
     app.state.demo_assistant_service = demo_assistant_service
+    app.state.live_availability = None
     app.include_router(create_v2_router())
     if settings.demo_enabled:
         app.include_router(create_demo_router())
@@ -133,6 +185,21 @@ def create_app_v2(
     if settings.vercel_environment == "preview" and settings.rag_admin_enabled:
         app.add_middleware(RagAdminUploadLimitMiddleware)
         app.include_router(create_rag_admin_router())
+
+    @app.middleware('http')
+    async def isolate_live_database(request: Request, call_next):
+        availability = app.state.live_availability
+        if availability is None or not _is_live_database_route(request.url.path):
+            return await call_next(request)
+        if await availability.ensure_ready():
+            try:
+                return await call_next(request)
+            except psycopg.Error as error:
+                availability.failed(error)
+        return JSONResponse(
+            status_code=503, content={"detail": "live_unavailable"},
+            headers={"Cache-Control": "no-store", "Retry-After": str(availability.retry_seconds)},
+        )
 
     @app.exception_handler(Exception)
     async def unexpected_error(request: Request, exc: Exception):
@@ -159,6 +226,7 @@ def create_app_v2_from_env(
         settings = settings.for_deploy()
     repository: TelemetryRepositoryV2
     rag_repository: RagRepository | None = None
+    demo_rag_repository: RagRepository | None = None
     if settings.database_url is not None:
         connect_timeout_seconds = max(
             1, int(settings.rag_query_timeout_seconds)
@@ -178,6 +246,12 @@ def create_app_v2_from_env(
         )
     else:
         repository = SQLiteTelemetryRepositoryV2(settings.database_path)
+    if settings.has_dedicated_demo_database:
+        demo_rag_repository = PostgresRagRepository(
+            settings.demo_database_url,
+            connect_timeout_seconds=max(1, int(settings.rag_query_timeout_seconds)),
+            statement_timeout_ms=max(1, int(settings.rag_query_timeout_seconds * 1_000)),
+        )
 
     app = create_app_v2(
         repository=repository,
@@ -187,7 +261,7 @@ def create_app_v2_from_env(
         clock=clock,
     )
     app.router.lifespan_context = _runtime_lifespan(
-        settings, repository, rag_repository
+        settings, repository, rag_repository, demo_rag_repository
     )
     return app
 
@@ -196,10 +270,14 @@ def _runtime_lifespan(
     settings: SettingsV2,
     repository: TelemetryRepositoryV2,
     rag_repository: RagRepository | None,
+    demo_rag_repository: RagRepository | None = None,
 ):
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        repository.initialize()
+        if settings.has_dedicated_demo_database:
+            app.state.live_availability = _LiveAvailability(repository)
+        else:
+            repository.initialize()
         scorer = _load_configured_scorer(settings)
         async with httpx.AsyncClient() as http:
             app.state.refresh_service = RefreshService(
@@ -218,7 +296,7 @@ def _runtime_lifespan(
             demo_repository = None
             if settings.demo_enabled:
                 demo_repository = DemoRepository(
-                    settings.database_url or (
+                    settings.effective_demo_database_url or (
                         "sqlite:///" + str(settings.database_path.with_name("demo.sqlite3"))
                     ),
                     clock=app.state.clock,
@@ -228,7 +306,10 @@ def _runtime_lifespan(
                 )
             document_embedding_client = None
             query_embedding_client = None
-            if rag_repository is not None:
+            demo_corpus_repository = (
+                demo_rag_repository if settings.has_dedicated_demo_database else rag_repository
+            )
+            if rag_repository is not None or demo_corpus_repository is not None:
                 document_embedding_client, query_embedding_client = (
                     _build_embedding_clients(http, settings)
                 )
@@ -249,18 +330,21 @@ def _runtime_lifespan(
                     _build_chat_client(http, settings),
                     query_timeout_seconds=settings.rag_query_timeout_seconds,
                 )
-                if demo_repository is not None:
-                    app.state.demo_assistant_service = DemoAssistantService(
-                        demo_repository,
-                        DemoRagAssistantService(
-                            HybridRetriever(
-                                rag_repository, query_embedding_client,
-                                manufacturer=settings.rag_manufacturer,
-                                equipment_model=settings.rag_equipment_model,
-                            ),
-                            _build_chat_client(http, settings, timeout_seconds=30.0),
+            if (
+                settings.rag_enabled and demo_repository is not None
+                and demo_corpus_repository is not None and query_embedding_client is not None
+            ):
+                app.state.demo_assistant_service = DemoAssistantService(
+                    demo_repository,
+                    DemoRagAssistantService(
+                        HybridRetriever(
+                            demo_corpus_repository, query_embedding_client,
+                            manufacturer=settings.rag_manufacturer,
+                            equipment_model=settings.rag_equipment_model,
                         ),
-                    )
+                        _build_chat_client(http, settings, timeout_seconds=30.0),
+                    ),
+                )
             if (
                 rag_repository is not None
                 and settings.vercel_environment == "preview"
@@ -293,6 +377,7 @@ def _runtime_lifespan(
                 app.state.rag_assistant_service = None
                 app.state.demo_service = None
                 app.state.demo_assistant_service = None
+                app.state.live_availability = None
 
     return lifespan
 

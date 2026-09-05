@@ -157,4 +157,4 @@ jobs:
         run: python -c "import os,pathlib,psycopg; sql=pathlib.Path('services/twinops/migrations/003_rag_asset_aware_v1.sql').read_text(); c=psycopg.connect(os.environ['TEST_DATABASE_URL']); c.execute(sql); c.commit(); c.close()"
 
       - name: Run real RAG repository integration test
-        run: python -m pytest services/twinops/tests/rag/test_pgvector_integration.py -p no:cacheprovider -q
+        run: python -m pytest services/twinops/tests/rag/test_pgvector_integration.py services/twinops/tests/demo/test_private_access_postgres.py -p no:cacheprovider -q

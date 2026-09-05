@@ -4,6 +4,8 @@ from datetime import datetime, timezone
 import hashlib
 import json
 from pathlib import Path
+import re
+from urllib.parse import parse_qsl, unquote, urlsplit
 
 import psycopg
 
@@ -37,16 +39,42 @@ def live_fingerprint(connection):
     }
 
 
+def dedicated_demo_url(settings, project_ref):
+    """Select only the explicitly named dedicated Supabase destination."""
+    if not isinstance(project_ref, str) or re.fullmatch(r"[a-z0-9]{20}", project_ref) is None:
+        raise ValueError("expected_demo_project_ref_required")
+    url = settings.get("DEMO_DATABASE_URL", "")
+    try:
+        parsed = urlsplit(url)
+        if (
+            parsed.scheme not in {"postgres", "postgresql"}
+            or re.fullmatch(r"aws-[0-9]+-[a-z0-9-]+\.pooler\.supabase\.com", parsed.hostname or "") is None
+            or parsed.port != 5432 or parsed.path != "/postgres"
+            or unquote(parsed.username or "") != f"postgres.{project_ref}"
+            or not parsed.password or parsed.fragment
+            or parse_qsl(parsed.query, keep_blank_values=True) not in (
+                [("sslmode", "require")], [("sslmode", "verify-full")],
+            )
+            or url == settings.get("DATABASE_URL")
+        ):
+            raise ValueError
+    except (ValueError, TypeError):
+        raise ValueError("dedicated_demo_destination_mismatch") from None
+    return url
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source", required=True)
     parser.add_argument("--env-file", required=True)
     parser.add_argument("--environment", choices=("preview", "production"), required=True)
     parser.add_argument("--initialize", action="store_true")
+    parser.add_argument("--demo-project-ref", help="Use only DEMO_DATABASE_URL for this dedicated Supabase project; never connect live")
     parser.add_argument("--output", required=True)
     args = parser.parse_args()
     settings = load_environment(args.env_file)
-    url = settings["DATABASE_URL"]
+    dedicated = args.demo_project_ref is not None
+    url = dedicated_demo_url(settings, args.demo_project_ref) if dedicated else settings["DATABASE_URL"]
     metadata, pairs = read_history(args.source, expected_hash=SOURCE_HASH)
     assert (len(pairs), metadata["readingCount"]) == (7183, 14366)
     assert metadata["sourceFormat"] == "zip-ooxml"
@@ -54,11 +82,14 @@ def main():
         connection.execute("SET TRANSACTION READ ONLY")
         connection.execute("SET LOCAL statement_timeout=10000")
         identity = connection.execute("SELECT current_database(),current_user").fetchone()
-        expected = tuple(settings["RAG_" + args.environment.upper() + suffix]
-                         for suffix in ("_DATABASE_NAME", "_DATABASE_USER"))
+        expected = ("postgres", "postgres") if dedicated else tuple(
+            settings["RAG_" + args.environment.upper() + suffix]
+            for suffix in ("_DATABASE_NAME", "_DATABASE_USER"))
         if identity != expected:
             raise ValueError("database_identity_mismatch")
-        before = live_fingerprint(connection)
+        if dedicated and not connection.pgconn.ssl_in_use:
+            raise ValueError("database_tls_not_active")
+        before = None if dedicated else live_fingerprint(connection)
 
     repository = DemoRepository(url, initialize=False)
     if args.initialize:
@@ -72,10 +103,12 @@ def main():
             "SELECT COUNT(*) AS count FROM demo_datasets WHERE dataset_id=?",
             (metadata["datasetId"],)).fetchone()["count"]
         assert dataset_count == 1, "import_idempotence_failed"
-    with psycopg.connect(url, connect_timeout=8) as connection:
-        connection.execute("SET TRANSACTION READ ONLY")
-        after = live_fingerprint(connection)
-    assert after == before, "live_changed_during_import"
+    after = None
+    if not dedicated:
+        with psycopg.connect(url, connect_timeout=8) as connection:
+            connection.execute("SET TRANSACTION READ ONLY")
+            after = live_fingerprint(connection)
+        assert after == before, "live_changed_during_import"
     moments = [datetime.fromisoformat(pair["observedAt"].replace("Z", "+00:00")) for pair in pairs]
     gaps = [(right - left).total_seconds() for left, right in zip(moments, moments[1:])]
     duplicates = {
@@ -88,13 +121,18 @@ def main():
         "dataset": metadata, "databaseIdentityMatched": True,
         "exactReadback": True, "idempotentImport": True,
         "liveBefore": before, "liveAfter": after,
+        "databaseMode": "dedicated-demo" if dedicated else "shared-live",
+        "demoProjectRef": args.demo_project_ref,
+        "liveConnected": not dedicated,
+        "liveFingerprintVerified": not dedicated,
         "equalTimestampPairs": sum(gap == 0 for gap in gaps),
         "gapsOver15Seconds": sum(gap > 15 for gap in gaps), "largestGapSeconds": max(gaps),
         "consecutiveRepeatedReadings": duplicates,
     }
     Path(args.output).write_text(json.dumps(report, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     print(json.dumps({"ok": True, "pairs": len(pairs), "exactReadback": True,
-                      "livePreserved": True, "idempotent": True}))
+                      "liveConnected": not dedicated,
+                      "liveFingerprintVerified": not dedicated, "idempotent": True}))
 
 
 if __name__ == "__main__":
