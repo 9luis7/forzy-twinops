@@ -30,6 +30,8 @@ S1 representa o canal 1 na carcaça do motor, junto ao acoplamento; S2 represent
 
 `DEMO_ENABLED=true` habilita as rotas. A migração aditiva `004_demo_replay_v1.sql` e a importação devem existir antes de habilitar uma instalação nova. O ambiente atual usa o PostgreSQL, Gemini e corpus já existentes. O orçamento específico do RAG demo é 40 s no total, até 30 s na geração, dentro do limite da função de 60 s; o orçamento live permanece preservado.
 
+A função usa `gru1` (São Paulo), próxima ao PostgreSQL existente em `sa-east-1`. Cada avanço confirma várias operações na mesma transação; manter função e banco próximos evita acumular latência entre regiões. A região está versionada em `vercel.json` e só passa a valer em um novo deployment. Validar a duração HTTP e o roteiro completo no Preview antes de promover a versão final.
+
 Sessões duram 24 h e usam token separado por aba. Uma única requisição de avanço pode ficar pendente por sessão. Conflitos de revisão exigem leitura do contexto; não repetir automaticamente um avanço ambíguo. Todos os IDs de comandos ficam registrados durante a sessão, com respostas completas dos oito mais recentes. Repetir um ID antigo retorna `command_response_expired` sem reexecutar.
 
 Eventos mantêm contexto congelado e resultados terminais imutáveis. A geração ocorre fora da transação de avanço. Falhas transitórias têm no máximo três tentativas, com lease de 60 s; a interface exibe a limitação se a geração não puder concluir. O painel permanece funcional sem WebGL, exibindo prévia estática e sensores.

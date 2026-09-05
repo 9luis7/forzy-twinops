@@ -4,6 +4,7 @@
   "installCommand": "npm ci",
   "buildCommand": "npm run build",
   "outputDirectory": "dist",
+  "regions": ["gru1"],
   "functions": {
     "api/index.py": {
       "maxDuration": 60,
