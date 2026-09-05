@@ -11,10 +11,12 @@ from contextlib import contextmanager
 from hashlib import sha256
 import json
 import logging
+import math
 import os
 from pathlib import Path
 import re
 import sys
+from time import monotonic
 from urllib.parse import parse_qsl, unquote, urlsplit
 from uuid import UUID, uuid4
 
@@ -24,7 +26,7 @@ from psycopg.rows import dict_row
 
 from twinops.rag.admin_service import RagAdminService
 from twinops.rag.chunking import chunk_pages
-from twinops.rag.embeddings import GeminiEmbeddingClient
+from twinops.rag.embeddings import EmbeddingGatewayError, GeminiEmbeddingClient
 from twinops.rag.models import CANONICAL_RAG_ASSET_ID, DocumentMetadata, RagCorpus
 from twinops.rag.pdf import MAX_PDF_BYTES, extract_searchable_pdf
 from twinops.rag.repository import PostgresRagRepository
@@ -37,6 +39,7 @@ EMBEDDING_MODEL = "gemini-embedding-2"
 EMBEDDING_DIMENSIONS = 768
 GENERATION_MODEL = "gemini-3.5-flash-lite"
 THRESHOLD = 0.5897445762442176
+EMBEDDING_BATCH_INTERVAL_SECONDS = 65.0
 SOURCE_URL = (
     "https://static.weg.net/medias/downloadcenter/ha6/h39/"
     "WEG-WMO-safe-area-50033244-manual-pt-en-es.pdf"
@@ -54,6 +57,31 @@ METADATA = DocumentMetadata(
 
 class PreparationError(ValueError):
     """Fixed safe operator error code; never include external error text."""
+
+
+class PacedEmbeddingClient:
+    """CLI-only pacing: first batch immediate, then 65s after each success.
+
+    Failures propagate without retry. The shared admin service calls batches
+    sequentially; completed-document reuse never calls this wrapper.
+    """
+
+    def __init__(self, client, *, clock=monotonic, sleep=asyncio.sleep):
+        self.client = client
+        self.model = client.model
+        self.dimensions = client.dimensions
+        self._clock = clock
+        self._sleep = sleep
+        self._last_completed_at = None
+
+    async def embed(self, texts):
+        if self._last_completed_at is not None:
+            remaining = EMBEDDING_BATCH_INTERVAL_SECONDS - (self._clock() - self._last_completed_at)
+            if remaining > 0:
+                await self._sleep(remaining)
+        vectors = await self.client.embed(texts)
+        self._last_completed_at = self._clock()
+        return vectors
 
 
 def preflight(source: Path):
@@ -165,8 +193,11 @@ async def prepare(repository, embeddings, *, corpus_id, payload, drafts, read_ch
         corpus = repository.create_corpus(desired)
     if any(getattr(corpus, field) != getattr(desired, field) for field in (
         "asset_id", "manufacturer", "equipment_model", "embedding_model",
-        "embedding_dimensions", "chunk_target_tokens", "chunk_overlap_tokens", "min_relevance_score",
-    )):
+        "embedding_dimensions", "chunk_target_tokens", "chunk_overlap_tokens",
+    )) or not math.isclose(
+        # PostgreSQL roundtrips can round the last decimal; allow only that noise.
+        corpus.min_relevance_score, desired.min_relevance_score, rel_tol=0, abs_tol=1e-15,
+    ):
         raise PreparationError("existing_corpus_incompatible")
     service = RagAdminService(
         repository, embeddings, manufacturer="WEG", equipment_model="W22",
@@ -261,11 +292,11 @@ async def execute(args, env, payload, drafts):
             ).fetchall()
 
         async with httpx.AsyncClient(trust_env=False) as http:
-            embeddings = GeminiEmbeddingClient(
+            embeddings = PacedEmbeddingClient(GeminiEmbeddingClient(
                 http, api_key=env["GEMINI_API_KEY"], model=EMBEDDING_MODEL,
                 dimensions=EMBEDDING_DIMENSIONS, task_type="RETRIEVAL_DOCUMENT",
                 timeout_seconds=30, max_rate_limit_retries=0,
-            )
+            ))
             return await prepare(
                 repository, embeddings, corpus_id=args.corpus_id, payload=payload,
                 drafts=drafts, read_chunks=read_chunks, publish=args.publish,
@@ -316,6 +347,8 @@ def main(argv=None):
         return 0
     except PreparationError as error:
         print(json.dumps({"ok": False, "error": str(error)}), file=sys.stderr)
+    except EmbeddingGatewayError:
+        print(json.dumps({"ok": False, "error": "embedding_provider_failed_no_retry"}), file=sys.stderr)
     except Exception:
         print(json.dumps({"ok": False, "error": "demo_rag_preparation_failed"}), file=sys.stderr)
     return 1

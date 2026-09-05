@@ -207,6 +207,32 @@ async def test_existing_incompatible_corpus_rejected_without_embedding(manual):
 
 
 @pytest.mark.asyncio
+async def test_existing_threshold_postgres_roundtrip_resumes_same_empty_draft(manual):
+    repo, embed, corpus_id = InMemoryRagRepository(), Embeddings(), str(uuid4())
+    persisted_threshold = 0.589744576244218
+    repo.create_corpus(replace(tool.desired_corpus(corpus_id), min_relevance_score=persisted_threshold))
+    result = await tool.prepare(repo, embed, **prepare_args(manual, repo, corpus_id))
+    assert result["corpusId"] == corpus_id and result["status"] == "draft"
+    assert len(repo._corpora) == len(repo._documents) == len(repo._chunks) == 1
+    assert repo.get_corpus(corpus_id).min_relevance_score == persisted_threshold
+    assert embed.calls == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("threshold", [tool.THRESHOLD + 1e-14, 0.7, float("nan"), float("inf")])
+async def test_existing_threshold_change_or_nonfinite_rejected_before_embedding(manual, threshold):
+    repo, embed, corpus_id = InMemoryRagRepository(), Embeddings(), str(uuid4())
+    # A repository double also exercises corrupt nonfinite values, which the
+    # domain constructor itself would normally reject before this boundary.
+    persisted = vars(tool.desired_corpus(corpus_id)).copy()
+    persisted["min_relevance_score"] = threshold
+    repo._corpora[corpus_id] = SimpleNamespace(**persisted)
+    with pytest.raises(tool.PreparationError, match="existing_corpus_incompatible"):
+        await tool.prepare(repo, embed, **prepare_args(manual, repo, corpus_id))
+    assert embed.calls == 0 and not repo._documents and not repo._chunks
+
+
+@pytest.mark.asyncio
 async def test_different_active_corpus_preserved_without_embedding(manual):
     repo, embed, corpus_id = InMemoryRagRepository(), Embeddings(), str(uuid4())
     await tool.prepare(repo, embed, **prepare_args(manual, repo, corpus_id), publish=True)
@@ -242,10 +268,11 @@ async def test_execute_wires_direct_gemini_without_quota_retry(manual, monkeypat
     monkeypatch.setattr(tool, "locked_target", locked)
     monkeypatch.setattr(tool, "PostgresRagRepository", lambda *a, **k: object())
     async def inspect(repo, embeddings, **kwargs):
-        assert isinstance(embeddings, GeminiEmbeddingClient)
-        assert embeddings._max_rate_limit_retries == 0
-        assert embeddings._task_type == "RETRIEVAL_DOCUMENT"
-        assert embeddings._base_url == "https://generativelanguage.googleapis.com/v1beta"
+        assert isinstance(embeddings, tool.PacedEmbeddingClient)
+        assert isinstance(embeddings.client, GeminiEmbeddingClient)
+        assert embeddings.client._max_rate_limit_retries == 0
+        assert embeddings.client._task_type == "RETRIEVAL_DOCUMENT"
+        assert embeddings.client._base_url == "https://generativelanguage.googleapis.com/v1beta"
         assert embeddings.model == tool.EMBEDDING_MODEL
         assert embeddings.dimensions == 768
         return {"ok": True}
@@ -293,3 +320,98 @@ def test_driver_configuration_and_lock_released_on_failure(monkeypatch):
     assert any("statement_timeout" in sql for sql in observed["sql"])
     assert any("pg_try_advisory_xact_lock" in sql for sql in observed["sql"])
     assert observed["exit_type"] is RuntimeError
+
+
+class VirtualClock:
+    def __init__(self):
+        self.now = 100.0
+        self.sleeps = []
+
+    def __call__(self):
+        return self.now
+
+    async def sleep(self, seconds):
+        self.sleeps.append(seconds)
+        self.now += seconds
+
+
+def four_batch_args(manual, repo, corpus_id, monkeypatch):
+    import twinops.rag.admin_service as admin
+    payload, initial = tool.preflight(manual)
+    drafts = tuple(replace(
+        initial[0], ordinal=index, text=f"fixture chunk {index}", token_count=3,
+        content_hash=sha256(f"fixture chunk {index}".encode()).hexdigest(),
+    ) for index in range(117))
+    monkeypatch.setattr(admin, "chunk_pages", lambda *a, **k: drafts)
+    monkeypatch.setattr(tool, "CHUNK_COUNT", 117)
+    return dict(corpus_id=corpus_id, payload=payload, drafts=drafts, read_chunks=chunk_reader(repo))
+
+
+@pytest.mark.asyncio
+async def test_four_admin_batches_paced_first_immediate_and_reuse_does_not_call_or_sleep(manual, monkeypatch):
+    repo, corpus_id, clock = InMemoryRagRepository(), str(uuid4()), VirtualClock()
+    args = four_batch_args(manual, repo, corpus_id, monkeypatch)
+    observed = []
+    class RecordingEmbeddings(Embeddings):
+        async def embed(self, texts):
+            observed.append((clock.now, tuple(texts)))
+            clock.now += 2  # Successful request duration is additional to the gap.
+            return await super().embed(texts)
+    inner = RecordingEmbeddings()
+    paced = tool.PacedEmbeddingClient(inner, clock=clock, sleep=clock.sleep)
+    first = await tool.prepare(repo, paced, **args)
+    assert first["chunkCount"] == 117
+    assert [start for start, _ in observed] == [100, 167, 234, 301]
+    assert [len(texts) for _, texts in observed] == [32, 32, 32, 21]
+    assert [text for _, texts in observed for text in texts] == [draft.text for draft in args["drafts"]]
+    assert clock.sleeps == [65, 65, 65]
+    reused = await tool.prepare(repo, paced, **args, publish=True)
+    assert reused["reusedDocument"] and reused["active"]
+    assert inner.calls == 4 and clock.sleeps == [65, 65, 65]
+
+
+@pytest.mark.asyncio
+async def test_native_gemini_429_stops_after_second_batch_without_retry_or_partial_upload(manual, monkeypatch):
+    import httpx
+    repo, corpus_id, clock = InMemoryRagRepository(), str(uuid4()), VirtualClock()
+    args = four_batch_args(manual, repo, corpus_id, monkeypatch)
+    requests = []
+    def respond(request):
+        requests.append(clock.now)
+        if len(requests) == 1:
+            count = len(json.loads(request.content)["requests"])
+            return httpx.Response(200, json={"embeddings": [{"values": [0.1] * 768} for _ in range(count)]})
+        return httpx.Response(429, json={"error": {"status": "RESOURCE_EXHAUSTED", "message": "private diagnostic"}})
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as http:
+        inner = GeminiEmbeddingClient(
+            http, api_key="offline-test", model=tool.EMBEDDING_MODEL, dimensions=768,
+            task_type="RETRIEVAL_DOCUMENT", max_rate_limit_retries=0,
+        )
+        paced = tool.PacedEmbeddingClient(inner, clock=clock, sleep=clock.sleep)
+        with pytest.raises(EmbeddingGatewayError):
+            await tool.prepare(repo, paced, **args, publish=True)
+    assert requests == [100, 165] and clock.sleeps == [65]
+    assert len(repo._corpora) == 1 and not repo._documents and not repo._chunks and not repo._active
+
+
+@pytest.mark.asyncio
+async def test_pacing_uses_elapsed_monotonic_time_without_unnecessary_sleep():
+    clock = VirtualClock()
+    inner = Embeddings()
+    paced = tool.PacedEmbeddingClient(inner, clock=clock, sleep=clock.sleep)
+    await paced.embed(["first"])
+    clock.now += 70
+    await paced.embed(["second"])
+    clock.now += 10
+    await paced.embed(["third"])
+    assert clock.sleeps == [55] and inner.calls == 3
+
+
+def test_embedding_failure_classification_is_sanitized(manual, monkeypatch, capsys):
+    def failed(_):
+        raise EmbeddingGatewayError("private provider response or credential")
+    monkeypatch.setattr(tool, "preflight", failed)
+    assert tool.main([str(manual)]) == 1
+    captured = capsys.readouterr()
+    assert json.loads(captured.err) == {"ok": False, "error": "embedding_provider_failed_no_retry"}
+    assert "private" not in captured.err and not captured.out
