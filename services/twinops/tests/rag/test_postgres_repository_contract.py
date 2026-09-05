@@ -1,5 +1,6 @@
 from pathlib import Path
 from datetime import datetime, timezone
+from uuid import UUID
 
 import pytest
 
@@ -181,6 +182,35 @@ def test_postgres_publication_serializes_pointer_changes_by_asset():
     assert calls[lock_index][1] == ("forzy-motor-01",)
     assert any("manufacturer<>" in sql for sql, _ in calls)
     assert changed.previous_corpus_id == "c1"
+
+
+@pytest.mark.parametrize("method,connection_type,target", [
+    ("publish_corpus", _ActivationConnection, "c2"),
+    ("activate_published_corpus", _PublishedActivationConnection, "legacy"),
+])
+def test_postgres_activation_normalizes_native_uuid_previous_pointer(method, connection_type, target):
+    previous = UUID("8b47763a-d4c0-49e6-8f28-aedc971154b6")
+    calls = []
+
+    class NativeUUIDConnection(connection_type):
+        def execute(self, sql, parameters):
+            result = super().execute(sql, parameters)
+            if "FROM rag_active_corpus" in sql:
+                return _Result(one={"corpus_id": previous})
+            return result
+
+    kwargs = {"threshold": 0.2} if connection_type is _PublishedActivationConnection else {}
+    repository = PostgresRagRepository(
+        "postgresql://unused",
+        connection_factory=lambda: NativeUUIDConnection(calls, **kwargs),
+    )
+
+    change = getattr(repository, method)("forzy-motor-01", target)
+
+    assert change.previous_corpus_id == str(previous)
+    assert isinstance(change.previous_corpus_id, str)
+    assert change.corpus_id == target
+    assert any("INSERT INTO rag_active_corpus" in sql for sql, _ in calls)
 
 
 def test_postgres_legacy_zero_threshold_reactivation_fails_before_pointer_write():

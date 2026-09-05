@@ -598,7 +598,7 @@ class PostgresRagRepository:
                 "SELECT corpus_id FROM rag_active_corpus WHERE asset_id=%s FOR UPDATE",
                 (asset_id,),
             ).fetchone()
-            previous = None if active is None else active["corpus_id"]
+            previous = None if active is None else str(active["corpus_id"])
             connection.execute(
                 "INSERT INTO rag_active_corpus (asset_id,corpus_id,activated_at) "
                 "VALUES (%s,%s,%s) ON CONFLICT(asset_id) DO UPDATE SET "
