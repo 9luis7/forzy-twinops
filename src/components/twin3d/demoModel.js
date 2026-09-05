@@ -29,7 +29,7 @@ export function applyDemoMaterials(scene, manifest, snapshot, { selected = "all"
     node.visible = !isolate || !selectedGroup || group === selectedGroup;
     const materials = Array.isArray(node.material) ? node.material : [node.material];
     materials.forEach((material) => {
-      material.color?.set(sensorId ? view.materialColor : group === "coupling" ? "#a7bdca" : "#405366");
+      material.color?.set(group === "motor" ? "#5382ad" : group === "pump" ? "#458f82" : group === "coupling" ? "#a7bdca" : "#405366");
       material.emissive?.set(sensorId ? view.emissiveColor : "#000000");
       material.emissiveIntensity = sensorId ? view.emissiveIntensity : 0;
       material.metalness = group === "coupling" ? 0.55 : 0.18;

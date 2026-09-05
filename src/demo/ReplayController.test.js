@@ -15,6 +15,18 @@ it("keeps run/token in tab storage and never embeds the token in context", async
   expect(storage.setItem).toHaveBeenCalledWith("twinops.demo.session.v1", JSON.stringify({ runId: "test-run", token: "secret" }));
   expect(c.state.context.token).toBeUndefined();
 });
+it("invokes browser timer defaults with globalThis as their native receiver", async () => {
+  const interval = vi.spyOn(globalThis, "setInterval").mockImplementation(function () {
+    expect(this).toBe(globalThis); return 12345;
+  });
+  const clear = vi.spyOn(globalThis, "clearInterval").mockImplementation(function (id) {
+    expect(this).toBe(globalThis); expect(id).toBe(12345);
+  });
+  try {
+    const { c } = setup(); await c.start(); expect(interval).toHaveBeenCalledTimes(1);
+    c.dispose(); expect(clear).toHaveBeenCalledTimes(1); c.timer = undefined;
+  } finally { interval.mockRestore(); clear.mockRestore(); }
+});
 it("advances on a one-second timer with at most one request in flight", async () => {
   vi.useFakeTimers(); const { c, source } = setup(); await c.start(); await c.create(dataset.datasetId);
   c.accept(context(1, { replay: { ...context().replay, state: "running" } }), c.epoch);
@@ -141,4 +153,37 @@ it("pauses on visibility loss and requires explicit continue when visible", asyn
   c.document.hidden = true; handler(); await Promise.resolve(); await Promise.resolve();
   expect(source.control.mock.calls[0][1].action).toBe("pause");
   c.document.hidden = false; handler(); c.tick(); expect(c.state.suspended).toBe(true); expect(source.advance).not.toHaveBeenCalled();
+});
+it.each([
+  ["play", false], ["play", true], ["resume", false], ["resume", true],
+])("preserves visibility suspension for pending %s (visible before response: %s)", async (action, visibleFirst) => {
+  const { c, source } = setup(); let visibility;
+  c.document = { hidden: false, addEventListener: (_, handler) => { visibility = handler; }, removeEventListener: vi.fn() };
+  await c.start(); await c.create(dataset.datasetId);
+  const pending = deferred(); source.control.mockReturnValueOnce(pending.promise).mockResolvedValueOnce(context(2));
+  const requested = c.command(action);
+  c.document.hidden = true; visibility();
+  if (visibleFirst) { c.document.hidden = false; visibility(); }
+  pending.resolve(context(1, { replay: { ...context().replay, state: "running" } }));
+  await requested; await c.inflight;
+  if (!visibleFirst) { c.document.hidden = false; visibility(); }
+  c.tick(); expect(c.state.suspended).toBe(true); expect(source.advance).not.toHaveBeenCalled();
+  expect(source.control).toHaveBeenCalledTimes(2); expect(source.control.mock.calls[1][1]).toMatchObject({ action: "pause", expectedRevision: 1 });
+  source.control.mockResolvedValue(context(3, { replay: { ...context().replay, state: "running" } }));
+  await c.command("resume"); expect(c.state.suspended).toBe(false); c.tick(); expect(source.advance).toHaveBeenCalledTimes(1);
+});
+it.each(["ready", "degraded"])("preserves %s recommendation when an older processing response arrives late", async (status) => {
+  const { c, source } = setup(); await c.create(dataset.datasetId); c.accept(context(1, { events: [event()] }), c.epoch);
+  const pending = deferred(); source.recommend.mockReturnValue(pending.promise); const request = c.recommendNext();
+  const terminal = event({ status, recommendation: { answer: "immutable terminal response" } });
+  c.accept(context(2, { events: [terminal] }), c.epoch);
+  pending.resolve(event({ status: "processing" })); await request;
+  expect(c.state.events[0]).toBe(terminal); expect(c.eventResults.get(terminal.eventId)).toBe(terminal);
+  c.accept(context(3, { events: [event({ status: "processing" })] }), c.epoch);
+  expect(c.state.events[0]).toBe(terminal); await c.recommendNext(); expect(source.recommend).toHaveBeenCalledTimes(1);
+});
+it.each([{ eventId: "different-event" }, { generation: 5 }])("rejects mismatched recommendation identity %o", async (override) => {
+  const { c, source } = setup(); await c.create(dataset.datasetId); c.accept(context(1, { events: [event()] }), c.epoch);
+  source.recommend.mockResolvedValue(event({ status: "processing", ...override })); await c.recommendNext();
+  expect(c.state.events[0].status).toBe("pending"); expect(c.eventResults.size).toBe(0);
 });

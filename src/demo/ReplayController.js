@@ -1,13 +1,17 @@
 const SESSION_KEY = "twinops.demo.session.v1";
 const commandId = () => globalThis.crypto.randomUUID();
+const terminalEvent = (event) => ["ready", "degraded"].includes(event?.status);
 
 /** Owns transport only. Every telemetry view receives the same server context. */
 export class ReplayController {
-  constructor(source, { storage, document: doc, interval = setInterval, clear = clearInterval } = {}) {
+  constructor(source, { storage, document: doc,
+    interval = (callback, delay) => globalThis.setInterval(callback, delay),
+    clear = (id) => globalThis.clearInterval(id) } = {}) {
     this.source = source; this.storage = storage; this.document = doc;
     this.interval = interval; this.clear = clear; this.listeners = new Set(); this.epoch = 0;
     this.session = null; this.context = null; this.transport = null; this.rag = null; this.manual = null;
     this.eventResults = new Map(); this.retryAt = new Map(); this.hidden = Boolean(doc?.hidden);
+    this.visibilityVersion = 0;
     this.state = { context: null, datasets: [], loading: true, busy: false, error: null,
       suspended: false, events: [], manualPending: false, answers: [], assistantError: null,
       pendingOperation: null, queuedAction: null };
@@ -27,7 +31,8 @@ export class ReplayController {
     this.context = context;
     const events = context.events.map((event) => {
       const result = this.eventResults.get(event.eventId);
-      if (["ready", "degraded"].includes(event.status)) { this.eventResults.delete(event.eventId); return event; }
+      if (result?.generation === context.replay.generation && terminalEvent(result)) return result;
+      if (terminalEvent(event)) { this.eventResults.set(event.eventId, event); return event; }
       return result && result.generation === context.replay.generation ? result : event;
     });
     this.publish({ context, events }); return true;
@@ -56,6 +61,7 @@ export class ReplayController {
     this.visibility = () => {
       this.hidden = Boolean(this.document.hidden);
       if (this.hidden) {
+        this.visibilityVersion += 1;
         this.publish({ suspended: true });
         if (this.context?.replay.state === "running") this.command("pause");
       }
@@ -125,6 +131,7 @@ export class ReplayController {
   transact(operation, action, speed) {
     if (!this.session || !this.context || this.transport) return Promise.resolve();
     const epoch = this.epoch, session = this.session;
+    const visibilityVersion = this.visibilityVersion;
     const controller = new AbortController(); this.transport = controller;
     const body = { commandId: commandId(), expectedRevision: this.context.revision,
       ...(action ? { action } : {}), ...(speed ? { speed } : {}) };
@@ -132,7 +139,8 @@ export class ReplayController {
     this.inflight = (async () => {
       try {
         const context = await this.source[operation](session, body, { signal: controller.signal });
-        if (this.accept(context, epoch) && ["play", "resume", "restart"].includes(action)) {
+        if (this.accept(context, epoch) && ["play", "resume", "restart"].includes(action)
+          && visibilityVersion === this.visibilityVersion && !this.hidden) {
           this.publish({ suspended: false });
         }
       } catch (error) {
@@ -144,6 +152,10 @@ export class ReplayController {
         }
       } finally {
         if (this.transport === controller) { this.transport = null; this.publish({ busy: false, pendingOperation: null }); }
+        // Visibility loss remains an intent even if the tab returned before this response.
+        if (epoch === this.epoch && action !== "pause" && !this.queued
+          && this.context?.replay.state === "running"
+          && (this.hidden || visibilityVersion !== this.visibilityVersion)) this.command("pause");
       }
     })();
     return this.inflight;
@@ -163,6 +175,14 @@ export class ReplayController {
     try {
       const result = await this.source.recommend(this.session, event.eventId, { signal: controller.signal });
       if (epoch !== this.epoch || generation !== this.context?.replay.generation) return;
+      if (result.eventId !== event.eventId || result.generation !== generation) throw new Error("Identidade da recomendação inválida");
+      const latest = this.state.events.find((e) => e.eventId === event.eventId && e.generation === generation);
+      if (!latest) return;
+      const cached = this.eventResults.get(event.eventId);
+      if (terminalEvent(latest) || (cached?.generation === generation && terminalEvent(cached))) {
+        this.eventResults.set(event.eventId, terminalEvent(latest) ? latest : cached);
+        return;
+      }
       this.eventResults.set(event.eventId, result);
       this.publish({ events: this.state.events.map((e) => e.eventId === event.eventId ? result : e), assistantError: null });
     } catch (error) {

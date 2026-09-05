@@ -10,7 +10,7 @@ it("validates assumed anchors in transformed model world meters", () => {
   expect(manifest.sensors[1].placement).toBe("unvalidated");
   expect(() => parseDemoModelManifest({ ...manifest, sensors: manifest.sensors.map((s) => ({ ...s, coordinateSpace: "screen" })) })).toThrow();
 });
-it("sets independent motor/pump condition colors, neutral base/coupling, including child meshes", () => {
+it("preserves component colors with independent condition emissive highlights, including child meshes", () => {
   const scene = new Scene(); const meshes = {};
   for (const group of ["motor", "pump", "base", "coupling"]) {
     const parent = new Group(); parent.name = manifest.groups[group].nodeNames[0];
@@ -18,7 +18,12 @@ it("sets independent motor/pump condition colors, neutral base/coupling, includi
   }
   const snapshot = context(); snapshot.sensors.s1.assessment = { assessment: { status: "alert" } }; snapshot.sensors.s2.assessment = { assessment: { status: "normal" } };
   applyDemoMaterials(scene, manifest, snapshot);
-  expect(meshes.motor.material.color.getHexString()).toBe("d95757"); expect(meshes.pump.material.color.getHexString()).toBe("4f86a8");
+  expect(meshes.motor.material.color.getHexString()).toBe("5382ad"); expect(meshes.pump.material.color.getHexString()).toBe("458f82");
+  expect(meshes.motor.material.emissive.getHexString()).toBe("6f1717"); expect(meshes.pump.material.emissive.getHexString()).toBe("16384b");
+  snapshot.sensors.s1.assessment.assessment.status = "watch"; snapshot.sensors.s2.assessment.assessment.status = "watch";
+  applyDemoMaterials(scene, manifest, snapshot);
+  expect(meshes.motor.material.color.getHexString()).toBe("5382ad"); expect(meshes.pump.material.color.getHexString()).toBe("458f82");
+  expect(meshes.motor.material.emissive.getHexString()).toBe("6b3f0d"); expect(meshes.pump.material.emissive.getHexString()).toBe("6b3f0d");
   expect(meshes.base.material.color.getHexString()).toBe("405366"); expect(meshes.coupling.material.color.getHexString()).toBe("a7bdca");
   applyDemoMaterials(scene, manifest, snapshot, { selected: "s2", isolate: true });
   expect(meshes.pump.visible).toBe(true); expect(meshes.motor.visible).toBe(false);
