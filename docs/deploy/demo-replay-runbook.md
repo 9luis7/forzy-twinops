@@ -32,6 +32,10 @@ S1 representa o canal 1 na carcaça do motor, junto ao acoplamento; S2 represent
 
 A função usa `gru1` (São Paulo), próxima ao PostgreSQL existente em `sa-east-1`. Cada avanço confirma várias operações na mesma transação; manter função e banco próximos evita acumular latência entre regiões. A região está versionada em `vercel.json` e só passa a valer em um novo deployment. Validar a duração HTTP e o roteiro completo no Preview antes de promover a versão final.
 
+O dataset é imutável e fica em cache na instância do repositório, limitado a duas entradas e 16 MiB de JSON UTF-8. Cada consumidor recebe uma cópia isolada; sessões, tokens, revisões, comandos e eventos continuam dependendo do banco. Isso evita transferir novamente os aproximadamente 5,33 MB do histórico em cada avanço de uma instância aquecida. Instâncias novas e datasets removidos do cache fazem uma nova leitura; o limite não inclui objetos temporários decodificados nem o overhead do interpretador.
+
+Se o PostgreSQL recusar conexões com `Your project has exceeded the data transfer quota`, suspender testes publicados e restabelecer a cota na instalação Neon existente antes de continuar. Cache e rollback de código não liberam uma cota já esgotada. Confirmar o acesso ao dataset e validar o roteiro no novo deployment depois da recuperação; evidências anteriores não comprovam a disponibilidade atual.
+
 Sessões duram 24 h e usam token separado por aba. Uma única requisição de avanço pode ficar pendente por sessão. Conflitos de revisão exigem leitura do contexto; não repetir automaticamente um avanço ambíguo. Todos os IDs de comandos ficam registrados durante a sessão, com respostas completas dos oito mais recentes. Repetir um ID antigo retorna `command_response_expired` sem reexecutar.
 
 Eventos mantêm contexto congelado e resultados terminais imutáveis. A geração ocorre fora da transação de avanço. Falhas transitórias têm no máximo três tentativas, com lease de 60 s; a interface exibe a limitação se a geração não puder concluir. O painel permanece funcional sem WebGL, exibindo prévia estática e sensores.

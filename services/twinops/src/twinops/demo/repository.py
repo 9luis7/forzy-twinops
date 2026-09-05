@@ -1,6 +1,7 @@
 """Transactional replay persistence and fenced, recoverable recommendation leases."""
 from __future__ import annotations
 
+from collections import OrderedDict
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from hashlib import sha256
@@ -12,6 +13,8 @@ import threading
 
 
 MAX_EVENT_ATTEMPTS = 3
+DATASET_CACHE_MAX_ENTRIES = 2
+DATASET_CACHE_MAX_BYTES = 16 * 1024 * 1024
 
 
 def utcnow():
@@ -37,11 +40,21 @@ class DemoError(Exception):
 
 
 class DemoRepository:
-    def __init__(self, database_url, *, clock=utcnow, initialize=None):
+    def __init__(self, database_url, *, clock=utcnow, initialize=None,
+                 dataset_cache_max_entries=DATASET_CACHE_MAX_ENTRIES,
+                 dataset_cache_max_bytes=DATASET_CACHE_MAX_BYTES):
+        if (type(dataset_cache_max_entries) is not int or dataset_cache_max_entries < 0
+                or type(dataset_cache_max_bytes) is not int or dataset_cache_max_bytes < 0):
+            raise ValueError('dataset cache limits must be nonnegative integers')
         self.clock = clock
         self.postgres = database_url.startswith(('postgresql://', 'postgres://'))
         self.database_url = database_url
         self._lock = threading.RLock()
+        self._dataset_lock = threading.Lock()
+        self._dataset_cache = OrderedDict()
+        self._dataset_cache_bytes = 0
+        self._dataset_cache_max_entries = dataset_cache_max_entries
+        self._dataset_cache_max_bytes = dataset_cache_max_bytes
         self._memory = None
         if not self.postgres:
             self.path = database_url.removeprefix('sqlite:///')
@@ -100,10 +113,39 @@ class DemoRepository:
             return [json.loads(row['metadata']) for row in self.sql(connection, 'SELECT metadata FROM demo_datasets ORDER BY dataset_id').fetchall()]
 
     def dataset(self, connection, dataset_id):
-        row = self.sql(connection, 'SELECT metadata,pairs FROM demo_datasets WHERE dataset_id=?', (dataset_id,)).fetchone()
-        if not row:
-            raise DemoError(503, 'dataset_unavailable')
-        return json.loads(row['metadata']), json.loads(row['pairs'])
+        """Cache only immutable dataset JSON, never session state or decoded objects.
+
+        Import is insert-only, so an existing dataset ID never changes through this
+        repository. A process-local LRU bounds retained UTF-8 JSON bytes and entries;
+        zero capacity disables it. Oversized datasets still work without caching.
+        """
+        # Serialize cold loads so concurrent sessions do not repeatedly transfer
+        # the same payload. Caller transactions retain their ordinary run fencing.
+        with self._dataset_lock:
+            cached = self._dataset_cache.get(dataset_id)
+            if cached is not None:
+                self._dataset_cache.move_to_end(dataset_id)
+                metadata_json, pairs_json, _ = cached
+            else:
+                row = self.sql(connection, 'SELECT metadata,pairs FROM demo_datasets WHERE dataset_id=?', (dataset_id,)).fetchone()
+                if not row:
+                    raise DemoError(503, 'dataset_unavailable')
+                metadata_json, pairs_json = row['metadata'], row['pairs']
+                # A failed query or JSON decode must never populate the cache.
+                result = json.loads(metadata_json), json.loads(pairs_json)
+                size = len(metadata_json.encode('utf-8')) + len(pairs_json.encode('utf-8'))
+                if self._dataset_cache_max_entries and size <= self._dataset_cache_max_bytes:
+                    while self._dataset_cache and (
+                        len(self._dataset_cache) >= self._dataset_cache_max_entries
+                        or self._dataset_cache_bytes + size > self._dataset_cache_max_bytes
+                    ):
+                        _, (_, _, evicted_size) = self._dataset_cache.popitem(last=False)
+                        self._dataset_cache_bytes -= evicted_size
+                    self._dataset_cache[dataset_id] = (metadata_json, pairs_json, size)
+                    self._dataset_cache_bytes += size
+                return result
+        # Decode outside the cache lock; callers may freely mutate their copy.
+        return json.loads(metadata_json), json.loads(pairs_json)
 
     def authorized(self, connection, run_id, token):
         suffix = ' FOR UPDATE' if self.postgres else ''
