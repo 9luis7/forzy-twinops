@@ -62,9 +62,11 @@ OUT_OF_SCOPE_MESSAGES = {
 
 
 class RagAssistantService:
+    max_query_timeout_seconds = 11.0
+
     def __init__(self, retriever, chat: ChatClient, *, query_timeout_seconds: float) -> None:
-        if not 0 < query_timeout_seconds <= 11:
-            raise ValueError("RAG query timeout must be in (0, 11]")
+        if not 0 < query_timeout_seconds <= self.max_query_timeout_seconds:
+            raise ValueError("RAG query timeout exceeds the service budget")
         self.retriever = retriever
         self.chat = chat
         self.query_timeout_seconds = query_timeout_seconds
@@ -81,6 +83,7 @@ class RagAssistantService:
         request: AssistantQueryRequest,
         *,
         operational: TrustedOperationalContext,
+        propagate_errors: bool = False,
     ) -> AssistantQueryResponse:
         started = perf_counter()
         conversation_id = request.conversation_id or uuid4()
@@ -144,6 +147,12 @@ class RagAssistantService:
             )
             raise
         except Exception as error:
+            if propagate_errors:
+                self._log_total(
+                    asset_id, trace_id, started,
+                    outcome=_internal_failure_outcome(error), retrieval=retrieval,
+                )
+                raise
             response = self._fallback(
                 request.question,
                 retrieval,

@@ -1,0 +1,135 @@
+"""RAG/replay boundary tested against actual transactional SQLite persistence."""
+
+import asyncio
+from copy import deepcopy
+from datetime import datetime, timedelta, timezone
+from hashlib import sha256
+
+import pytest
+
+from twinops.demo.repository import DemoRepository, DemoError, encode, stamp
+from .test_demo_service import Repo, service
+from .test_public_service import _Chat
+
+
+@pytest.fixture
+def storage(tmp_path):
+    now = [datetime(2026, 9, 4, 15, tzinfo=timezone.utc)]
+    repository = DemoRepository("sqlite:///" + str(tmp_path / "demo-rag.db"), clock=lambda: now[0])
+    sample = Repo()
+    sample.current["replay"].update(runId="run", expiresAt=stamp(now[0] + timedelta(hours=24)))
+    frozen = deepcopy(sample.current)
+    with repository.transaction() as connection:
+        repository.sql(connection,
+            "INSERT INTO demo_runs(run_id,token_hash,expires_at,state) VALUES(?,?,?,?)",
+            ("run", sha256(b"secret").hexdigest(), sample.current["replay"]["expiresAt"],
+             encode({"public": sample.current})))
+        repository.sql(connection,
+            "INSERT INTO demo_events(event_id,run_id,generation,payload,context) VALUES(?,?,?,?,?)",
+            ("event-1", "run", 0, encode(sample.event), encode(frozen)))
+        second = {**sample.event, "eventId": "event-2"}
+        repository.sql(connection,
+            "INSERT INTO demo_events(event_id,run_id,generation,payload,context) VALUES(?,?,?,?,?)",
+            ("event-2", "run", 0, encode(second), encode(frozen)))
+    return repository, now
+
+
+def test_lease_exclusion_expiry_fencing_and_terminal_immutability(storage):
+    repo, now = storage
+    first = repo.claim_event("run", "secret", "event-1", owner="owner-1")
+    assert first["event"]["status"] == "processing"
+    assert repo.claim_event("run", "secret", "event-2", owner="owner-2") is None
+    assert repo.claim_event("run", "secret", "event-1", owner="owner-3") is None
+    now[0] += timedelta(seconds=61)
+    reclaimed = repo.claim_event("run", "secret", "event-1", owner="owner-2")
+    assert reclaimed["event"]["attempts"] == 2
+    with pytest.raises(DemoError) as conflict:
+        repo.finish_event("run", "secret", "event-1", owner="owner-1", status="ready")
+    assert conflict.value.detail == "lease_conflict"
+    terminal = repo.finish_event("run", "secret", "event-1", owner="owner-2", status="degraded",
+                                 error_code="invalid_citation")
+    assert repo.finish_event("run", "secret", "event-1", owner="owner-1", status="ready") == terminal
+    assert repo.claim_event("run", "secret", "event-1", owner="owner-3") is None
+
+
+@pytest.mark.asyncio
+async def test_real_repository_allows_advance_during_generation_and_preserves_revision(storage):
+    repo, _ = storage
+    started, release = asyncio.Event(), asyncio.Event()
+    class Slow(_Chat):
+        async def generate(self, messages):
+            started.set()
+            await release.wait()
+            return await super().generate(messages)
+    assistant = service(repo, Slow())
+    pending = asyncio.create_task(assistant.recommendation("run", "secret", "event-1"))
+    await asyncio.wait_for(started.wait(), 2)
+
+    def advance_state():
+        with repo.transaction() as connection:
+            state = repo.authorized(connection, "run", "secret")
+            state["public"]["revision"] = 9
+            state["public"]["replay"]["sourceRow"] = 151
+            repo.save(connection, state)
+        return repo.trusted_context("run", "secret", 9)
+
+    current = await asyncio.wait_for(asyncio.to_thread(advance_state), 1)
+    assert current["replay"]["sourceRow"] == 151
+    assert current["events"][0]["status"] == "processing"
+    assert repo.claim_event("run", "secret", "event-2", owner="different-worker") is None
+    release.set()
+    ready = await pending
+    assert ready["status"] == "ready"
+    assert ready["contextRevision"] == 8
+    assert "revisão 8, linha 150" in ready["recommendation"]["answer"]["currentState"]
+    assert repo.get_context("run", "secret")["revision"] == 9
+    assert await assistant.recommendation("run", "secret", "event-1") == ready
+
+
+def test_restart_and_wrong_run_or_token_reject_event(storage):
+    repo, _ = storage
+    repo.claim_event("run", "secret", "event-1", owner="owner-1")
+    for run, token in (("other-run", "secret"), ("run", "wrong")):
+        with pytest.raises(DemoError) as error:
+            repo.event_context(run, token, "event-1")
+        assert error.value.status_code == 404
+    with repo.transaction() as connection:
+        state = repo.authorized(connection, "run", "secret")
+        state["public"]["replay"]["generation"] = 1
+        repo.save(connection, state)
+    with pytest.raises(DemoError) as error:
+        repo.finish_event("run", "secret", "event-1", owner="owner-1", status="ready")
+    assert error.value.status_code == 404
+    assert repo.get_context("run", "secret")["events"] == []
+
+
+def test_restart_does_not_overlap_old_generation_provider_lease(storage):
+    repo, now = storage
+    repo.claim_event("run", "secret", "event-1", owner="old-provider")
+    with repo.transaction() as connection:
+        state = repo.authorized(connection, "run", "secret")
+        state["public"]["replay"]["generation"] = 1
+        repo.save(connection, state)
+        next_event = {**Repo().event, "eventId": "event-new", "generation": 1}
+        repo.sql(connection,
+            "INSERT INTO demo_events(event_id,run_id,generation,payload,context) VALUES(?,?,?,?,?)",
+            ("event-new", "run", 1, encode(next_event), encode(state["public"])))
+    assert repo.claim_event("run", "secret", "event-new", owner="new-provider") is None
+    now[0] += timedelta(seconds=61)
+    assert repo.claim_event("run", "secret", "event-new", owner="new-provider")["event"]["generation"] == 1
+
+
+@pytest.mark.asyncio
+async def test_real_repository_transient_retry_then_validated_result(storage):
+    repo, _ = storage
+    chat = _Chat(delay=0.1)
+    assistant = service(repo, chat, generation_timeout_seconds=0.01)
+    transient = await assistant.recommendation("run", "secret", "event-1")
+    assert transient["retryable"] is True
+    assert transient["status"] == "pending"
+    chat.delay = 0
+    ready = await assistant.recommendation("run", "secret", "event-1")
+    assert ready["status"] == "ready"
+    assert ready["attempts"] == 2
+    assert ready["recommendation"]["fallbackUsed"] is False
+    assert any(c["type"] == "manual" for c in ready["recommendation"]["citations"])
