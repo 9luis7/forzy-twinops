@@ -12,6 +12,7 @@ from uuid import uuid4
 import psycopg
 
 from twinops.contracts.models import AssetConditionAssessment
+from twinops.demo.repository import MAX_EVENT_ATTEMPTS
 from twinops.rag.embeddings import EmbeddingGatewayError
 from twinops.rag.generation import ChatGatewayError, GeneratedOutputError
 from twinops.rag.operational import OperationalEvidence, TrustedOperationalContext
@@ -27,7 +28,6 @@ from twinops.rag.retrieval import CorpusUnavailableError
 DEMO_TOTAL_SECONDS = 40.0
 DEMO_GENERATION_SECONDS = 30.0
 DEMO_LEASE_SECONDS = 60
-MAX_EVENT_ATTEMPTS = 3
 # SQLSTATEs are deliberately allowlisted: authentication, schema, data and
 # protocol errors are permanent even when psycopg uses OperationalError.
 _TRANSIENT_DATABASE_STATES = frozenset({

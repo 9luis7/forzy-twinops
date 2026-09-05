@@ -11,6 +11,9 @@ import sqlite3
 import threading
 
 
+MAX_EVENT_ATTEMPTS = 3
+
+
 def utcnow():
     return datetime.now(timezone.utc)
 
@@ -172,6 +175,14 @@ class DemoRepository:
             leased = self.sql(connection, 'SELECT lease_until FROM demo_events WHERE run_id=? AND owner IS NOT NULL',
                               (run_id,)).fetchall()
             if any(item['lease_until'] and parse(item['lease_until']) > now for item in leased):
+                return None
+            if event['attempts'] >= MAX_EVENT_ATTEMPTS:
+                # Cancellation/process death can bypass normal error finalization.
+                # Only an expired/unowned lease may become terminal during recovery.
+                event.update(status='degraded', recommendation=None, retryable=False,
+                             errorCode='event_attempts_exhausted')
+                self.sql(connection, 'UPDATE demo_events SET payload=?,owner=NULL,lease_until=NULL WHERE event_id=?',
+                         (encode(event), event_id))
                 return None
             event.update(status='processing', attempts=event['attempts'] + 1, retryable=False)
             self.sql(connection, 'UPDATE demo_events SET payload=?,owner=?,lease_until=? WHERE event_id=?',
