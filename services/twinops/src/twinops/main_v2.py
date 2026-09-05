@@ -340,7 +340,7 @@ def _runtime_lifespan(
                         HybridRetriever(
                             demo_corpus_repository, query_embedding_client,
                             manufacturer=settings.rag_manufacturer,
-                            equipment_model=settings.rag_equipment_model,
+                            equipment_model=settings.effective_demo_rag_equipment_model,
                         ),
                         _build_chat_client(http, settings, timeout_seconds=30.0),
                     ),

@@ -36,7 +36,7 @@ class LocalLive(SQLiteTelemetryRepositoryV2):
         return super().history(query)
 
 
-def runtime(monkeypatch, tmp_path, *, dedicated=True, enabled=True):
+def runtime(monkeypatch, tmp_path, *, dedicated=True, enabled=True, env_overrides=None):
     live = LocalLive(tmp_path / 'live.sqlite3')
     demo, _, scorer, clock = setup()
     corpus = {}
@@ -54,13 +54,18 @@ def runtime(monkeypatch, tmp_path, *, dedicated=True, enabled=True):
     monkeypatch.setattr(main_v2, 'PostgresRagRepository', rag_repository)
     monkeypatch.setattr(main_v2, 'DemoRepository', demo_repository)
     monkeypatch.setattr(main_v2, '_load_configured_scorer', lambda settings: scorer)
-    monkeypatch.setattr(main_v2, '_build_embedding_clients', lambda *a: (object(), object()))
+    def embedding_clients(http, settings):
+        client = SimpleNamespace(model=settings.rag_embedding_model, dimensions=settings.rag_embedding_dimensions)
+        return client, client
+
+    monkeypatch.setattr(main_v2, '_build_embedding_clients', embedding_clients)
     monkeypatch.setattr(main_v2, '_build_chat_client', lambda *a, **k: SimpleNamespace(model='offline'))
     env = {'TWINOPS_UPSTREAM_BASE_URL': 'https://upstream.invalid', 'DATABASE_URL': LIVE_URL, 'DEMO_ENABLED': str(enabled).lower(),
            'TWINOPS_RAG_ENABLED': 'true', 'TWINOPS_RAG_MANUFACTURER': 'WEG',
            'TWINOPS_RAG_EQUIPMENT_MODEL': 'W22'}
     if dedicated:
         env['DEMO_DATABASE_URL'] = DEMO_URL
+    env.update(env_overrides or {})
     app = main_v2.create_app_v2_from_env(env, clock=clock)
     return app, live, demo, corpus, demo_urls
 
@@ -218,3 +223,53 @@ def test_unset_demo_url_preserves_database_fallback():
     settings = SettingsV2.from_env({'TWINOPS_UPSTREAM_BASE_URL': 'https://upstream.invalid', 'DATABASE_URL': LIVE_URL, 'DEMO_ENABLED': 'true'})
     assert settings.effective_demo_database_url == LIVE_URL
     assert not settings.has_dedicated_demo_database
+
+
+@pytest.mark.parametrize('dedicated', [True, False])
+@pytest.mark.parametrize('override', [None, 'W22'])
+def test_demo_equipment_override_preserves_live_identity_and_global_fallback(
+    monkeypatch, tmp_path, dedicated, override,
+):
+    env = {'TWINOPS_RAG_EQUIPMENT_MODEL': 'W22 13887610',
+           'TWINOPS_RAG_PROVIDER': 'gemini', 'VERCEL_ENV': 'preview', 'RAG_ADMIN_ENABLED': 'true'}
+    if override is not None:
+        env['DEMO_RAG_EQUIPMENT_MODEL'] = override
+    app, _, _, _, _ = runtime(monkeypatch, tmp_path, dedicated=dedicated, env_overrides=env)
+    with TestClient(app):
+        demo_retriever = app.state.demo_assistant_service.assistant.retriever
+        live_retriever = app.state.rag_assistant_service.retriever
+        assert demo_retriever.equipment_model == (override or 'W22 13887610')
+        assert live_retriever.equipment_model == 'W22 13887610'
+        assert app.state.rag_admin_service.equipment_model == 'W22 13887610'
+        assert demo_retriever.manufacturer == live_retriever.manufacturer == 'WEG'
+        # Reproduce the real published corpus identity without sockets or embedding calls.
+        persisted = SimpleNamespace(
+            corpus_id='offline-corpus', status='published', asset_id='forzy-motor-01',
+            manufacturer='WEG', equipment_model='W22', embedding_model='gemini-embedding-2',
+            embedding_dimensions=768, min_relevance_score=0.589744576244218,
+        )
+        demo_retriever.repository.get_active_corpus = lambda asset_id: persisted
+        if override is not None:
+            assert asyncio.run(demo_retriever.prepare('forzy-motor-01')) is persisted
+        else:
+            from twinops.rag.retrieval import CorpusUnavailableError
+            with pytest.raises(CorpusUnavailableError, match='corpus_incompatible'):
+                asyncio.run(demo_retriever.prepare('forzy-motor-01'))
+
+
+@pytest.mark.parametrize('value', [' ', ' W22', 'W22 ', '\tW22\n'])
+def test_demo_equipment_override_rejects_blank_or_untrimmed_values(value):
+    with pytest.raises(ValueError, match='DEMO_RAG_EQUIPMENT_MODEL'):
+        SettingsV2.from_env({'TWINOPS_UPSTREAM_BASE_URL': 'https://upstream.invalid',
+                             'DEMO_RAG_EQUIPMENT_MODEL': value})
+
+
+@pytest.mark.parametrize('value', [None, ''])
+def test_absent_or_empty_demo_equipment_override_uses_existing_environment_convention(value):
+    env = {'TWINOPS_UPSTREAM_BASE_URL': 'https://upstream.invalid',
+           'TWINOPS_RAG_EQUIPMENT_MODEL': 'W22 13887610'}
+    if value is not None:
+        env['DEMO_RAG_EQUIPMENT_MODEL'] = value
+    settings = SettingsV2.from_env(env)
+    assert settings.demo_rag_equipment_model is None
+    assert settings.effective_demo_rag_equipment_model == 'W22 13887610'

@@ -175,8 +175,14 @@ class SettingsV2:
     rag_query_timeout_seconds: float = 10.0
     rag_manufacturer: str | None = None
     rag_equipment_model: str | None = None
+    demo_rag_equipment_model: str | None = None
 
     def __post_init__(self) -> None:
+        if self.demo_rag_equipment_model is not None and (
+            not self.demo_rag_equipment_model.strip()
+            or self.demo_rag_equipment_model != self.demo_rag_equipment_model.strip()
+        ):
+            raise ValueError("DEMO_RAG_EQUIPMENT_MODEL must be a nonempty trimmed identifier")
         if self.demo_database_url is not None and not is_secure_pooled_database_url(
             self.demo_database_url, known_provider_only=True
         ):
@@ -328,6 +334,7 @@ class SettingsV2:
             rag_equipment_model=(
                 env.get("TWINOPS_RAG_EQUIPMENT_MODEL") or None
             ),
+            demo_rag_equipment_model=env.get("DEMO_RAG_EQUIPMENT_MODEL") or None,
         )
 
     @property
@@ -354,6 +361,10 @@ class SettingsV2:
     @property
     def effective_demo_database_url(self) -> str | None:
         return self.demo_database_url or self.database_url
+
+    @property
+    def effective_demo_rag_equipment_model(self) -> str | None:
+        return self.demo_rag_equipment_model or self.rag_equipment_model
 
     @property
     def has_dedicated_demo_database(self) -> bool:
