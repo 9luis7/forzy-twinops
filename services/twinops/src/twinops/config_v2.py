@@ -140,6 +140,7 @@ class SettingsV2:
     vercel_environment: str | None = None
     rag_admin_enabled: bool = False
     rag_enabled: bool = False
+    demo_enabled: bool = False
     rag_provider: str = "gateway"
     ai_gateway_api_key: str | None = field(default=None, repr=False)
     gemini_api_key: str | None = field(default=None, repr=False)
@@ -235,6 +236,9 @@ class SettingsV2:
         rag_enabled_raw = env.get("TWINOPS_RAG_ENABLED", "false").lower()
         if rag_enabled_raw not in {"true", "false"}:
             raise ValueError("TWINOPS_RAG_ENABLED must be true or false")
+        demo_enabled_raw = env.get("DEMO_ENABLED", "false").lower()
+        if demo_enabled_raw not in {"true", "false"}:
+            raise ValueError("DEMO_ENABLED must be true or false")
         rag_provider = env.get("TWINOPS_RAG_PROVIDER", "gateway")
         default_embedding_model = (
             "gemini-embedding-2"
@@ -265,6 +269,7 @@ class SettingsV2:
             vercel_environment=env.get("VERCEL_ENV") or None,
             rag_admin_enabled=rag_admin_raw == "true",
             rag_enabled=rag_enabled_raw == "true",
+            demo_enabled=demo_enabled_raw == "true",
             rag_provider=rag_provider,
             ai_gateway_api_key=(
                 env.get("AI_GATEWAY_API_KEY")

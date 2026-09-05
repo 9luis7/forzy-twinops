@@ -1,5 +1,7 @@
 """Pure assembly of contract-valid TwinOps v2 snapshots."""
 
+import hashlib
+import json
 import logging
 import uuid
 from datetime import datetime, timezone
@@ -27,6 +29,48 @@ _LOGGER = logging.getLogger("twinops.api")
 
 
 def build_snapshot_v2(
+    **kwargs,
+) -> DigitalTwinSnapshotV2:
+    """Preserve the public v2 snapshot contract and selection semantics."""
+    return _build_snapshot_bundle_v2(**kwargs)[0]
+
+
+def build_live_twin_context_v2(**kwargs) -> dict:
+    """Both sensor assessments from one repository read and one scoring pass."""
+    snapshot, assessments = _build_snapshot_bundle_v2(
+        **kwargs, partial_assessments=True,
+    )
+    body = snapshot.model_dump(mode="json", by_alias=True)
+    sensors = {
+        channel["sensorId"]: {
+            "latest": channel,
+            "assessment": (
+                assessments[channel["sensorId"]].model_dump(mode="json", by_alias=True)
+                if assessments.get(channel["sensorId"]) is not None else None
+            ),
+        }
+        for channel in body["channels"]
+    }
+    valid = [item for item in assessments.values() if item is not None]
+    status = max(
+        (item.assessment.status for item in valid),
+        key=_status_rank, default="insufficient_data",
+    )
+    revision = hashlib.sha256(json.dumps(
+        {"snapshot": body, "sensors": sensors}, sort_keys=True, separators=(",", ":"),
+    ).encode()).hexdigest()
+    return {
+        "schemaVersion": "twin-context-1.0", "assetId": _ASSET_ID,
+        "mode": "live", "revision": revision,
+        "generatedAt": body["generatedAt"], "status": status,
+        "operationalState": body["operationalState"],
+        "freshnessBasis": body["freshnessBasis"], "sensors": sensors,
+        "history": body["history"], "integration": body["integration"],
+        "capabilities": body["capabilities"],
+    }
+
+
+def _build_snapshot_bundle_v2(
     *,
     repository: TelemetryRepositoryV2,
     scorer: AssessmentScorer,
@@ -39,7 +83,8 @@ def build_snapshot_v2(
     ],
     twin3d_enabled: bool,
     copilot_enabled: bool = False,
-) -> DigitalTwinSnapshotV2:
+    partial_assessments: bool = False,
+) -> tuple[DigitalTwinSnapshotV2, dict[str, AssetConditionAssessmentV2 | None]]:
     """Read current telemetry and return a snapshot without mutating dependencies."""
 
     latest_by_sensor, readings_by_sensor, health_by_sensor = (
@@ -93,13 +138,14 @@ def build_snapshot_v2(
                 now=effective_now,
             )
             for sensor_id in _SENSOR_IDS
+            if complete or readings_by_sensor[sensor_id]
         ]
-        if complete
+        if complete or partial_assessments
         else []
     )
     complete_assessments = [item for item in assessments if item is not None]
     selected_assessment = None
-    if assessments and len(complete_assessments) == len(assessments):
+    if complete and assessments and len(complete_assessments) == len(assessments):
         selected_assessment = max(
             complete_assessments,
             key=lambda item: _status_rank(item.assessment.status),
@@ -110,7 +156,7 @@ def build_snapshot_v2(
         else "insufficient_data"
     )
 
-    return DigitalTwinSnapshotV2.model_validate(
+    snapshot = DigitalTwinSnapshotV2.model_validate(
         {
             "schemaVersion": "2.0",
             "asset": {
@@ -139,6 +185,9 @@ def build_snapshot_v2(
             },
         }
     )
+    return snapshot, {
+        item.sensor_id: item for item in complete_assessments
+    }
 
 
 def _snapshot_repository_inputs(repository):

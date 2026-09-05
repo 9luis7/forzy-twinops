@@ -1,4 +1,4 @@
-import React from "react";
+import React, { lazy, Suspense } from "react";
 import RagAdminPanel from "./components/admin/RagAdminPanel.jsx";
 import OperationsDashboard from "./components/operations/OperationsDashboard.jsx";
 import Twin3D from "./components/Twin3D.jsx";
@@ -7,6 +7,7 @@ import { TwinOpsProvider } from "./TwinOpsContext.jsx";
 
 const ASSET_ID = "forzy-motor-01";
 const defaultRagDataSource = createGatewayRagDataSource();
+const DemoDashboard = lazy(() => import("./demo/DemoDashboard.jsx"));
 
 export function isRagAdminPath(pathname) {
   return pathname === "/rag-admin" || pathname === "/rag-admin/";
@@ -24,6 +25,13 @@ export default function App({
   pathname = globalThis.location?.pathname ?? "/",
   ragAdminEnabled = defaultAdminEnabled(),
 }) {
+  if (pathname === "/demo" || pathname === "/demo/") {
+    return (
+      <Suspense fallback={<div role="status">Preparando demonstração…</div>}>
+        <DemoDashboard />
+      </Suspense>
+    );
+  }
   if (ragAdminEnabled === true && isRagAdminPath(pathname)) {
     return <RagAdminPanel dataSource={ragDataSource} assetId={ASSET_ID} />;
   }

@@ -7,7 +7,7 @@ from typing import Literal
 
 from fastapi import APIRouter, HTTPException, Query, Request
 
-from twinops.api.v2_snapshot import build_snapshot_v2
+from twinops.api.v2_snapshot import build_live_twin_context_v2, build_snapshot_v2
 from twinops.contracts.v2_projections import to_sensor_telemetry_frame_v2
 from twinops.ingestion.schedule import CollectionWindow
 from twinops.rag.operational import TrustedOperationalContext
@@ -22,6 +22,21 @@ PUBLIC_ASSET_ID = "forzy-motor-01"
 
 def create_v2_router() -> APIRouter:
     router = APIRouter(prefix="/api/v2", tags=["real-twin"])
+
+    @router.get("/assets/{asset_id}/twin-context")
+    def twin_context(request: Request, asset_id: str):
+        _require_asset(request, asset_id)
+        now = request.app.state.clock()
+        operational_state, freshness_basis = _persisted_state(request, now)
+        return build_live_twin_context_v2(
+            repository=request.app.state.repository,
+            scorer=request.app.state.assessment_scorer,
+            now=now,
+            operational_state=operational_state,
+            freshness_basis=freshness_basis,
+            twin3d_enabled=True,
+            copilot_enabled=_copilot_configured(request),
+        )
 
     @router.get("/assets/{asset_id}/snapshot")
     def snapshot(request: Request, asset_id: str):

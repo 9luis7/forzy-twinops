@@ -4,7 +4,7 @@ import uuid
 
 import pytest
 
-from twinops.api.v2_snapshot import build_snapshot_v2
+from twinops.api.v2_snapshot import build_live_twin_context_v2, build_snapshot_v2
 from twinops.contracts.models import AssetConditionAssessment
 from twinops.contracts.v2_models import CanonicalSensorReadingV2
 from twinops.storage import v2_repository
@@ -12,6 +12,57 @@ from twinops.storage.v2_repository import RepositorySensorHealthV2
 
 
 NOW = datetime(2026, 8, 12, 15, 0, 1, tzinfo=timezone.utc)
+
+
+def test_twin_context_keeps_both_sensor_assessments_and_original_contract():
+    kwargs = dict(
+        repository=_Repository(("s1", "s2")),
+        scorer=_Scorer({"s1": "watch", "s2": "normal"}), now=NOW,
+        operational_state="last_known", freshness_basis="last_received",
+        twin3d_enabled=True,
+    )
+    context = build_live_twin_context_v2(**kwargs)
+    assert context["sensors"]["s1"]["assessment"]["assessment"]["status"] == "watch"
+    assert context["sensors"]["s2"]["assessment"]["assessment"]["status"] == "normal"
+    assert context["status"] == "watch"
+    assert len(context["revision"]) == 64
+    snapshot = build_snapshot_v2(**kwargs)
+    assert snapshot.schema_version == "2.0"
+    assert snapshot.assessment.sensor_id == "s1"
+    assert "sensors" not in snapshot.model_dump(by_alias=True)
+
+
+def test_twin_context_preserves_valid_concern_when_other_assessment_unavailable():
+    context = build_live_twin_context_v2(
+        repository=_Repository(("s1", "s2")), scorer=_MissingAssessmentScorer(),
+        now=NOW, operational_state="last_known", freshness_basis="last_received",
+        twin3d_enabled=True,
+    )
+    assert context["status"] == "alert"
+    assert context["sensors"]["s2"]["assessment"] is None
+
+
+def test_twin_context_does_not_reopen_repository_for_sensor_assessments():
+    class AtomicRepository:
+        def __init__(self):
+            self.calls = 0
+
+        def snapshot_read(self, *args, **kwargs):
+            self.calls += 1
+            readings = (_reading("s1"), _reading("s2"))
+            return v2_repository.RepositorySnapshotReadV2(
+                latest=readings, history=readings, health=(),
+            )
+
+    repository = AtomicRepository()
+    scorer = _CountingScorer()
+    build_live_twin_context_v2(
+        repository=repository, scorer=scorer, now=NOW,
+        operational_state="last_known", freshness_basis="last_received",
+        twin3d_enabled=True,
+    )
+    assert repository.calls == 1
+    assert scorer.sample_counts == [1, 1]
 
 
 def _reading(

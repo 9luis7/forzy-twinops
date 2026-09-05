@@ -12,6 +12,9 @@ from fastapi.responses import JSONResponse
 
 from twinops.api.v2_routes import PUBLIC_ASSET_ID, create_v2_router
 from twinops.config_v2 import SettingsV2
+from twinops.demo.repository import DemoRepository
+from twinops.demo.routes import create_demo_router
+from twinops.demo.service import DemoService
 from twinops.ingestion.refresh_service import RefreshService
 from twinops.ingestion.schedule import CollectionWindow
 from twinops.ingestion.upstream import UpstreamClient
@@ -26,6 +29,8 @@ from twinops.rag.embeddings import (
     GeminiEmbeddingClient,
 )
 from twinops.rag.generation import ChatGatewayClient, GeminiChatClient
+from twinops.rag.demo_routes import create_demo_rag_router
+from twinops.rag.demo_service import DemoAssistantService, DemoRagAssistantService
 from twinops.rag.public_service import RagAssistantService
 from twinops.rag.repository import PostgresRagRepository, RagRepository
 from twinops.rag.request_limits import (
@@ -82,11 +87,14 @@ def _build_embedding_clients(
     return gateway_client, gateway_client
 
 
-def _build_chat_client(http, settings: SettingsV2):
+def _build_chat_client(http, settings: SettingsV2, *, timeout_seconds=None):
     common = {
         "api_key": settings.rag_api_key or "",
         "model": settings.rag_generation_model,
-        "timeout_seconds": settings.rag_gateway_timeout_seconds,
+        "timeout_seconds": (
+            settings.rag_gateway_timeout_seconds
+            if timeout_seconds is None else timeout_seconds
+        ),
         "base_url": settings.rag_chat_base_url,
     }
     if settings.rag_provider == "gemini":
@@ -103,6 +111,8 @@ def create_app_v2(
     clock: Callable[[], datetime],
     rag_admin_service: RagAdminService | None = None,
     rag_assistant_service: RagAssistantService | None = None,
+    demo_service: DemoService | None = None,
+    demo_assistant_service: DemoAssistantService | None = None,
 ) -> FastAPI:
     app = FastAPI(title="Forzy TwinOps API", version="2.0.0")
     app.state.repository = repository
@@ -113,7 +123,12 @@ def create_app_v2(
     app.state.rag_admin_service = rag_admin_service
     app.state.rag_document_fetcher = None
     app.state.rag_assistant_service = rag_assistant_service
+    app.state.demo_service = demo_service
+    app.state.demo_assistant_service = demo_assistant_service
     app.include_router(create_v2_router())
+    if settings.demo_enabled:
+        app.include_router(create_demo_router())
+        app.include_router(create_demo_rag_router())
     app.add_middleware(RagPublicQueryLimitMiddleware)
     if settings.vercel_environment == "preview" and settings.rag_admin_enabled:
         app.add_middleware(RagAdminUploadLimitMiddleware)
@@ -200,6 +215,17 @@ def _runtime_lifespan(
                 clock=app.state.clock,
             )
             app.state.assessment_scorer = scorer or _UnavailableAssessmentScorer()
+            demo_repository = None
+            if settings.demo_enabled:
+                demo_repository = DemoRepository(
+                    settings.database_url or (
+                        "sqlite:///" + str(settings.database_path.with_name("demo.sqlite3"))
+                    ),
+                    clock=app.state.clock,
+                )
+                app.state.demo_service = DemoService(
+                    demo_repository, app.state.assessment_scorer, app.state.clock,
+                )
             document_embedding_client = None
             query_embedding_client = None
             if rag_repository is not None:
@@ -223,6 +249,18 @@ def _runtime_lifespan(
                     _build_chat_client(http, settings),
                     query_timeout_seconds=settings.rag_query_timeout_seconds,
                 )
+                if demo_repository is not None:
+                    app.state.demo_assistant_service = DemoAssistantService(
+                        demo_repository,
+                        DemoRagAssistantService(
+                            HybridRetriever(
+                                rag_repository, query_embedding_client,
+                                manufacturer=settings.rag_manufacturer,
+                                equipment_model=settings.rag_equipment_model,
+                            ),
+                            _build_chat_client(http, settings, timeout_seconds=30.0),
+                        ),
+                    )
             if (
                 rag_repository is not None
                 and settings.vercel_environment == "preview"
@@ -253,6 +291,8 @@ def _runtime_lifespan(
                 app.state.assessment_scorer = _UnavailableAssessmentScorer()
                 app.state.rag_admin_service = None
                 app.state.rag_assistant_service = None
+                app.state.demo_service = None
+                app.state.demo_assistant_service = None
 
     return lifespan
 
