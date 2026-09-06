@@ -53,13 +53,12 @@ export default function OperationsDashboard({ Twin3DComponent = null, ragDataSou
     if (historyDataSource) {
       return (
         <main className="operations-shell">
-          <header><p className="eyebrow">TwinOps · Motor e bomba</p><h1>Visão geral</h1></header>
-          <div className="dashboard-actions dashboard-actions--compact">
-            <p>Medições preservadas do conjunto motor-bomba</p>
+          <header className="overview-heading">
+            <div><p className="eyebrow">Visão geral</p><h1>Motor e bomba</h1></div>
             <button className="button-secondary" type="button" onClick={() => void refreshNow()} disabled={refreshing}>
               {refreshing ? "Atualizando…" : "Atualizar agora"}
             </button>
-          </div>
+          </header>
           <Suspense fallback={<p role="status">Consultando o histórico disponível…</p>}>
             <HistoricalWorkspace dataSource={historyDataSource} compact liveUnavailable Twin3DComponent={Twin3DComponent ?? undefined} />
           </Suspense>

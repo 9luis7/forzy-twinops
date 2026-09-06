@@ -236,7 +236,7 @@ it("keeps real historical records usable on the overview when current collection
   const TwinProbe = ({ snapshot }) => <div data-testid="historical-main-twin" data-mode={snapshot.mode} data-revision={snapshot.revision} />;
   render(<App dataSource={source} historyDataSource={historyDataSource} Twin3DComponent={TwinProbe} />);
   expect(await screen.findByTestId("historical-main-twin")).toHaveAttribute("data-mode", "historical");
-  expect(screen.getByRole("heading", { name: "Visão geral" })).toBeVisible();
+  expect(screen.getByRole("heading", { name: "Motor e bomba" })).toBeVisible();
   expect(screen.getByText(/A coleta atual está indisponível/)).toBeVisible();
   expect(screen.getByText(/Análise retrospectiva · score relativo, não probabilidade de falha/)).toBeVisible();
   expect(screen.queryByRole("form", { name: "Filtros do histórico" })).not.toBeInTheDocument();

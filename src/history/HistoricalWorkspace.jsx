@@ -30,9 +30,9 @@ function HistoricalSensor({ id, sensor, selected, onSelect }) {
       <span className="historical-sensor-dot" aria-hidden="true" />{id.toUpperCase()} · {id === "s1" ? "Motor" : "Bomba"}
     </button>
     <p className="historical-condition" data-status={assessment?.status ?? "unknown"}>{labels[assessment?.status ?? "unknown"]}</p>
-    <dl className="historical-values">{METRICS.map((metric) => <div key={metric.key}><dt>{metric.label}</dt><dd>{number(sensor.latest?.measurements[metric.key]?.value)} <small>{metric.unit}</small></dd></div>)}</dl>
-    <p className="historical-note">Persistência: {number(assessment?.persistenceSeconds)} s</p>
+    <dl className="historical-values">{METRICS.filter((metric) => metric.key !== "vibrationAcceleration").map((metric) => <div key={metric.key}><dt>{metric.label}</dt><dd>{number(sensor.latest?.measurements[metric.key]?.value)} <small>{metric.unit === "degC" ? "°C" : metric.unit}</small></dd></div>)}</dl>
     <details><summary>Detalhes da avaliação de {id.toUpperCase()}</summary>
+      <p>Aceleração: {number(sensor.latest?.measurements.vibrationAcceleration?.value)} g · Persistência: {number(assessment?.persistenceSeconds)} s</p>
       <p>Score relativo: {number(assessment?.anomalyScore)} · Deterioração relativa: {number(assessment?.deteriorationScore)}</p>
       {sensor.assessment?.model && <p>Modelo {sensor.assessment.model.name} · {sensor.assessment.model.version}</p>}
       {sensor.assessment?.model?.trainedUntil && <p>Treinado com dados até {date(sensor.assessment.model.trainedUntil)} · São Paulo</p>}
@@ -103,7 +103,7 @@ export default function HistoricalWorkspace({ dataSource, compact = false, liveU
 
   return <section className={`historical-workspace ${compact ? "historical-workspace--compact" : ""}${copilotOpen && context ? " has-copilot-open" : ""}`} aria-labelledby={titleId} aria-busy={busy}>
     <header className="historical-header"><div>{!compact && <p className="eyebrow">Dados reais preservados</p>}<h2 id={titleId}>{compact ? "Últimos dados disponíveis" : "Histórico do equipamento"}</h2>{!compact && <p>Consulte os registros do equipamento e sua avaliação no instante selecionado.</p>}</div>{compact && <a className="historical-link" href="/history">Consultar histórico →</a>}</header>
-    {liveUnavailable && <p className="historical-notice" role="status">A coleta atual está indisponível. Os registros históricos continuam disponíveis para consulta.</p>}
+    {liveUnavailable && <p className="historical-notice" role="status">A coleta atual está indisponível.{!compact && " Os registros históricos continuam disponíveis para consulta."}</p>}
     {!compact && datasets.length > 0 && <form className="historical-filters panel" onSubmit={apply} aria-label="Filtros do histórico">
       <label>Conjunto histórico<select value={draft.datasetId} onChange={(event) => setDraft({ ...draft, datasetId: event.target.value })}>{datasets.map((dataset) => <option value={dataset.datasetId} key={dataset.datasetId}>{dataset.label}</option>)}</select></label>
       <label>Início — São Paulo<input type="datetime-local" step="1" value={draft.from} onChange={(event) => setDraft({ ...draft, from: event.target.value })} /></label>
@@ -123,8 +123,8 @@ export default function HistoricalWorkspace({ dataSource, compact = false, liveU
         <p className="historical-note">{compact ? "Análise retrospectiva · score relativo, não probabilidade de falha. Validação humana obrigatória." : "Avaliação retrospectiva, relativa ao histórico; não representa probabilidade de falha. Validação humana obrigatória."}</p>
       </section>
       <div className="historical-twin-grid">
-        <section className="panel historical-twin"><div className="panel-heading"><h3>Equipamento neste instante</h3><span className="historical-condition" data-status={context.status}>{labels[context.status]}</span></div><Twin3DComponent snapshot={context} selectedSensor={selected} onSelectSensor={selectSensor} /><p className="historical-note">S1 no motor e S2 na bomba, junto ao acoplamento: vínculos e posições assumidos, sem validação física.</p></section>
         <aside className="historical-sensors" aria-label="Sensores no instante consultado">{["s1", "s2"].map((id) => <HistoricalSensor id={id} key={id} sensor={context.sensors[id]} selected={selected} onSelect={selectSensor} />)}</aside>
+        <section className="panel historical-twin"><div className="panel-heading"><h3>Equipamento neste instante</h3><span className="historical-condition" data-status={context.status}>{labels[context.status]}</span></div><Twin3DComponent snapshot={context} selectedSensor={selected} onSelectSensor={selectSensor} /><p className="historical-note">S1 no motor e S2 na bomba, junto ao acoplamento: vínculos e posições assumidos, sem validação física.</p></section>
       </div>
       <DemoTrends context={context} selected={selected} onSelect={selectSensor} />
       {!compact && <section className="panel historical-records" aria-label="Registros do período">

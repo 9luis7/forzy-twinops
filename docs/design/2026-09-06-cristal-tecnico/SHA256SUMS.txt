@@ -1,0 +1,8 @@
+2f4ae296091dba387078985fa7734b388f5b493b7607e7c3846a89c84e205deb  docs/design/2026-09-06-cristal-tecnico/concept-cristal-tecnico.png
+d389462ca598c88faea0b062e8bb41021981290a2f8166e9c0fa1d4d41a8f21b  docs/design/2026-09-06-cristal-tecnico/premium-brand-detail.jpg
+04dc9466d4bb197079f09a4702ad7df031b63cce8493a0a1e87601ff520ca691  docs/design/2026-09-06-cristal-tecnico/premium-chat-answer.jpg
+353388b25ab3a076679b290774c60af0daf406b010a7c431cc4aa810eac6af72  docs/design/2026-09-06-cristal-tecnico/premium-desktop-final.jpg
+8476be74b143bdb35fa0ca828e3f4eafd9ff0b0eabb7fc5af655757a3445f77a  docs/design/2026-09-06-cristal-tecnico/premium-mobile-chat.jpg
+8cf603ab0269199decb318cdf5c3738b01a85507516be970838ec93ed6d9339c  docs/design/2026-09-06-cristal-tecnico/premium-mobile-overview.jpg
+4601a540ad05d3e7927858f7a7b66e56f05ac5b5f65deef1acb5d48fe4361e65  docs/design/2026-09-06-cristal-tecnico/premium-tablet.jpg
+72be403d2a2bd24f4a8217734ba93f215a7dbbe500ec120b0508e8942b96ed22  public/brand/twinops-symbol.png

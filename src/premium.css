@@ -1,0 +1,228 @@
+/* Selected direction: Cristal técnico. Shared presentation; data remains owned
+   by the existing operational, historical and replay components. */
+:root {
+  font-family: "Segoe UI", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+  --glass-card: rgb(13 26 43 / 78%);
+  --glass-overlay: rgb(13 26 43 / 94%);
+  --glass-border: rgb(169 186 208 / 23%);
+  --glass-inset: rgb(232 238 247 / 4%);
+  --radius: 16px;
+  --radius-control: 10px;
+  --motion-fast: 180ms;
+  --motion-panel: 220ms;
+  --motion-ease: cubic-bezier(.2, .8, .2, 1);
+}
+.product-shell, .copilot-root { --copilot-panel-width: clamp(22rem, 30vw, 27rem); --copilot-panel-gap: 1.5rem; }
+
+body { line-height: 1.5; }
+button, input, select, textarea { font: inherit; }
+button { font-weight: 600; border-radius: var(--radius-control); }
+button:disabled { cursor: not-allowed; }
+button:hover:not(:disabled) { transform: none; }
+button, a, input, select, textarea, summary {
+  transition: color var(--motion-fast) ease, background-color var(--motion-fast) ease, border-color var(--motion-fast) ease, box-shadow var(--motion-fast) ease;
+}
+.product-shell h1 { letter-spacing: -.035em; }
+.product-shell h2 { font-size: 1.25rem; letter-spacing: -.025em; }
+.product-shell .eyebrow { font-size: .7rem; font-weight: 600; letter-spacing: .1em; color: var(--muted); }
+
+.product-shell .product-navigation {
+  position: sticky;
+  top: 0;
+  z-index: 35;
+  min-height: 80px;
+  padding: 0 clamp(1rem, 3.2vw, 3rem);
+  gap: 2rem;
+  background: rgb(7 17 31 / 94%);
+  border-bottom-color: var(--glass-border);
+}
+.product-navigation .product-brand {
+  display: inline-flex;
+  align-items: center;
+  gap: .7rem;
+  align-self: stretch;
+  padding-right: 1.75rem;
+  border-right: 1px solid var(--glass-border);
+  letter-spacing: 0;
+}
+.product-brand .product-brand__symbol { width: 48px; height: 48px; object-fit: contain; flex: 0 0 auto; }
+.product-brand strong { font-size: 1.65rem; letter-spacing: -.04em; font-weight: 650; color: var(--text); }
+.product-brand__endorsement { margin-left: .3rem; color: var(--muted); font-size: .75rem; }
+.product-navigation nav { align-self: stretch; gap: 1rem; }
+.product-navigation nav a {
+  padding: 1rem .7rem;
+  border-radius: 0;
+  border-bottom: 3px solid transparent;
+  font-size: .95rem;
+}
+.product-navigation nav a[aria-current=page] { background: transparent; border-bottom-color: var(--teal); }
+.product-navigation .product-demo-link { font-size: .85rem; border-color: transparent; }
+.product-navigation .product-demo-link:hover { background: var(--surface-raised); }
+
+.product-shell .operations-shell { width: 100%; max-width: 1560px; padding: 2rem clamp(1rem, 3.2vw, 3rem) 5rem; }
+.product-shell .operations-shell h1 { max-width: none; font-size: clamp(1.8rem, 2.8vw, 2.5rem); line-height: 1.15; }
+.product-shell .overview-heading { display: flex; align-items: center; justify-content: space-between; gap: 1rem; margin-bottom: .75rem; }
+.product-shell .overview-heading button { flex: 0 0 auto; font-size: .8rem; }
+.product-shell .asset-header { padding: 0; border: 0; background: transparent; box-shadow: none; border-radius: 0; }
+.product-shell .panel, .product-shell .historical-sensor, .product-shell .demo-sensor {
+  background: var(--glass-card);
+  border-color: var(--glass-border);
+  border-radius: var(--radius);
+  box-shadow: inset 0 1px 0 var(--glass-inset), 0 8px 24px rgb(0 0 0 / 10%);
+}
+.product-shell .panel-heading { margin-bottom: 1rem; }
+.product-shell .panel-heading h3 { margin-bottom: 0; }
+.product-shell .product-overview-summary { background: transparent; border: 0; border-block: 1px solid var(--glass-border); border-radius: 0; padding: 1rem 0; }
+.product-shell .dashboard-actions { background: transparent; border: 0; padding: .35rem 0; }
+.product-shell .dashboard-actions button,
+.product-shell .secondary-button,
+.product-shell .button-secondary,
+.copilot-root .button-secondary,
+.copilot-root .secondary-button {
+  color: var(--text);
+  background: rgb(18 34 56 / 52%);
+  border: 1px solid var(--glass-border);
+  font-weight: 500;
+}
+.product-shell .dashboard-actions button:hover:not(:disabled),
+.product-shell .secondary-button:hover:not(:disabled),
+.product-shell .button-secondary:hover:not(:disabled),
+.copilot-root .button-secondary:hover:not(:disabled),
+.copilot-root .secondary-button:hover:not(:disabled) { background: var(--surface-raised); border-color: #58718e; }
+
+.product-shell .sensor-grid { gap: 1.5rem; }
+.product-shell :is(.sensor-card, .historical-sensor, .demo-sensor) { border-left: 2px solid var(--blue); min-width: 0; }
+.product-shell :is(.sensor-card, .historical-sensor)[data-sensor=s2],
+.product-shell .demo-sensor:has(.demo-dot.s2) { border-left-color: var(--teal); }
+.product-shell .sensor-card .panel-heading { align-items: center; flex-wrap: wrap; gap: .5rem; }
+.product-shell .sensor-card .panel-heading .eyebrow { display: none; }
+.product-shell .sensor-card h2 { font-size: 1.1rem; color: var(--blue); }
+.product-shell .sensor-card[data-sensor=s2] h2 { color: var(--teal); }
+.product-shell .quality-chip { background: rgb(169 186 208 / 8%); border-color: transparent; font-weight: 400; }
+.product-shell .measurement { border: 0; border-radius: 0; padding: .25rem .75rem .25rem 0; background: transparent; }
+.product-shell .measurement + .measurement { padding-left: .75rem; border-left: 1px solid var(--glass-border); }
+.product-shell .measurement dd strong { font-weight: 500; font-size: clamp(1.5rem, 2.2vw, 2rem); font-variant-numeric: tabular-nums; }
+
+.product-shell .historical-workspace .historical-twin-grid { grid-template-columns: minmax(0, 1fr); gap: 1.5rem; }
+.product-shell .historical-workspace .historical-sensors,
+.product-shell .historical-workspace.has-copilot-open .historical-sensors { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1.5rem; margin: 0; }
+.product-shell .historical-workspace .historical-twin { margin: 0; }
+.product-shell .historical-sensor { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: .6rem; padding: 1.1rem 1.25rem .55rem; align-content: start; }
+.product-shell .historical-sensor-heading { color: var(--blue); font-size: 1rem; font-weight: 600; text-align: left; }
+.product-shell .historical-sensor[data-sensor=s2] .historical-sensor-heading { color: var(--teal); }
+.product-shell .historical-sensor > .historical-condition { justify-self: end; align-self: center; margin: 0; padding: .25rem .6rem; border-radius: 999px; background: rgb(169 186 208 / 8%); font-size: .75rem; }
+.product-shell .historical-sensor > :is(dl, details) { grid-column: 1 / -1; }
+.product-shell .historical-values { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1.25rem; margin: .6rem 0 .2rem; }
+.product-shell .historical-values > div + div { border-left: 1px solid var(--glass-border); padding-left: 1.25rem; }
+.product-shell .historical-values dt { font-size: .85rem; }
+.product-shell .historical-values dd { font-size: clamp(1.75rem, 2.8vw, 2.4rem); font-weight: 400; line-height: 1.2; }
+.product-shell .historical-values small { font-size: .85rem; white-space: nowrap; }
+.product-shell .historical-sensor details { margin-top: 0; border: 0; font-size: .8rem; }
+.product-shell .historical-sensor summary { font-size: .75rem; color: var(--muted); }
+.product-shell .historical-workspace--compact .historical-header { justify-content: flex-end; margin: 0 0 .25rem; }
+.product-shell .historical-workspace--compact .historical-header h2,
+.product-shell .overview-heading .eyebrow { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+.product-shell .historical-workspace--compact .historical-link { padding: .35rem 0; font-size: .8rem; }
+.product-shell .historical-workspace--compact .historical-selection { display: flex; flex-wrap: wrap; gap: .2rem 1rem; align-items: baseline; background: transparent; box-shadow: none; border: 0; padding: .25rem 0 .75rem; margin: 0; }
+.product-shell .historical-workspace--compact .historical-selection .eyebrow { color: var(--text); letter-spacing: 0; text-transform: none; font-size: .8rem; }
+.product-shell .historical-workspace--compact .historical-selection h3 { font-size: .9rem; font-weight: 400; color: var(--muted); }
+.product-shell .historical-workspace--compact .historical-selection .historical-note { width: 100%; }
+.product-shell .historical-workspace--compact .historical-notice { background: transparent; margin-bottom: .5rem; padding-block: .25rem; color: var(--muted); }
+/* The overview reserves enough room for the twin and the sensor summaries.
+   Canvas dimensions are otherwise supplied inline by the shared 3D viewer. */
+.product-shell .historical-workspace--compact .demo-canvas-viewport { height: min(32vh, 22rem) !important; min-height: 18rem !important; }
+.product-shell .historical-workspace--compact .historical-twin > section { display: flex; flex-direction: column; }
+.product-shell .historical-workspace--compact .demo-model-controls { order: 1; margin: .5rem 0; }
+.product-shell .historical-workspace--compact .historical-twin > section > p { order: 2; }
+.product-shell .historical-notice { padding: .65rem .85rem; font-size: .85rem; background: rgb(251 191 36 / 6%); border-left-width: 2px; }
+.product-shell .historical-workspace .demo-model-controls { gap: .5rem; margin: .25rem 0 1rem; }
+.product-shell .demo-model-controls button { min-height: 40px; padding: .5rem .75rem; font-size: .8rem; }
+.product-shell .demo-model-controls button[aria-pressed=true] { border-color: var(--blue); color: var(--blue); background: rgb(96 165 250 / 10%); }
+.product-shell .demo-marker { background: var(--glass-overlay); }
+.product-shell .demo-trends { margin-top: 1.5rem; }
+
+.copilot-root .copilot-panel {
+  inset-block: 112px 1.5rem;
+  inset-inline-end: 1.5rem;
+  background: var(--glass-overlay);
+  border-color: var(--glass-border);
+  box-shadow: inset 0 1px 0 var(--glass-inset), 0 12px 40px rgb(0 0 0 / 16%);
+}
+.copilot-root .copilot-panel__header { margin-inline: 1.5rem; padding: 1.5rem 0 1.25rem; border-color: var(--glass-border); }
+.copilot-root .copilot-panel__header h2 { font-size: 1.3rem; font-weight: 650; }
+.copilot-root .copilot-panel__header p { font-size: .85rem; }
+.copilot-root .copilot-panel__content { flex: 1; display: flex; flex-direction: column; padding: 1.5rem; scrollbar-width: thin; }
+.copilot-root .copilot-panel .technical-assistant { display: flex; flex: 1; flex-direction: column; margin-top: 0; }
+/* Keep the nested section's accessible name while avoiding a second visible title. */
+.copilot-root .technical-assistant > .panel-heading {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip-path: inset(50%); white-space: nowrap;
+}
+.copilot-root .historical-copilot-context { font-size: .85rem; line-height: 1.6; margin-bottom: 1rem; }
+.copilot-root .prompt-suggestions { display: flex; flex-wrap: wrap; gap: .6rem; margin: 0 0 1.25rem; }
+.copilot-root .prompt-suggestions button { min-height: 44px; padding: .5rem .6rem; border-radius: var(--radius-control); font-size: .75rem; line-height: 1.4; text-align: left; }
+.copilot-root .technical-assistant:not(:has(.assistant-answer)) .assistant-form { margin-top: auto; padding-top: 1.5rem; }
+.copilot-root .assistant-form textarea { min-height: 112px; resize: vertical; background: rgb(7 17 31 / 50%); border-color: var(--glass-border); border-radius: 12px; line-height: 1.6; }
+.copilot-root .assistant-form__actions { justify-content: flex-end; }
+.copilot-root .assistant-form__actions button { font-size: .85rem; }
+.copilot-root .copilot-dock--open .copilot-launcher { display: none; }
+.copilot-root .copilot-launcher { background: var(--surface-raised); color: var(--text); border-color: rgb(45 212 191 / 55%); }
+.copilot-root .copilot-launcher svg { color: var(--teal); }
+.copilot-root .copilot-launcher:hover { background: #1a3045; border-color: var(--teal); }
+
+@supports ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  .product-shell .product-navigation, .copilot-root .copilot-panel {
+    -webkit-backdrop-filter: blur(16px);
+    backdrop-filter: blur(16px);
+  }
+}
+@media (prefers-reduced-motion: no-preference) {
+  .copilot-root .copilot-panel:not([hidden]) { animation: premium-panel-enter var(--motion-panel) var(--motion-ease) both; }
+  .product-shell .historical-sensor { transition: border-color var(--motion-fast) ease, background-color var(--motion-fast) ease; }
+  @keyframes premium-panel-enter { from { opacity: 0; transform: translateX(12px); } to { opacity: 1; transform: translateX(0); } }
+}
+@media (min-width: 761px) {
+  .product-shell .operations-shell.has-copilot-open,
+  .product-shell .operations-shell:has(.historical-workspace.has-copilot-open),
+  .product-shell .demo-shell.has-copilot-open,
+  .product-shell .history-shell.has-copilot-open { margin-left: 0; margin-right: calc(var(--copilot-panel-width) + var(--copilot-panel-gap)); max-width: calc(100% - var(--copilot-panel-width) - var(--copilot-panel-gap)); }
+  .product-shell .historical-workspace.has-copilot-open { margin-right: 0; }
+}
+@media (min-width: 761px) and (max-width: 1150px) {
+  .product-shell .historical-workspace.has-copilot-open .historical-sensors,
+  .product-shell .operations-shell.has-copilot-open .sensor-grid,
+  .product-shell .demo-shell.has-copilot-open .demo-sensors { grid-template-columns: minmax(0, 1fr); }
+  .product-shell .historical-sensor { grid-template-columns: minmax(0, 1fr); }
+  .product-shell .historical-sensor > .historical-condition { justify-self: start; }
+  .product-brand__endorsement { display: none; }
+}
+@media (max-width: 760px) {
+  .product-shell .product-navigation { gap: 0 .5rem; min-height: 0; padding: .5rem 1rem 0; }
+  .product-navigation .product-brand { border: 0; padding-right: 0; min-height: 48px; }
+  .product-brand strong { font-size: 1.4rem; }
+  .product-brand .product-brand__symbol { width: 40px; height: 40px; }
+  .product-brand__endorsement { display: none; }
+  .product-navigation nav { gap: .5rem; }
+  .product-navigation nav a { padding: .65rem .5rem; }
+  .product-shell .operations-shell { padding: 1.5rem 1rem 5rem; }
+  .product-shell .historical-workspace .historical-sensors { grid-template-columns: minmax(0, 1fr); gap: 1rem; }
+  .product-shell .historical-workspace.has-copilot-open { margin-right: 0; }
+  .product-shell .historical-sensor { padding-inline: 1rem; }
+  .product-shell .historical-values dd { font-size: 2rem; }
+  .product-shell .asset-header { align-items: start; gap: 1rem; flex-direction: column; }
+  .copilot-root .copilot-panel { inset: 0; width: 100%; max-width: none; height: 100dvh; border: 0; border-radius: 0; background: var(--surface); backdrop-filter: none; }
+  .copilot-root .copilot-panel__header { margin-inline: 1rem; padding-top: max(1rem, env(safe-area-inset-top)); }
+  .copilot-root .copilot-panel__content { padding: 1rem 1rem max(1rem, env(safe-area-inset-bottom)); }
+  .copilot-root .assistant-form textarea { min-height: 96px; }
+}
+@media (max-width: 380px) {
+  .product-shell .historical-sensor { grid-template-columns: minmax(0, 1fr); }
+  .product-shell .historical-sensor > .historical-condition { justify-self: start; }
+}
+@media (max-width: 760px) and (prefers-reduced-motion: no-preference) {
+  .copilot-root .copilot-panel:not([hidden]) { animation-name: premium-mobile-enter; }
+  @keyframes premium-mobile-enter { from { opacity: 0; } to { opacity: 1; } }
+}
+@media (prefers-reduced-motion: reduce) {
+  .product-shell *, .copilot-root * { transition: none !important; animation: none !important; scroll-behavior: auto !important; }
+}
