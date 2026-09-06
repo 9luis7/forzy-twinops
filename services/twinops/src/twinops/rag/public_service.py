@@ -5,6 +5,7 @@ import re
 from time import perf_counter
 import unicodedata
 from uuid import uuid4
+from zoneinfo import ZoneInfo
 
 from twinops.rag.extractive import select_safe_excerpts
 from twinops.rag.generation import (
@@ -35,7 +36,7 @@ DEFAULT_LIMITATIONS = (
 OUT_OF_SCOPE_MESSAGES = {
     "root_cause": (
         "Não posso determinar causa raiz. Posso apresentar somente "
-        "evidências do manual e do assessment atual para validação humana."
+        "evidências do manual e dos sensores para validação humana."
     ),
     "probability": (
         "Não posso estimar probabilidade de falha. Posso apresentar somente "
@@ -494,7 +495,7 @@ class RagAssistantService:
             dict.fromkeys(item.exact_quote for item in generated.manual_citations)
         )
         return _response(
-            manual="Segundo o manual:\n" + "\n".join(
+            manual="\n".join(
                 f"- {quote}" for quote in quotes
             ),
             current_state=current_state,
@@ -571,7 +572,7 @@ class RagAssistantService:
                     _manual_citation(item.hit, excerpt=item.excerpt)
                     for item in selections
                 )
-                manual = "Segundo o manual:\n" + "\n".join(
+                manual = "\n".join(
                     f"- {item.excerpt}" for item in selections
                 )
                 grounding_status = "degraded_fallback"
@@ -680,7 +681,7 @@ def _out_of_scope_response(
 ) -> AssistantQueryResponse:
     return _response(
         manual=OUT_OF_SCOPE_MESSAGES[reason],
-        current_state=_deterministic_current_state(operational),
+        current_state=_deterministic_current_state(operational, include_evidence=False),
         grounding_status="out_of_scope",
         citations=[],
         retrieval=None,
@@ -781,23 +782,55 @@ def _telemetry_citation(
     )
 
 
-def _deterministic_current_state(operational: TrustedOperationalContext) -> str:
+def _sao_paulo_time(value) -> str:
+    """Presentation only: source timestamps and citation provenance stay intact."""
+    return value.astimezone(ZoneInfo("America/Sao_Paulo")).strftime("%d/%m/%Y às %H:%M:%S") + " (São Paulo)"
+
+
+def _concise_condition(status, evidence, quality_status=None) -> str:
+    labels = {"normal": "sem desvio identificado", "watch": "atenção", "alert": "alerta",
+              "insufficient_data": "dados insuficientes", "unknown": "avaliação indisponível"}
+    text = labels.get(status, "avaliação indisponível")
+    if quality_status == "degraded":
+        text += " (dados com ressalvas)"
+    elif quality_status == "insufficient_data" and status != "insufficient_data":
+        text += " (dados insuficientes)"
+    # The numbers are calculated features, not raw readings or inferred causes.
+    # Unknown features remain in the evidence payload rather than acquiring a
+    # potentially incorrect human label in the main answer.
+    descriptions = (
+        ("velocity_ewma", "mm/s", "vibração média recente", "mm/s"),
+        ("temperature_deviation", "degC", "diferença para a temperatura típica recente da mesma fase", "°C"),
+        ("velocity_slope", "mm/s/s", "variação da vibração", "mm/s por s"),
+        ("velocity_change_point", "mm/s", "mudança da vibração", "mm/s"),
+    )
+    values = {item.feature: item for item in evidence}
+    brief = []
+    for feature, expected_unit, label, display_unit in descriptions:
+        item = values.get(feature)
+        if item is None or item.unit != expected_unit:
+            continue
+        number = format(item.value, ".3g").replace(".", ",")
+        brief.append(f"{label}: {number} {display_unit}")
+        if len(brief) == 2:
+            break
+    return text + (" — " + "; ".join(brief) if brief else "")
+
+
+def _deterministic_current_state(operational: TrustedOperationalContext, *, include_evidence=True) -> str:
     if not operational.available:
         text = (
-            "O assessment operacional atual está indisponível; não é seguro "
-            "inferir o estado do equipamento."
+            "Avaliação indisponível; os dados não permitem informar a condição."
         )
         if operational.outside_window:
-            text += " O equipamento está fora da janela operacional."
+            text += " A coleta está fora do horário programado."
         return text
-    assert operational.window_start is not None
     assert operational.window_end is not None
-    assert operational.freshness_ms is not None
     base = (
-        f"O assessment atual está em {operational.assessment_status}, com qualidade "
-        f"{operational.quality_status}. A janela vai de "
-        f"{operational.window_start.isoformat()} a {operational.window_end.isoformat()} "
-        f"e o frescor é {operational.freshness_ms:.0f} ms."
+        f"Condição em {_sao_paulo_time(operational.window_end)}: "
+        + _concise_condition(operational.assessment_status,
+                             operational.evidence if include_evidence else (), operational.quality_status)
+        + "."
     )
     return _append_operational_warning(base, operational)
 
@@ -807,14 +840,14 @@ def _append_operational_warning(
 ) -> str:
     warnings = []
     if operational.stale:
-        warnings.append("O dado operacional está antigo e deve ser atualizado.")
+        warnings.append("Dado antigo; atualize antes de decidir.")
     if operational.operational_state == "last_known":
         warnings.append(
-            "Este é o último estado conhecido e não uma medição recebida agora."
+            "Este é o último estado conhecido."
         )
     if operational.outside_window:
         warnings.append(
-            "O equipamento está fora da janela operacional; o estado é apenas o último conhecido."
+            "A coleta está fora do horário programado; este é o último estado conhecido."
         )
     return " ".join((text, *warnings))
 

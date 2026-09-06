@@ -81,7 +81,8 @@ async def test_real_repository_allows_advance_during_generation_and_preserves_re
     ready = await pending
     assert ready["status"] == "ready"
     assert ready["contextRevision"] == 8
-    assert "revisão 8, linha 150" in ready["recommendation"]["answer"]["currentState"]
+    assert ready["sourceRow"] == 150
+    assert "12/08/2026 às 10:01:00 (São Paulo)" in ready["recommendation"]["answer"]["currentState"]
     assert repo.get_context("run", "secret")["revision"] == 9
     assert await assistant.recommendation("run", "secret", "event-1") == ready
 
@@ -161,7 +162,8 @@ async def test_real_repository_invalid_citation_then_new_valid_generation_preser
     assert ready["recommendation"]["fallbackUsed"] is False
     manual = [c for c in ready["recommendation"]["citations"] if c["type"] == "manual"]
     assert [c["excerpt"] for c in manual] == [_generated().manual_citations[0].exact_quote]
-    assert "revisão 8, linha 150" in ready["recommendation"]["answer"]["currentState"]
+    assert ready["contextRevision"] == 8 and ready["sourceRow"] == 150
+    assert "12/08/2026 às 10:01:00 (São Paulo)" in ready["recommendation"]["answer"]["currentState"]
     assert chat.calls[0] == chat.calls[1]
     assert repo.get_context("run", "secret")["revision"] == 9
     assert await assistant.recommendation("run", "secret", "event-1") == ready

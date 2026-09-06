@@ -1,23 +1,15 @@
 import React from "react";
+import { formatDateTime } from "../../lib/displayTime.js";
 import "./operationalDetails.css";
 
 const numberFormatter = new Intl.NumberFormat("pt-BR");
-const dateFormatter = new Intl.DateTimeFormat("pt-BR", {
-  timeZone: "America/Sao_Paulo",
-  dateStyle: "short",
-  timeStyle: "medium",
-});
 const errorLabels = {
   upstream_unavailable: "Origem indisponível",
   invalid_payload: "Resposta inválida da origem",
   null: "Nenhum erro de coleta registrado",
 };
 
-const formatDate = (value) => {
-  if (value === null) return "Indisponível";
-  const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? "Indisponível" : dateFormatter.format(date);
-};
+const formatDate = (value) => formatDateTime(value, "Indisponível");
 
 const safeErrorLabel = (error) => {
   const key = error === null ? "null" : error;
@@ -33,6 +25,7 @@ export default function IntegrationHealth({ integration }) {
         </div>
       </div>
       <p className="model-meta">A disponibilidade da coleta não indica a condição do equipamento.</p>
+      <p className="model-meta">Horário de São Paulo.</p>
       <div className="health-grid">
         {Object.entries(integration.sensors).map(([sensorId, health]) => (
           <article className="health-card" key={sensorId}>

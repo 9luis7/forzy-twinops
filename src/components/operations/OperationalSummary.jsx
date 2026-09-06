@@ -1,7 +1,7 @@
 import React from "react";
+import { formatDateTime } from "../../lib/displayTime.js";
 
 const statuses = { normal: "Sem desvio relevante", watch: "Atenção", alert: "Alerta relativo", insufficient_data: "Dados insuficientes" };
-const clock = new Intl.DateTimeFormat("pt-BR", { timeZone: "America/Sao_Paulo", dateStyle: "short", timeStyle: "short" });
 
 export default function OperationalSummary({ snapshot }) {
   const status = snapshot.assessment?.assessment.status;
@@ -13,7 +13,7 @@ export default function OperationalSummary({ snapshot }) {
     <section className="product-overview-summary" aria-label="Resumo do equipamento">
       <dl>
         <div><dt>Condição avaliada</dt><dd data-condition={status}>{statuses[status] ?? "Sem avaliação disponível"}</dd></div>
-        <div><dt>{observed ? "Última medição informada" : "Último recebimento"}</dt><dd>{timestamp ? `${clock.format(new Date(timestamp))} · Brasília` : "Horário indisponível"}</dd></div>
+        <div><dt>{observed ? "Última medição informada" : "Último recebimento"}</dt><dd>{timestamp ? `${formatDateTime(timestamp, "Horário indisponível")} · São Paulo` : "Horário indisponível"}</dd></div>
       </dl>
       <a href="/history">Consultar histórico →</a>
     </section>

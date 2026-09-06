@@ -89,7 +89,7 @@ export default function OperationsDashboard({ Twin3DComponent = null, ragDataSou
       <OperationalSummary snapshot={snapshot} />
 
       <div className="dashboard-actions">
-        <p>Consulta automática: segunda a quarta, das 12h às 14h, horário de Brasília.</p>
+        <p>Consulta automática: segunda a quarta, das 12h às 14h, horário de São Paulo.</p>
         <button type="button" onClick={() => void refreshNow()} disabled={refreshing}>
           {refreshing ? "Atualizando…" : "Atualizar agora"}
         </button>

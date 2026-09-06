@@ -157,6 +157,54 @@ describe("TechnicalAssistantPanel availability", () => {
 });
 
 describe("TechnicalAssistantPanel grounded answer", () => {
+  it("sends contextual suggestions immediately and blocks duplicate requests", async () => {
+    let resolve;
+    const dataSource = { query: vi.fn(() => new Promise((done) => { resolve = done; })) };
+    render(<TechnicalAssistantPanel assetId="forzy-motor-01" enabled dataSource={dataSource} suggestionContext={{ status: "watch", sensor: "s1" }} />);
+    expect(dataSource.query).not.toHaveBeenCalled();
+    const chip = screen.getByRole("button", { name: "Por que o motor pede atenção?" });
+    fireEvent.click(chip);
+    fireEvent.click(chip);
+    expect(dataSource.query).toHaveBeenCalledTimes(1);
+    expect(dataSource.query.mock.calls[0][1].question).toBe("Quais evidências justificam a atenção do motor S1 neste instante?");
+    expect(chip).toBeDisabled();
+    await act(async () => resolve(groundedResponse()));
+    expect(screen.getByText("IA + manual · fontes validadas")).toBeVisible();
+    expect(screen.getByRole("button", { name: "Verificar lubrificação" })).toBeEnabled();
+    expect(dataSource.query).toHaveBeenCalledTimes(1);
+  });
+
+  it("formats narrative and citation timestamps for Sao Paulo without changing the response", async () => {
+    const response = groundedResponse();
+    response.answer.currentState = "Janela de 2026-05-19T14:49:01.524000+00:00 a 2026-05-19T14:50:01.633000+00:00.";
+    const before = JSON.stringify(response);
+    const dataSource = { query: vi.fn().mockResolvedValue(response) };
+    render(<TechnicalAssistantPanel assetId="forzy-motor-01" enabled dataSource={dataSource} />);
+    fireEvent.click(screen.getByRole("button", { name: "Entender os dados do motor" }));
+    expect(await screen.findByText(/Janela de 19\/05\/2026, 11:49:01 \(São Paulo\) a 19\/05\/2026, 11:50:01/)).toBeVisible();
+    fireEvent.click(screen.getByText("Fontes e evidências"));
+    fireEvent.click(screen.getByText("Sensor · Vibração média recente"));
+    expect(screen.getByText("03/09/2026, 09:00:00")).toBeVisible();
+    expect(screen.getByText("03/09/2026, 09:00:00")).toHaveAttribute("datetime", "2026-09-03T12:00:00+00:00");
+    expect(JSON.stringify(response)).toBe(before);
+  });
+
+  it("keeps unvalidated fallback excerpts out of the main answer while preserving them in sources", async () => {
+    const response = groundedResponse();
+    response.fallbackUsed = true;
+    response.groundingStatus = "degraded_fallback";
+    response.answer.manual = "Trecho de contingência extraído do documento, sem orientação gerada validada.";
+    const dataSource = { query: vi.fn().mockResolvedValue(response) };
+    render(<TechnicalAssistantPanel assetId="forzy-motor-01" enabled dataSource={dataSource} />);
+    fireEvent.click(screen.getByRole("button", { name: "Entender os dados do motor" }));
+    expect(await screen.findByText(/A IA não entregou uma orientação validada/)).toBeVisible();
+    expect(screen.getByText(response.answer.manual)).not.toBeVisible();
+    expect(screen.queryByText("IA + manual · fontes validadas")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByText("Fontes e evidências"));
+    fireEvent.click(screen.getByText("Texto de contingência"));
+    expect(screen.getByText(response.answer.manual)).toBeVisible();
+  });
+
   it("renders a complete response with separate provenance and accessible citations", async () => {
     const dataSource = { query: vi.fn().mockResolvedValue(groundedResponse()) };
 
@@ -180,11 +228,15 @@ describe("TechnicalAssistantPanel grounded answer", () => {
     expect(within(answer).getByText(groundedResponse().answer.currentState)).toBeInTheDocument();
     expect(answer).toHaveFocus();
 
-    const manualSummary = screen.getByText(/Manual · WEG W22 · revisão 2026-01/);
+    const sources = screen.getByText("Fontes e evidências").closest("details");
+    expect(sources).not.toHaveAttribute("open");
+    expect(screen.getByText(/Inspect bearing lubrication/)).not.toBeVisible();
+    fireEvent.click(screen.getByText("Fontes e evidências"));
+    const manualSummary = screen.getByText(/Manual · WEG W22 · p. 4–5/);
     const manualDetails = manualSummary.closest("details");
     fireEvent.click(manualSummary);
     expect(manualDetails).toHaveAttribute("open");
-    expect(within(manualDetails).getByText("Páginas 4–5 · MAINTENANCE")).toBeInTheDocument();
+    expect(within(manualDetails).getByText("MAINTENANCE · revisão 2026-01")).toBeInTheDocument();
     expect(within(manualDetails).getByText(/Inspect bearing lubrication/)).toBeInTheDocument();
     expect(within(manualDetails).getByText(`SHA-256 ${"a".repeat(64)}`)).toBeInTheDocument();
     expect(within(manualDetails).getByRole("link", { name: "Abrir fonte oficial" })).toHaveAttribute(
@@ -192,7 +244,7 @@ describe("TechnicalAssistantPanel grounded answer", () => {
       "https://manufacturer.example/manual.pdf"
     );
 
-    const telemetrySummary = screen.getByText(/Telemetria · velocity_ewma/);
+    const telemetrySummary = screen.getByText(/Sensor · Vibração média recente/);
     const telemetryDetails = telemetrySummary.closest("details");
     fireEvent.click(telemetrySummary);
     expect(within(telemetryDetails).getByText("2,4 mm/s")).toBeInTheDocument();
@@ -263,7 +315,7 @@ describe("TechnicalAssistantPanel grounded answer", () => {
     fireEvent.submit(form);
 
     expect(screen.getByRole("status", { name: "Consultando fontes validadas" })).toHaveTextContent(
-      "Validando citações antes de exibir"
+      "As citações serão validadas antes de aparecer."
     );
     expect(screen.queryByTestId("assistant-answer")).not.toBeInTheDocument();
 
@@ -427,8 +479,8 @@ describe("TechnicalAssistantPanel grounded answer", () => {
 
 describe("TechnicalAssistantPanel explicit safety states", () => {
   it.each([
-    ["manual_insufficient", false, "não contém evidência suficiente"],
-    ["operational_unavailable", false, "estado operacional está indisponível"],
+    ["manual_insufficient", false, "não traz evidência suficiente"],
+    ["operational_unavailable", false, "dados atuais estão indisponíveis"],
     ["out_of_scope", false, "fora do escopo seguro"],
     ["degraded_fallback", true, "orientação de contingência disponível"],
   ])("renders %s as a first-class state", async (groundingStatus, fallbackUsed, expected) => {

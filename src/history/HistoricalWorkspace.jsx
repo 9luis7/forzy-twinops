@@ -3,11 +3,12 @@ import Twin3D from "../components/Twin3D.jsx";
 import DemoTrends, { METRICS } from "../demo/DemoTrends.jsx";
 import { HistoryGatewayError } from "./GatewayHistoryDataSource.js";
 import HistoricalCopilot from "./HistoricalCopilot.jsx";
+import { formatDateTime } from "../lib/displayTime.js";
 import "./history.css";
 
 const labels = { normal: "Sem desvio relevante", watch: "Atenção", alert: "Alerta relativo", insufficient_data: "Dados insuficientes", unknown: "Sem avaliação disponível" };
 const number = (value) => Number.isFinite(value) ? value.toLocaleString("pt-BR", { maximumFractionDigits: 3 }) : "Indisponível";
-const date = (value) => value ? new Date(value).toLocaleString("pt-BR", { timeZone: "America/Sao_Paulo" }) : "Não informado";
+const date = (value) => formatDateTime(value, "Não informado");
 const emptyDraft = { datasetId: "", from: "", to: "", sensor: "all" };
 
 export function brasiliaInputToIso(value) {
@@ -34,7 +35,7 @@ function HistoricalSensor({ id, sensor, selected, onSelect }) {
     <details><summary>Detalhes da avaliação de {id.toUpperCase()}</summary>
       <p>Score relativo: {number(assessment?.anomalyScore)} · Deterioração relativa: {number(assessment?.deteriorationScore)}</p>
       {sensor.assessment?.model && <p>Modelo {sensor.assessment.model.name} · {sensor.assessment.model.version}</p>}
-      {sensor.assessment?.model?.trainedUntil && <p>Treinado com dados até {date(sensor.assessment.model.trainedUntil)} · Brasília</p>}
+      {sensor.assessment?.model?.trainedUntil && <p>Treinado com dados até {date(sensor.assessment.model.trainedUntil)} · São Paulo</p>}
       {sensor.assessment?.evidence?.length > 0 && <ul>{sensor.assessment.evidence.map((evidence) => <li key={evidence.id}>{evidence.feature}: {number(evidence.value)} {evidence.unit}</li>)}</ul>}
     </details>
   </article>;
@@ -105,8 +106,8 @@ export default function HistoricalWorkspace({ dataSource, compact = false, liveU
     {liveUnavailable && <p className="historical-notice" role="status">A coleta atual está indisponível. Os registros históricos continuam disponíveis para consulta.</p>}
     {!compact && datasets.length > 0 && <form className="historical-filters panel" onSubmit={apply} aria-label="Filtros do histórico">
       <label>Conjunto histórico<select value={draft.datasetId} onChange={(event) => setDraft({ ...draft, datasetId: event.target.value })}>{datasets.map((dataset) => <option value={dataset.datasetId} key={dataset.datasetId}>{dataset.label}</option>)}</select></label>
-      <label>Início — Brasília<input type="datetime-local" step="1" value={draft.from} onChange={(event) => setDraft({ ...draft, from: event.target.value })} /></label>
-      <label>Fim — Brasília<input type="datetime-local" step="1" value={draft.to} onChange={(event) => setDraft({ ...draft, to: event.target.value })} /></label>
+      <label>Início — São Paulo<input type="datetime-local" step="1" value={draft.from} onChange={(event) => setDraft({ ...draft, from: event.target.value })} /></label>
+      <label>Fim — São Paulo<input type="datetime-local" step="1" value={draft.to} onChange={(event) => setDraft({ ...draft, to: event.target.value })} /></label>
       <label>Sensor<select value={draft.sensor} onChange={(event) => setDraft({ ...draft, sensor: event.target.value })}><option value="all">Todos os sensores</option><option value="s1">S1 · Motor</option><option value="s2">S2 · Bomba</option></select></label>
       <button type="submit">Aplicar filtros</button>
     </form>}
@@ -116,9 +117,9 @@ export default function HistoricalWorkspace({ dataSource, compact = false, liveU
     {context && <div className="historical-applied" data-revision={context.revision}>
       <section className="panel historical-selection" aria-label="Seleção histórica exibida">
         <p className="eyebrow">Fonte histórica · {context.dataset.label}</p>
-        <h3>Instante consultado: <time dateTime={context.selection.observedAt}>{date(context.selection.observedAt)}</time> · Brasília</h3>
-        {!compact && <p>Último registro do conjunto: {date(context.dataset.endAt)} · Brasília</p>}
-        {!compact && <p>Período aplicado: {applied.from ? date(applied.from) : "Início do conjunto"} — {applied.to ? date(applied.to) : "Fim do conjunto"} · Brasília<br />{context.selection.returnedPairs} pares exibidos de {context.selection.totalPairs} encontrados no período.</p>}
+        <h3>Instante consultado: <time dateTime={context.selection.observedAt}>{date(context.selection.observedAt)}</time> · São Paulo</h3>
+        {!compact && <p>Último registro do conjunto: {date(context.dataset.endAt)} · São Paulo</p>}
+        {!compact && <p>Período aplicado: {applied.from ? date(applied.from) : "Início do conjunto"} — {applied.to ? date(applied.to) : "Fim do conjunto"} · São Paulo<br />{context.selection.returnedPairs} pares exibidos de {context.selection.totalPairs} encontrados no período.</p>}
         <p className="historical-note">{compact ? "Análise retrospectiva · score relativo, não probabilidade de falha. Validação humana obrigatória." : "Avaliação retrospectiva, relativa ao histórico; não representa probabilidade de falha. Validação humana obrigatória."}</p>
       </section>
       <div className="historical-twin-grid">
@@ -128,9 +129,9 @@ export default function HistoricalWorkspace({ dataSource, compact = false, liveU
       <DemoTrends context={context} selected={selected} onSelect={selectSensor} />
       {!compact && <section className="panel historical-records" aria-label="Registros do período">
         <div className="historical-records-heading"><h3>Leituras do período</h3><div className="historical-pagination"><button className="secondary-button" disabled={busy || !context.selection.hasPrevious} onClick={() => navigate(context.selection.previousEndRow)}>Anterior</button><button className="secondary-button" disabled={busy || !context.selection.hasNext} onClick={() => navigate(context.selection.nextEndRow)}>Próximo</button></div></div>
-        <div className="historical-table-scroll"><table><caption>Vibração RMS em mm/s · Horários de Brasília</caption><thead><tr><th scope="col">Data e hora</th>{selected !== "s2" && <th scope="col">S1 · Motor</th>}{selected !== "s1" && <th scope="col">S2 · Bomba</th>}<th scope="col">Consulta</th></tr></thead><tbody>{rows.map((row) => <tr key={row.row} aria-current={row.row === context.selection.endRow ? "true" : undefined}><th scope="row"><time dateTime={row.observedAt}>{date(row.observedAt)}</time></th>{selected !== "s2" && <td>{number(row.s1?.measurements.vibrationVelocityRms?.value)}</td>}{selected !== "s1" && <td>{number(row.s2?.measurements.vibrationVelocityRms?.value)}</td>}<td><button className="secondary-button" disabled={busy || row.row === context.selection.endRow} onClick={() => navigate(row.row)} aria-label={`Analisar instante ${date(row.observedAt)}, registro ${row.row}`}>{row.row === context.selection.endRow ? "Instante exibido" : "Analisar este instante"}</button></td></tr>)}</tbody></table></div>
+        <div className="historical-table-scroll"><table><caption>Vibração RMS em mm/s · Horário de São Paulo</caption><thead><tr><th scope="col">Data e hora</th>{selected !== "s2" && <th scope="col">S1 · Motor</th>}{selected !== "s1" && <th scope="col">S2 · Bomba</th>}<th scope="col">Consulta</th></tr></thead><tbody>{rows.map((row) => <tr key={row.row} aria-current={row.row === context.selection.endRow ? "true" : undefined}><th scope="row"><time dateTime={row.observedAt}>{date(row.observedAt)}</time></th>{selected !== "s2" && <td>{number(row.s1?.measurements.vibrationVelocityRms?.value)}</td>}{selected !== "s1" && <td>{number(row.s2?.measurements.vibrationVelocityRms?.value)}</td>}<td><button className="secondary-button" disabled={busy || row.row === context.selection.endRow} onClick={() => navigate(row.row)} aria-label={`Analisar instante ${date(row.observedAt)}, registro ${row.row}`}>{row.row === context.selection.endRow ? "Instante exibido" : "Analisar este instante"}</button></td></tr>)}</tbody></table></div>
       </section>}
-      <details className="historical-provenance"><summary>Detalhes da fonte e da avaliação</summary><p>{context.dataset.pairCount} pares / {context.dataset.readingCount} leituras · Formato {context.dataset.sourceFormat}</p><p>Período do conjunto: {date(context.dataset.startAt)} — {date(context.dataset.endAt)} · Brasília</p><p>Revisão: <code>{context.revision}</code> · Registro {context.selection.endRow}</p><p>Aceleração exibida nos gráficos, sem participação no score. A consulta mantém a ordem, as repetições e as lacunas dos registros originais.</p></details>
+      <details className="historical-provenance"><summary>Detalhes da fonte e da avaliação</summary><p>{context.dataset.pairCount} pares / {context.dataset.readingCount} leituras · Formato {context.dataset.sourceFormat}</p><p>Período do conjunto: {date(context.dataset.startAt)} — {date(context.dataset.endAt)} · São Paulo</p><p>Revisão: <code>{context.revision}</code> · Registro {context.selection.endRow}</p><p>Aceleração exibida nos gráficos, sem participação no score. A consulta mantém a ordem, as repetições e as lacunas dos registros originais.</p></details>
     </div>}
     {context && <HistoricalCopilot context={context} dataSource={dataSource} open={copilotOpen} onOpenChange={setCopilotOpen} />}
   </section>;

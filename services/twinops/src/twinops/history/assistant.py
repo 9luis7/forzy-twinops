@@ -7,7 +7,6 @@ live telemetry citations, replay sessions or current operational availability.
 
 import asyncio
 from copy import deepcopy
-from datetime import timedelta, timezone
 import re
 from time import perf_counter
 from uuid import uuid4
@@ -15,7 +14,7 @@ from uuid import uuid4
 from twinops.rag.demo_service import DEMO_TOTAL_SECONDS, DemoRagAssistantService
 from twinops.rag.operational import TrustedOperationalContext
 from twinops.rag.public_models import AssistantQueryRequest, AssistantQueryResponse
-from twinops.rag.public_service import DEFAULT_LIMITATIONS
+from twinops.rag.public_service import DEFAULT_LIMITATIONS, _concise_condition, _sao_paulo_time
 
 from .assistant_models import HistoricalQueryResponse, HistoricalSensorEvidence
 from .service import HistoryError, HistoryService, selection_time
@@ -39,8 +38,6 @@ _ASSEMBLY_REFERENCE = re.compile(
     r"motor\s*[-–—]\s*pump|pump\s*[-–—]\s*motor)\b", re.IGNORECASE,
 )
 _PUMP_MANUAL_UNAVAILABLE = "Não há documentação da bomba para orientar procedimentos em S2."
-_STATUS = {"normal": "sem desvio identificado", "watch": "atenção", "alert": "alerta",
-           "insufficient_data": "dados insuficientes", "unknown": "condição indisponível"}
 
 
 def _component_scope(question):
@@ -103,14 +100,13 @@ def _historical_evidence(context):
     return projected
 
 
-def _current_state(context, evidence):
-    instant = selection_time(context["selection"]["observedAt"]).astimezone(timezone(timedelta(hours=-3)))
+def _current_state(context, evidence, *, include_evidence=True):
+    instant = selection_time(context["selection"]["observedAt"])
     return (
-        f"Condição no instante consultado ({instant:%d/%m/%Y às %H:%M:%S}, Brasília): "
-        + "; ".join(f"{item.sensor_id.upper()} ({item.component}, associação assumida): "
-                    + _STATUS.get(item.status, "condição indisponível") for item in evidence)
-        + ". Análise retrospectiva, com scores relativos ao baseline histórico; "
-          "sem estimativa de probabilidade de falha ou condição atual."
+        f"Histórico de {_sao_paulo_time(instant)}. "
+        + " ".join(f"{item.sensor_id.upper()} ({item.component}): "
+                   + _concise_condition(item.status, item.evidence if include_evidence else (), item.quality_status) + "."
+                   for item in evidence)
     )
 
 
@@ -139,7 +135,7 @@ class HistoricalAssistantService:
                 response = AssistantQueryResponse(
                     answer={"manual": "O manual disponível cobre somente o motor WEG W22. "
                             + _PUMP_MANUAL_UNAVAILABLE,
-                            "currentState": _current_state(context, evidence)},
+                            "currentState": _current_state(context, evidence, include_evidence=False)},
                     groundingStatus="out_of_scope", citations=[], corpus=None,
                     models={"embedding": "unavailable", "generation": self.assistant.chat.model},
                     fallbackUsed=False, limitations=list(DEFAULT_LIMITATIONS),
@@ -154,11 +150,10 @@ class HistoricalAssistantService:
                     ), operational=TrustedOperationalContext.unavailable(operational_state="historical"),
                 )
             body = response.model_dump(mode="json", by_alias=True)
-            body["answer"]["currentState"] = _current_state(context, evidence)
+            body["answer"]["currentState"] = _current_state(
+                context, evidence, include_evidence=response.grounding_status != "out_of_scope",
+            )
             body["citations"] = [citation for citation in body["citations"] if citation["type"] == "manual"]
-            if body["citations"]:
-                body["answer"]["manual"] = ("Referência documental do motor WEG W22; sem cobertura da bomba. "
-                                              + body["answer"]["manual"])
             body["limitations"] = list(dict.fromkeys(body["limitations"] + list(HISTORICAL_LIMITATIONS)))
             # Preserve grounded/degraded/refusal outcomes from the shared service.
             # A retrospective score never promotes documentary grounding.

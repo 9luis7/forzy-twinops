@@ -90,9 +90,12 @@ def test_query_binds_actual_window_two_sensors_without_live_arrival_or_writes():
     assert response['groundingStatus'] == 'operational_unavailable'
     assert not response['fallbackUsed']
     assert response['citations'] and all(citation['type'] == 'manual' for citation in response['citations'])
-    assert 'Condição no instante consultado' in response['answer']['currentState']
-    assert 'S1 (motor, associação assumida): atenção' in response['answer']['currentState']
-    assert 'S2 (bomba, associação assumida): sem desvio identificado' in response['answer']['currentState']
+    assert 'Histórico de 18/05/2026 às 21:03:18 (São Paulo)' in response['answer']['currentState']
+    assert 'S1 (motor): atenção' in response['answer']['currentState']
+    assert 'S2 (bomba): sem desvio identificado' in response['answer']['currentState']
+    assert 'vibração média recente: 1,99 mm/s' in response['answer']['currentState']
+    assert all(term not in response['answer']['currentState'] for term in ('assessment', 'watch', 'revisão', 'freshness'))
+    assert any('posições assumidas' in limitation for limitation in response['limitations'])
     assert any('recebimento original é desconhecido' in limitation for limitation in response['limitations'])
     assert any('baseline' in limitation for limitation in response['limitations'])
     assert len(retriever.calls) == len(chat.calls) == 1
@@ -157,6 +160,8 @@ def test_pump_and_unsafe_scope_do_not_call_provider_or_promote_answer(question):
     assert result.status_code == 200
     assert result.json()['response']['groundingStatus'] == 'out_of_scope'
     assert result.json()['response']['citations'] == []
+    assert '1,99' not in result.json()['response']['answer']['currentState']
+    assert 'vibração média recente' not in result.json()['response']['answer']['currentState']
     assert retriever.calls == chat.calls == []
     assert result.json()['historicalEvidence'][0]['sourceRow'] == 100
 

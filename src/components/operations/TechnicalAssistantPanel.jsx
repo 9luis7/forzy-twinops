@@ -1,17 +1,8 @@
 import React, { useEffect, useRef, useState } from "react";
 import { MAX_HISTORY_ANSWER_CHARACTERS } from "../../contracts/rag.js";
-
-const STATUS_COPY = Object.freeze({
-  manual_insufficient: "O manual ativo não contém evidência suficiente para esta pergunta.",
-  operational_unavailable: "O estado operacional está indisponível; a seção do manual permanece separada.",
-  out_of_scope: "A solicitação está fora do escopo seguro deste assistente.",
-  degraded_fallback:
-    "A resposta completa não pôde ser validada; exibindo a orientação de contingência disponível.",
-});
-
-const formatNumber = (value) => new Intl.NumberFormat("pt-BR", {
-  maximumFractionDigits: 3,
-}).format(value);
+import ConciseAnswer from "../assistant/ConciseAnswer.jsx";
+import { promptSuggestions } from "../assistant/promptSuggestions.js";
+import { formatTimestampText } from "../../lib/displayTime.js";
 
 const MANUAL_HISTORY_LABEL = "Segundo o manual:\n";
 
@@ -44,117 +35,13 @@ export const completedAnswer = (response, stateLabel = "Estado atual") => {
   ].join("");
 };
 
-function ManualCitation({ citation }) {
-  const pages = citation.pageStart === citation.pageEnd
-    ? `Página ${citation.pageStart}`
-    : `Páginas ${citation.pageStart}–${citation.pageEnd}`;
-  return (
-    <details className="assistant-citation assistant-citation--manual">
-      <summary>
-        Manual · {citation.manufacturer} {citation.equipmentModel} · revisão {citation.revision}
-      </summary>
-      <div className="assistant-citation__body">
-        <p>{pages} · {citation.section ?? "Seção não identificada"}</p>
-        <blockquote>{citation.excerpt}</blockquote>
-        <code>SHA-256 {citation.contentHash}</code>
-        <a href={citation.sourceUrl} target="_blank" rel="noreferrer">
-          Abrir fonte oficial
-        </a>
-      </div>
-    </details>
-  );
-}
-
-function TelemetryCitation({ citation }) {
-  return (
-    <details className="assistant-citation assistant-citation--telemetry">
-      <summary>Telemetria · {citation.feature}</summary>
-      <div className="assistant-citation__body">
-        <p><strong>{formatNumber(citation.value)} {citation.unit}</strong></p>
-        <p>Assessment {citation.assessmentId}</p>
-        <p>Janela <time dateTime={citation.windowStart}>{citation.windowStart}</time> – <time dateTime={citation.windowEnd}>{citation.windowEnd}</time></p>
-        <p>Recebido em <time dateTime={citation.receivedAt}>{citation.receivedAt}</time></p>
-        <p>Frescor {formatNumber(citation.freshnessMs)} ms · qualidade {citation.qualityStatus}</p>
-        {citation.windowSeconds !== null ? <p>Janela de evidência {formatNumber(citation.windowSeconds)} s</p> : null}
-        <code>Evidência {citation.evidenceId}</code>
-      </div>
-    </details>
-  );
-}
-
 function AssistantAnswer({ response, answerRef, stateLabel, renderStateEvidence, statusNotices }) {
-  const manualCitations = response.citations.filter((item) => item.type === "manual");
-  const telemetryCitations = response.citations.filter((item) => item.type === "telemetry");
-  const stateNotice = statusNotices?.[response.groundingStatus] ?? STATUS_COPY[response.groundingStatus];
-
-  return (
-    <article
-      className="assistant-answer"
-      data-testid="assistant-answer"
-      ref={answerRef}
-      tabIndex={-1}
-      aria-label="Resposta validada do assistente técnico"
-    >
-      {stateNotice ? (
-        <p className={`assistant-state assistant-state--${response.groundingStatus}`} role="status">
-          {stateNotice}
-        </p>
-      ) : null}
-      {response.fallbackUsed && response.groundingStatus !== "degraded_fallback" ? (
-        <p className="warning-banner" role="alert">
-          A resposta completa não pôde ser validada; exibindo a orientação de contingência disponível.
-        </p>
-      ) : null}
-
-      <div className="assistant-provenance-grid">
-        <section aria-labelledby="assistant-manual-title">
-          <p className="eyebrow">Documento oficial</p>
-          <h3 id="assistant-manual-title">Segundo o manual</h3>
-          <p>{response.answer.manual}</p>
-          <div className="assistant-citations" aria-label="Citações do manual">
-            {manualCitations.length > 0
-              ? manualCitations.map((citation, index) => (
-                <ManualCitation
-                  citation={citation}
-                  key={`manual-${citation.documentId}-${citation.chunkId}-${citation.contentHash}-${index}`}
-                />
-              ))
-              : <p className="empty-state">Nenhuma citação documental sustentou esta resposta.</p>}
-          </div>
-        </section>
-
-        <section aria-labelledby="assistant-current-title">
-          <p className="eyebrow">O que os dados mostram</p>
-          <h3 id="assistant-current-title">{stateLabel}</h3>
-          <p>{response.answer.currentState}</p>
-          <div className="assistant-citations" aria-label="Evidências operacionais">
-            {renderStateEvidence ? renderStateEvidence(response) : telemetryCitations.length > 0
-              ? telemetryCitations.map((citation) => (
-                <TelemetryCitation
-                  citation={citation}
-                  key={`telemetry-${citation.assessmentId}-${citation.evidenceId}`}
-                />
-              ))
-              : <p className="empty-state">Nenhuma evidência operacional está disponível.</p>}
-          </div>
-        </section>
-      </div>
-
-      <aside className="assistant-guardrails" aria-label="Limitações da resposta">
-        <strong>Validação humana obrigatória</strong>
-        {response.limitations.length > 0 ? (
-          <ul>{response.limitations.map((item) => <li key={item}>{item}</li>)}</ul>
-        ) : null}
-        <details className="assistant-technical-details">
-          <summary>Detalhes técnicos da resposta</summary>
-          <small>Corpus {response.corpus?.corpusId ?? "indisponível"} · trace {response.traceId}</small>
-        </details>
-      </aside>
-    </article>
-  );
+  return <article className="assistant-answer" data-testid="assistant-answer" ref={answerRef} tabIndex={-1} aria-label="Resposta validada do assistente técnico">
+    <ConciseAnswer response={response} stateLabel={stateLabel} renderStateEvidence={renderStateEvidence} statusNotices={statusNotices} />
+  </article>;
 }
 
-export default function TechnicalAssistantPanel({ assetId, enabled, dataSource, isActive = true, stateLabel = "Estado atual", renderStateEvidence, statusNotices }) {
+export default function TechnicalAssistantPanel({ assetId, enabled, dataSource, isActive = true, stateLabel = "Estado atual", renderStateEvidence, statusNotices, suggestionContext }) {
   if (typeof assetId !== "string" || assetId.length === 0) {
     throw new TypeError("TechnicalAssistantPanel assetId must be a non-empty string");
   }
@@ -214,14 +101,14 @@ export default function TechnicalAssistantPanel({ assetId, enabled, dataSource, 
     setLoading(false);
   };
 
-  const submit = async (event) => {
-    event.preventDefault();
-    const submittedQuestion = question.trim();
-    if (!submittedQuestion || loading) return;
+  const ask = async (value) => {
+    const submittedQuestion = value.trim();
+    if (!submittedQuestion || enabled !== true || loading || requestRef.current.controller) return;
 
     const controller = new AbortController();
     const requestId = requestRef.current.id + 1;
     requestRef.current = { id: requestId, controller };
+    setQuestion(submittedQuestion);
     setLoading(true);
     setError(null);
     try {
@@ -280,7 +167,10 @@ export default function TechnicalAssistantPanel({ assetId, enabled, dataSource, 
         </div>
       </div>
 
-      <form className="assistant-form" aria-label="Consultar o assistente técnico" onSubmit={submit}>
+      <div className="prompt-suggestions" aria-label="Sugestões de perguntas">
+        {promptSuggestions({ ...suggestionContext, answered: turns.length > 0 }).map((suggestion) => <button key={suggestion.label} type="button" disabled={loading} onClick={() => ask(suggestion.question)}>{suggestion.label}</button>)}
+      </div>
+      <form className="assistant-form" aria-label="Consultar o assistente técnico" onSubmit={(event) => { event.preventDefault(); ask(question); }}>
         <label htmlFor="technical-assistant-question">Pergunta técnica</label>
         <textarea
           id="technical-assistant-question"
@@ -306,11 +196,7 @@ export default function TechnicalAssistantPanel({ assetId, enabled, dataSource, 
         {loading ? (
           <div role="status" aria-label="Consultando fontes validadas">
             <strong>Consultando fontes validadas…</strong>
-            <ol>
-              <li>Buscando trechos no manual do motor</li>
-              <li>Consultando os dados disponíveis</li>
-              <li>Validando citações antes de exibir</li>
-            </ol>
+            <p>Buscando no manual e preparando a resposta. As citações serão validadas antes de aparecer.</p>
           </div>
         ) : null}
         {error ? (
@@ -320,6 +206,7 @@ export default function TechnicalAssistantPanel({ assetId, enabled, dataSource, 
         ) : null}
       </div>
 
+      {response && turns.length > 0 ? <p className="assistant-latest-question"><strong>{turns[turns.length - 1].question}</strong></p> : null}
       {response ? <AssistantAnswer response={response} answerRef={answerRef} stateLabel={stateLabel} renderStateEvidence={renderStateEvidence} statusNotices={statusNotices} /> : null}
 
       {turns.length > 1 ? (
@@ -329,7 +216,7 @@ export default function TechnicalAssistantPanel({ assetId, enabled, dataSource, 
             {turns.slice(0, -1).map((turn, index) => (
               <li key={`${turn.question}-${index}`}>
                 <strong>{turn.question}</strong>
-                <p>{turn.answer}</p>
+                <p>{formatTimestampText(turn.answer)}</p>
               </li>
             ))}
           </ol>

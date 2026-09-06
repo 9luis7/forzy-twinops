@@ -1,10 +1,12 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import CopilotDock from "../components/assistant/CopilotDock.jsx";
 import TechnicalAssistantPanel from "../components/operations/TechnicalAssistantPanel.jsx";
+import { formatDateTime } from "../lib/displayTime.js";
+import { evidenceLabel, evidenceUnit } from "../components/assistant/ConciseAnswer.jsx";
 import { parseHistoricalAssistantResponse } from "./GatewayHistoryDataSource.js";
 
 const labels = { normal: "Sem desvio relevante", watch: "Atenção", alert: "Alerta relativo", insufficient_data: "Dados insuficientes", unknown: "Sem avaliação" };
-const date = (value) => value ? new Date(value).toLocaleString("pt-BR", { timeZone: "America/Sao_Paulo" }) : "Não informado";
+const date = (value) => formatDateTime(value, "Não informado");
 const number = (value) => value.toLocaleString("pt-BR", { maximumFractionDigits: 3 });
 const statusNotices = { operational_unavailable: "A referência documental e a avaliação histórica estão separadas abaixo. A coleta atual não foi consultada." };
 
@@ -13,12 +15,12 @@ function HistoricalEvidence({ response }) {
     {response.historicalEvidence.map((sensor) => <details className="assistant-citation" key={sensor.sensorId}>
       <summary>{sensor.sensorId.toUpperCase()} · {sensor.component === "motor" ? "Motor" : "Bomba"} · {labels[sensor.status]}</summary>
       <div className="assistant-citation__body">
-        <p>Registro {sensor.sourceRow} · {date(sensor.observedAt)} · Brasília</p>
+        <p>Registro {sensor.sourceRow} · {date(sensor.observedAt)} · São Paulo</p>
         <p>Vínculo e posição assumidos no modelo 3D.</p>
         <p>Qualidade dos dados: {({ ok: "sem alertas", degraded: "com ressalvas", insufficient_data: "dados insuficientes", unavailable: "indisponível" })[sensor.qualityStatus] ?? "não informada"}.</p>
-        {sensor.evidence.length ? <ul>{sensor.evidence.map((item) => <li key={item.id}>{item.feature}: {number(item.value)} {item.unit}{item.windowSeconds === null ? "" : ` · janela de ${number(item.windowSeconds)} s`}</li>)}</ul> : <p>Sem evidências numéricas suficientes neste instante.</p>}
-        <p>Janela avaliada: {date(sensor.windowStart)} — {date(sensor.windowEnd)} · Brasília</p>
-        {sensor.trainedUntil && <p>Modelo treinado com dados até {date(sensor.trainedUntil)} · Brasília</p>}
+        {sensor.evidence.length ? <ul>{sensor.evidence.map((item) => <li key={item.id}>{evidenceLabel(item.feature)}: {number(item.value)} {evidenceUnit(item.unit)}{item.windowSeconds === null ? "" : ` · janela de ${number(item.windowSeconds)} s`}</li>)}</ul> : <p>Sem evidências numéricas suficientes neste instante.</p>}
+        <p>Janela avaliada: {date(sensor.windowStart)} — {date(sensor.windowEnd)} · São Paulo</p>
+        {sensor.trainedUntil && <p>Modelo treinado com dados até {date(sensor.trainedUntil)} · São Paulo</p>}
         <p>Avaliação retrospectiva; não representa probabilidade de falha.</p>
       </div>
     </details>)}
@@ -49,10 +51,11 @@ export default function HistoricalCopilot({ context, dataSource, open, onOpenCha
     },
   }), [dataSource, context.dataset.datasetId, context.revision, context.selection.from, context.selection.to, context.selection.endRow, context.selection.limit, context.selection.observedAt]);
 
-  return <CopilotDock open={open} onOpenChange={onOpenChange} available={available} contextLabel={`Histórico · ${date(context.selection.observedAt)} · Brasília`}>
+  return <CopilotDock open={open} onOpenChange={onOpenChange} available={available} contextLabel={`Histórico · ${date(context.selection.observedAt)} · São Paulo`}>
     <p className="historical-copilot-context">A pergunta usa o instante e a janela exibidos. O manual WEG W22 cobre o motor; a cobertura da bomba não é afirmada.</p>
     {contextChanged && <p className="historical-notice" role="status">O instante consultado mudou. A conversa anterior foi encerrada; a próxima pergunta usará a nova seleção.</p>}
     <TechnicalAssistantPanel key={identity} assetId={context.assetId} enabled={available} dataSource={adapter} isActive={open}
-      stateLabel="Estado no instante histórico" renderStateEvidence={renderEvidence} statusNotices={statusNotices} />
+      stateLabel="Estado no instante histórico" renderStateEvidence={renderEvidence} statusNotices={statusNotices}
+      suggestionContext={{ status: context.sensors?.s1?.assessment?.assessment?.status ?? context.status, sensor: "s1" }} />
   </CopilotDock>;
 }

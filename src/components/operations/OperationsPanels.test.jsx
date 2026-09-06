@@ -103,6 +103,9 @@ it("draws independent interleaved sensor series while preserving a real null gap
   expect([...within(s2).getAllByRole("listitem")].map((item) => item.dataset.value)).toEqual([
     "10", "11", "12",
   ]);
+  const firstTime = within(s1).getAllByRole("listitem")[0].querySelector("time");
+  expect(firstTime).toHaveTextContent("12/08/2026, 12:00:00");
+  expect(firstTime).toHaveAttribute("datetime", "2026-08-12T15:00:00.000Z");
   expect(s1.querySelector(".recharts-line-curve")?.getAttribute("d")).toMatch(/L/);
   expect(s2.querySelector(".recharts-line-curve")?.getAttribute("d")).toMatch(/L/);
 });

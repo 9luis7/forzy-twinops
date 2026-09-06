@@ -1,13 +1,16 @@
 import React, { useEffect, useRef, useState } from "react";
 import Twin3D from "../components/Twin3D.jsx";
 import CopilotDock from "../components/assistant/CopilotDock.jsx";
+import ConciseAnswer from "../components/assistant/ConciseAnswer.jsx";
+import { formatDateTime } from "../lib/displayTime.js";
 import { useDemoReplay } from "./useDemoReplay.js";
-import DemoTrends, { clockLabel, METRICS } from "./DemoTrends.jsx";
+import DemoTrends, { METRICS } from "./DemoTrends.jsx";
+import { demoSuggestions } from "./demoSuggestions.js";
 import "./demo.css";
 
 export const STATUS_LABELS = { normal: "Sem desvio relevante", watch: "Atenção", alert: "Alerta relativo", insufficient_data: "Dados insuficientes", unknown: "Aguardando avaliação" };
 const fmt = (v) => Number.isFinite(v) ? v.toLocaleString("pt-BR", { maximumFractionDigits: 3 }) : "—";
-const fullClock = (v) => v ? `${new Date(v).toLocaleString("pt-BR", { timeZone: "UTC" })} UTC` : "Aguardando primeiro par";
+const fullClock = (v) => v ? `${formatDateTime(v)} (São Paulo)` : "Aguardando primeiro par";
 const EVENT_LABELS = { sustained_watch: "Atenção sustentada", escalation: "Escalada para alerta", recovery: "Recuperação sustentada" };
 const EVENT_STATES = { pending: "Na fila", processing: "Consultando manual", ready: "Recomendação disponível", degraded: "Resposta limitada" };
 
@@ -18,19 +21,6 @@ function EventStatus({ event, recommendationPending }) {
   return <span className="small muted" role="status" title={awaiting ? "Consulta enviada; aguardando resposta do serviço." : undefined}>
     {awaiting ? "Consultando manual" : EVENT_STATES[event.status]}
   </span>;
-}
-
-function Answer({ response }) {
-  return <div className="demo-answer">
-    <p><strong>Leitura operacional</strong><br />{response.answer.currentState}</p>
-    <p><strong>Orientação documental</strong><br />{response.answer.manual}</p>
-    <ul className="demo-citations">{response.citations.map((citation, i) => <li key={`${citation.type}-${i}`}>
-      {citation.type === "manual" ? <><a href={citation.sourceUrl} target="_blank" rel="noreferrer">{citation.manufacturer} · {citation.equipmentModel} · p. {citation.pageStart}–{citation.pageEnd}</a><p>{citation.excerpt}</p></>
-        : <span>Evidência: {citation.feature} = {fmt(citation.value)} {citation.unit} · janela {clockLabel(citation.windowStart)}–{clockLabel(citation.windowEnd)} UTC</span>}
-    </li>)}</ul>
-    {response.limitations.map((limitation, index) => <p className="muted small" key={index}>{limitation}</p>)}
-    <p className="muted small">{response.fallbackUsed ? "Resposta de contingência · " : ""}Validação humana obrigatória. Manual do motor WEG; cobertura da bomba não afirmada.</p>
-  </div>;
 }
 
 function SensorSummary({ id, sensor, selected, onSelect }) {
@@ -54,6 +44,8 @@ export default function DemoDashboard({ dataSource }) {
   const [scenario, setScenario] = useState("guided"), [datasetId, setDatasetId] = useState("");
   const [selected, setSelected] = useState("all"), [question, setQuestion] = useState("");
   const [copilotOpen, setCopilotOpen] = useState(false);
+  const [analysisPending, setAnalysisPending] = useState(false);
+  const analysisIntentRef = useRef(null);
   const [eventSelection, setEventSelection] = useState(null);
   const eventAnswerRef = useRef(null);
   const manualAnswerRef = useRef(null);
@@ -67,10 +59,13 @@ export default function DemoDashboard({ dataSource }) {
     : null;
   const readyCount = events.filter((item) => item.recommendation && ["ready", "degraded"].includes(item.status)).length;
   useEffect(() => {
+    analysisIntentRef.current = null;
+    setAnalysisPending(false);
     setEventSelection(null);
     setQuestion("");
     setSelected("all");
   }, [controller, replay?.runId, replay?.generation]);
+  useEffect(() => () => { analysisIntentRef.current = null; }, [controller]);
   useEffect(() => {
     if (copilotOpen && selectedEvent) eventAnswerRef.current?.focus();
   }, [copilotOpen, selectedEvent?.eventId]);
@@ -85,6 +80,37 @@ export default function DemoDashboard({ dataSource }) {
   const running = replay?.state === "running" && !state.suspended;
   const canInterrupt = state.pendingOperation === "advance" && !state.queuedAction;
   const controlBusy = Boolean(state.queuedAction) || (busy && !canInterrupt);
+  const suggestions = demoSuggestions(context);
+  const attentionSensors = ["s1", "s2"].filter((id) => ["watch", "alert"].includes(context?.sensors[id]?.assessment?.assessment?.status));
+  const canQuery = Boolean(replay?.sourceRow) && ["paused", "completed"].includes(replay?.state)
+    && !busy && !state.queuedAction && !state.manualPending && !analysisPending && !error;
+  const sendQuestion = (value) => {
+    const current = controller.getSnapshot();
+    if (!value.trim() || !current.context?.replay.sourceRow || current.busy || current.manualPending || current.queuedAction || current.error
+      || !["paused", "completed"].includes(current.context.replay.state) || analysisIntentRef.current) return;
+    setEventSelection(null);
+    setQuestion(value);
+    controller.query(value.trim());
+  };
+  const pauseAndAnalyze = async () => {
+    if (analysisIntentRef.current || controlBusy || state.manualPending || !replay?.sourceRow || error) return;
+    const intent = { controller, runId: replay.runId, generation: replay.generation };
+    analysisIntentRef.current = intent;
+    setAnalysisPending(true);
+    try {
+      if (replay.state === "running") await controller.command("pause");
+      const current = controller.getSnapshot();
+      if (analysisIntentRef.current !== intent || current.context?.replay.runId !== intent.runId
+        || current.context?.replay.generation !== intent.generation || current.error || current.busy
+        || current.queuedAction || !current.context?.replay.sourceRow
+        || !["paused", "completed"].includes(current.context.replay.state)) return;
+      setEventSelection(null);
+      setQuestion(demoSuggestions(current.context)[0].question);
+      setCopilotOpen(true);
+    } finally {
+      if (analysisIntentRef.current === intent) { analysisIntentRef.current = null; setAnalysisPending(false); }
+    }
+  };
   const toggle = () => controller.command(running ? "pause" : replay?.cursor === 0 ? "play" : "resume");
   const keyboard = (event) => {
     // React events bubble through the portal owner even though the chat is
@@ -105,6 +131,7 @@ export default function DemoDashboard({ dataSource }) {
       {context && <>
         <div className="demo-playback"><button disabled={controlBusy || replay.state === "completed" || Boolean(error)} onClick={toggle}>{state.queuedAction === "pause" ? "Pausa solicitada…" : running ? "Ⅱ Pausar" : "▶ Continuar"}</button>
           <button className="secondary-button" disabled={busy || replay.state !== "paused" || Boolean(error)} onClick={() => controller.command("step")}>Avançar 1 par</button>
+          {!attentionSensors.length && <button className="secondary-button" disabled={analysisPending || controlBusy || state.manualPending || !replay.sourceRow || Boolean(error)} onClick={pauseAndAnalyze}>{analysisPending ? "Aguardando pausa…" : replay.state === "running" ? "Pausar e analisar" : "Analisar este instante"}</button>}
           <button className="secondary-button" disabled={controlBusy} onClick={() => controller.command("restart")}>{state.queuedAction === "restart" ? "Reinício solicitado…" : "Reiniciar"}</button>
           <label>Ritmo<select value={replay.speed} disabled={busy} onChange={(e) => controller.command("speed", Number(e.target.value))}>{[1, 2, 5].map((speed) => <option key={speed} value={speed}>{speed} {speed === 1 ? "par" : "pares"}/s</option>)}</select></label>
           <span className="demo-progress-label">{replay.cursor} / {replay.totalPairs} pares · {replay.state === "completed" ? "Concluído" : running ? "Reproduzindo" : "Pausado"}</span>
@@ -117,7 +144,15 @@ export default function DemoDashboard({ dataSource }) {
       {state.suspended && context && !state.queuedAction && <p role="status" className="demo-notice">Replay suspenso. Use Continuar para retomar a reprodução.</p>}
       {error && <div role="alert" className="demo-notice"><p>{error}</p><button className="secondary-button" disabled={busy} onClick={() => controller.refresh()}>Reconectar</button></div>}
     </section>
-    {!context ? <section className="demo-welcome panel"><p className="eyebrow">Uma demonstração orientada por evidências</p><h2>Prepare o replay para acompanhar o conjunto.</h2><p>O roteiro guiado percorre as linhas 141–440 do histórico. Cada avanço preserva os dois canais, as repetições e as lacunas originais.</p><div className="demo-flow"><span>01 · Sensores</span><span>02 · Histórico</span><span>03 · Avaliação</span><span>04 · Orientação</span></div><img src="/models/conjunto-motor-bomba-preview.png" alt="Conjunto CAD de motor, acoplamento e bomba utilizado na demonstração" /></section> : <>
+    <section className="demo-flow panel" aria-label="Como a demonstração funciona">
+      <ol><li><strong>1. Dados chegam</strong><span>O histórico avança em pares de S1 e S2.</span></li><li><strong>2. O sistema avalia</strong><span>Regras e scores atualizam gráficos e 3D.</span></li><li><strong>3. Um evento é registrado</strong><span>Quando a atenção persiste ou o estado muda.</span></li><li><strong>4. O copiloto consulta o manual</strong><span>Por evento ou por uma pergunta sua.</span></li></ol>
+      <p className="small muted">A avaliação dos sensores é automática. A IA é consultada nos eventos e nas perguntas; não a cada leitura. As sugestões de pergunta são preparadas pelo sistema, sem consultar a IA.</p>
+    </section>
+    {!context ? <section className="demo-welcome panel"><h2>Escolha um roteiro e prepare a demonstração.</h2><p>Depois, use <strong>Continuar</strong> para receber os dados em sequência ou <strong>Avançar 1 par</strong> para explorar aos poucos. Use <strong>Pausar e analisar</strong> para consultar o copiloto sobre um instante fixo.</p><p className="small muted">O roteiro guiado mostra 300 pares. O roteiro livre permite percorrer o histórico completo.</p></section> : <>
+      {attentionSensors.length > 0 && <section className="panel demo-attention" aria-label="Atenção no conjunto" data-status={context.status}>
+        <div><h2>{attentionSensors.map((id) => `${id === "s1" ? "Motor" : "Bomba"} (${id.toUpperCase()})`).join(" e ")} exige{attentionSensors.length > 1 ? "m" : ""} atenção</h2><p>Revise os sinais deste instante antes de definir a próxima ação. O alerta indica um desvio relativo ao histórico, não um diagnóstico.</p></div>
+        <button onClick={pauseAndAnalyze} disabled={analysisPending || controlBusy || state.manualPending || !replay.sourceRow || Boolean(error)}>{analysisPending ? "Aguardando pausa…" : replay.state === "running" ? "Pausar e analisar" : "Analisar este instante"}</button>
+      </section>}
       <div className="demo-twin-grid" data-revision={context.revision}>
         <section className="panel demo-twin"><div className="panel-heading"><div><p className="eyebrow">Conjunto motor + bomba</p><h2>Gêmeo operacional</h2></div><span className="demo-state-chip" data-status={context.status}>{STATUS_LABELS[context.status]}</span></div><Twin3D snapshot={context} selectedSensor={selected} onSelectSensor={setSelected} /><p className="muted small">S1 no motor e S2 na bomba, junto ao acoplamento. Posições assumidas para demonstração, não validadas fisicamente. Sem simulação mecânica.</p></section>
         <aside className="demo-sensors" aria-label="Avaliações por sensor">{["s1", "s2"].map((id) => <SensorSummary key={id} id={id} sensor={context.sensors[id]} selected={selected} onSelect={setSelected} />)}</aside>
@@ -137,18 +172,20 @@ export default function DemoDashboard({ dataSource }) {
         {selectedEvent && <article className="demo-event-answer" ref={eventAnswerRef} tabIndex={-1} aria-label="Orientação do evento selecionado">
           <p className="eyebrow">Orientação já produzida</p><h3>{EVENT_LABELS[selectedEvent.kind]}</h3>
           <p className="muted small">{selectedEvent.sensorIds.map((id) => id.toUpperCase()).join(" + ")} · {fullClock(selectedEvent.observedAt)}. Contexto fixado no evento; a reprodução pode continuar.</p>
-          <Answer response={selectedEvent.recommendation} />
+          <ConciseAnswer response={selectedEvent.recommendation} />
           <details className="assistant-technical-details"><summary>Detalhes do contexto do evento</summary><p>Linha {selectedEvent.sourceRow} · revisão {selectedEvent.contextRevision}</p></details>
           <button className="button-secondary" onClick={() => { setEventSelection(null); questionRef.current?.focus(); }}>Fechar orientação do evento</button>
         </article>}
-        <p className="eyebrow">Manual do motor WEG</p><h2>Pergunte sobre este instante</h2><p className="muted small">Cada pergunta usa o instante exibido ao enviar. Pause a reprodução para explorar o mesmo instante. O manual não cobre a bomba.</p>
+        <p className="eyebrow">Manual do motor WEG</p><h2>Pergunte sobre este instante</h2><p className="muted small">A pergunta usa o instante pausado. O manual cobre o motor; os sinais da bomba podem ser consultados, mas seus procedimentos não estão neste manual.</p>
         {!replay?.sourceRow && <p className="assistant-unavailable" role="status">Prepare a reprodução e avance uma leitura para consultar o copiloto.</p>}
-        <form className="assistant-form" aria-label="Perguntar ao copiloto da demonstração" onSubmit={(e) => { e.preventDefault(); if (question.trim() && replay?.sourceRow && !state.manualPending) controller.query(question.trim()); }}>
+        {replay?.sourceRow && replay.state === "running" && <div className="demo-notice"><p>Os dados continuam avançando. Pause para analisar um instante fixo.</p><button className="secondary-button" onClick={pauseAndAnalyze} disabled={analysisPending || controlBusy || state.manualPending || Boolean(error)}>{analysisPending ? "Aguardando pausa…" : "Pausar para analisar"}</button></div>}
+        <div className="demo-suggestions" role="group" aria-label="Perguntas sugeridas">{suggestions.map((suggestion) => <button type="button" className="secondary-button" key={suggestion.label} title={suggestion.question} disabled={!canQuery} onClick={() => sendQuestion(suggestion.question)}>{suggestion.label}</button>)}</div>
+        <form className="assistant-form" aria-label="Perguntar ao copiloto da demonstração" onSubmit={(e) => { e.preventDefault(); sendQuestion(question); }}>
           <label htmlFor="demo-question">Pergunta</label><textarea id="demo-question" ref={questionRef} value={question} onChange={(e) => setQuestion(e.target.value)} disabled={state.manualPending || !replay?.sourceRow} maxLength={500} placeholder="Quais evidências justificam a atenção e o que verificar no motor?" />
-          <button disabled={state.manualPending || !question.trim() || !replay?.sourceRow}>{state.manualPending ? "Consultando fontes…" : "Perguntar sobre este instante"}</button>
+          <button disabled={!canQuery || !question.trim()}>{state.manualPending ? "Consultando manual e IA…" : "Perguntar sobre este instante"}</button>
         </form>
         {state.assistantError && <p role="alert" className="demo-notice">{state.assistantError}</p>}
-        {[...state.answers].reverse().map((answer, i) => <article className="demo-manual-answer" key={`${answer.contextRevision}-${i}`} ref={i === 0 ? manualAnswerRef : undefined} tabIndex={-1} aria-label={`Resposta: ${answer.question}`}><h3>{answer.question}</h3><p className="muted small">Instante consultado: {fullClock(answer.observedAt)}{answer.contextRevision !== context?.revision ? " · resposta de um instante anterior" : ""}</p>{i === 0 ? <Answer response={answer.response} /> : <details><summary>Reabrir resposta anterior</summary><Answer response={answer.response} /></details>}<details className="assistant-technical-details"><summary>Detalhes do contexto da pergunta</summary><p>Revisão {answer.contextRevision} · linha {answer.sourceRow}</p></details></article>)}
+        {[...state.answers].reverse().map((answer, i) => <article className="demo-manual-answer" key={`${answer.contextRevision}-${i}`} ref={i === 0 ? manualAnswerRef : undefined} tabIndex={-1} aria-label={`Resposta: ${answer.question}`}><h3>{answer.question}</h3><p className="muted small">Instante consultado: {fullClock(answer.observedAt)}{answer.contextRevision !== context?.revision ? " · resposta de um instante anterior" : ""}</p>{i === 0 ? <ConciseAnswer response={answer.response} /> : <details><summary>Reabrir resposta anterior</summary><ConciseAnswer response={answer.response} /></details>}<details className="assistant-technical-details"><summary>Detalhes do contexto da pergunta</summary><p>Revisão {answer.contextRevision} · linha {answer.sourceRow}</p></details></article>)}
       </section>
     </CopilotDock>
   </main>;

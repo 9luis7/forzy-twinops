@@ -1,14 +1,10 @@
 import React from "react";
+import { formatDateTime } from "../../lib/displayTime.js";
 import "./operationalDetails.css";
 
 const numberFormatter = new Intl.NumberFormat("pt-BR", {
   minimumFractionDigits: 2,
   maximumFractionDigits: 2,
-});
-const dateFormatter = new Intl.DateTimeFormat("pt-BR", {
-  timeZone: "America/Sao_Paulo",
-  dateStyle: "short",
-  timeStyle: "medium",
 });
 
 const measurementRows = [
@@ -19,9 +15,7 @@ const measurementRows = [
 
 const capturedAt = (channel) => {
   const timestamp = channel.observedAt ?? channel.receivedAt;
-  if (!timestamp) return null;
-  const date = new Date(timestamp);
-  return Number.isNaN(date.getTime()) ? null : dateFormatter.format(date);
+  return formatDateTime(timestamp, null);
 };
 
 export default function SensorCard({ channel }) {
@@ -69,7 +63,7 @@ export default function SensorCard({ channel }) {
       </dl>
 
       <div className="capture-note">
-        <p>{captured ? `Capturado pelo TwinOps às ${captured}` : "Horário indisponível"}</p>
+        <p>{captured ? `Capturado pelo TwinOps às ${captured} · São Paulo` : "Horário indisponível"}</p>
         {channel.timestampQuality === "assumed_from_retrieval" && (
           <small>Horário assumido a partir da captura; não fornecido pelo sensor.</small>
         )}

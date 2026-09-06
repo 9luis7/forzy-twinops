@@ -42,6 +42,9 @@ it("opens the latest historical window with synchronized sensors and no replay o
   expect(screen.queryByRole("button", { name: /reproduzir|preparar replay|continuar/i })).not.toBeInTheDocument();
   expect(screen.getByTestId("history-twin")).toHaveAttribute("data-mode", "historical");
   expect(screen.getByTestId("history-trends")).toHaveAttribute("data-revision", "history-4");
+  const instant = screen.getByText("12/08/2026, 12:00:04");
+  expect(instant).toHaveAttribute("datetime", "2026-08-12T15:00:04.000Z");
+  expect(instant.closest("h3")).toHaveTextContent("São Paulo");
   expect(dataSource.create).not.toHaveBeenCalled(); expect(dataSource.query).not.toHaveBeenCalled(); expect(dataSource.advance).not.toHaveBeenCalled();
 });
 
@@ -66,13 +69,13 @@ it("applies explicit Brasilia filters atomically and ignores an older response",
   dataSource.context.mockResolvedValueOnce(historicalContext()).mockReturnValueOnce(first.promise).mockReturnValueOnce(latest.promise);
   render(<HistoricalWorkspace dataSource={dataSource} Twin3DComponent={FakeTwin} />);
   await screen.findByTestId("history-twin");
-  fireEvent.change(screen.getByLabelText("Início — Brasília"), { target: { value: "2026-08-12T12:00:01" } });
+  fireEvent.change(screen.getByLabelText("Início — São Paulo"), { target: { value: "2026-08-12T12:00:01" } });
   fireEvent.change(screen.getByLabelText("Sensor"), { target: { value: "s1" } });
   expect(screen.getByTestId("history-trends")).toHaveAttribute("data-sensor", "all");
   fireEvent.click(screen.getByRole("button", { name: "Aplicar filtros" }));
   expect(dataSource.context.mock.calls[1][1].from).toBe("2026-08-12T12:00:01-03:00");
   fireEvent.change(screen.getByLabelText("Sensor"), { target: { value: "s2" } });
-  fireEvent.change(screen.getByLabelText("Fim — Brasília"), { target: { value: "2026-08-12T12:00:02" } });
+  fireEvent.change(screen.getByLabelText("Fim — São Paulo"), { target: { value: "2026-08-12T12:00:02" } });
   fireEvent.click(screen.getByRole("button", { name: "Aplicar filtros" }));
   expect(dataSource.context.mock.calls[1][2].signal.aborted).toBe(true);
   await act(async () => latest.resolve(historicalContext(2)));
@@ -89,7 +92,7 @@ it("keeps an empty or failed filter distinct from the last valid selection", asy
   dataSource.context.mockResolvedValueOnce(historicalContext()).mockRejectedValueOnce(new HistoryGatewayError(400, "historical_selection_empty", "Nenhum registro encontrado para o período selecionado."));
   render(<HistoricalWorkspace dataSource={dataSource} Twin3DComponent={FakeTwin} />);
   await screen.findByTestId("history-twin");
-  fireEvent.change(screen.getByLabelText("Início — Brasília"), { target: { value: "2026-08-13T12:00:00" } });
+  fireEvent.change(screen.getByLabelText("Início — São Paulo"), { target: { value: "2026-08-13T12:00:00" } });
   fireEvent.click(screen.getByRole("button", { name: "Aplicar filtros" }));
   await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("o novo período não foi aplicado"));
   expect(screen.getByTestId("history-twin")).toHaveAttribute("data-revision", "history-4");

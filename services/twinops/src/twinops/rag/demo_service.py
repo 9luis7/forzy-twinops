@@ -19,7 +19,8 @@ from twinops.rag.operational import OperationalEvidence, TrustedOperationalConte
 from twinops.rag.public_models import AssistantQueryRequest, AssistantQueryResponse
 from twinops.rag.public_service import (
     RagAssistantService,
-    _deterministic_current_state,
+    _concise_condition,
+    _sao_paulo_time,
     _telemetry_citation,
 )
 from twinops.rag.retrieval import CorpusUnavailableError
@@ -159,16 +160,15 @@ def project_demo_context(context):
 def _decorate_response(response, context, operational):
     """One generation, two independently attributed assessments, frozen revision."""
     body = response.model_dump(mode="json", by_alias=True)
-    if any(citation["type"] == "manual" for citation in body["citations"]):
-        body["answer"]["manual"] = (
-            "Referência documental do motor WEG W22; sem cobertura da bomba. "
-            + body["answer"]["manual"]
-        )
+    source_time = context["replay"]["sourceTime"]
     body["answer"]["currentState"] = (
-        f"Replay, revisão {context['revision']}, linha {context['replay']['sourceRow']}. "
+        (f"Demonstração de {_sao_paulo_time(_timestamp(source_time))}. "
+         if source_time else "Demonstração aguardando dados. ")
         + " ".join(
             f"{sensor_id.upper()} ({'motor' if sensor_id == 's1' else 'bomba'}): "
-            + _deterministic_current_state(item).replace("atual", "desta revisão")
+            + _concise_condition(item.assessment_status,
+                                 item.evidence if response.grounding_status != "out_of_scope" else (),
+                                 item.quality_status) + "."
             for sensor_id, item in operational.items()
         )
     )

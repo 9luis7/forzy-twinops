@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState } from "react";
+import { formatDateTime } from "../../lib/displayTime.js";
 
 const ADMIN_METHODS = [
   "createDraft",
@@ -204,7 +205,7 @@ export default function RagAdminPanel({ dataSource, assetId }) {
         ? { ...current, status: "published" }
         : current);
       setConfirmation(null);
-      setSuccess(`Corpus ${result.corpusId} ativado em ${result.activatedAt}.`);
+      setSuccess(`Corpus ${result.corpusId} ativado em ${formatDateTime(result.activatedAt)} · São Paulo.`);
     });
   };
 

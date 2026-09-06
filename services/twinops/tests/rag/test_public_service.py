@@ -187,7 +187,7 @@ async def test_happy_path_returns_typed_grounding_and_only_allowed_citations():
     UUID(body["conversationId"])
     UUID(body["traceId"])
     assert body["answer"]["manual"] == (
-        "Segundo o manual:\n- Inspect bearing lubrication before startup."
+        "- Inspect bearing lubrication before startup."
     )
 
 
@@ -316,7 +316,6 @@ async def test_extractive_fallback_preserves_distinct_relevant_safe_hits():
     manual = [item for item in response.citations if item.type == "manual"]
     assert [item.chunk_id for item in manual] == ["chunk-1", "chunk-2"]
     assert response.answer.manual == (
-        "Segundo o manual:\n"
         "- Inspect bearing lubrication before startup.\n"
         "- Check alignment and abnormal noise before startup."
     )
@@ -445,10 +444,10 @@ async def test_missing_stale_and_outside_window_state_are_explicit():
     assert unavailable.grounding_status == "operational_unavailable"
     assert "indisponível" in unavailable.answer.current_state
     assert "antigo" in stale.answer.current_state
-    assert "fora da janela operacional" in outside.answer.current_state
+    assert "fora do horário programado" in outside.answer.current_state
     assert "último estado conhecido" in last_known.answer.current_state
     assert "indisponível" in outside_without_assessment.answer.current_state
-    assert "fora da janela operacional" in outside_without_assessment.answer.current_state
+    assert "fora do horário programado" in outside_without_assessment.answer.current_state
 
 
 @pytest.mark.asyncio
@@ -477,11 +476,79 @@ async def test_llm_cannot_contradict_trusted_operational_status_or_publish_limit
 
     assert "alert" in response.answer.current_state
     assert "normal" not in response.answer.current_state
-    assert "qualidade ok" in response.answer.current_state
-    assert "1000 ms" in response.answer.current_state
-    assert NOW.isoformat() in response.answer.current_state
+    assert "vibração média recente: 2,4 mm/s" in response.answer.current_state
+    assert "03/09/2026 às 12:00:00 (São Paulo)" in response.answer.current_state
+    assert "assessment" not in response.answer.current_state
+    assert "1000 ms" not in response.answer.current_state
+    telemetry = next(citation for citation in response.citations if citation.type == "telemetry")
+    assert telemetry.received_at == NOW.isoformat()
+    assert telemetry.freshness_ms == 1000
     assert all("chave secreta" not in item for item in response.limitations)
     assert "malicious" not in response.model_dump_json()
+
+
+@pytest.mark.asyncio
+async def test_concise_state_selects_known_evidence_but_preserves_every_citation():
+    from dataclasses import replace
+
+    operational = replace(
+        _operational(state="collecting"), quality_status="degraded",
+        evidence=(
+            OperationalEvidence("unknown", "private_internal_feature", 9000, "mm/s", 60),
+            OperationalEvidence("slope", "velocity_slope", 55, "mm/s/s", 60),
+            OperationalEvidence("velocity", "velocity_ewma", 2.4567, "mm/s", 60),
+            OperationalEvidence("temperature", "temperature_deviation", -1.2345, "degC", 60),
+        ),
+    )
+    chat = _Chat()
+    response = await RagAssistantService(_Retriever(), chat, query_timeout_seconds=1).query(
+        ASSET_ID, AssistantQueryRequest(question="Quais verificações o manual recomenda?"),
+        operational=operational,
+    )
+    text = response.answer.current_state
+    assert "atenção (dados com ressalvas)" in text
+    assert "vibração média recente: 2,46 mm/s" in text
+    assert "diferença para a temperatura típica recente da mesma fase: -1,23 °C" in text
+    assert all(term not in text for term in ("degraded", "watch", "9000", "55", "private_internal_feature"))
+    telemetry = [citation for citation in response.citations if citation.type == "telemetry"]
+    assert [(citation.feature, citation.value) for citation in telemetry] == [
+        (item.feature, item.value) for item in operational.evidence
+    ]
+    assert all(citation.received_at == NOW.isoformat() for citation in telemetry)
+    assert len(chat.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_narrative_uses_sao_paulo_timezone_without_rewriting_source_timestamps():
+    from dataclasses import replace
+
+    # São Paulo still used daylight saving in this historical period. A fixed
+    # offset would show the wrong hour; transport timestamps must remain intact.
+    instant = datetime(2018, 12, 3, 10, 0, tzinfo=timezone.utc)
+    operational = replace(_operational(), window_start=instant - timedelta(minutes=1),
+                          window_end=instant, received_at=instant)
+    response = await RagAssistantService(_Retriever(), _Chat(), query_timeout_seconds=1).query(
+        ASSET_ID, AssistantQueryRequest(question="bearing"), operational=operational,
+    )
+    assert "03/12/2018 às 08:00:00 (São Paulo)" in response.answer.current_state
+    telemetry = next(citation for citation in response.citations if citation.type == "telemetry")
+    assert telemetry.window_end == telemetry.received_at == "2018-12-03T10:00:00+00:00"
+
+
+@pytest.mark.asyncio
+async def test_scope_refusal_does_not_publish_numbers_without_evidence_citations():
+    retriever, chat = _Retriever(), _Chat()
+    response = await RagAssistantService(retriever, chat, query_timeout_seconds=1).query(
+        ASSET_ID, AssistantQueryRequest(question="Qual é a causa raiz da vibração?"),
+        operational=_operational(),
+    )
+    assert response.grounding_status == "out_of_scope"
+    assert response.citations == []
+    assert "atenção" in response.answer.current_state
+    assert "03/09/2026 às 12:00:00 (São Paulo)" in response.answer.current_state
+    assert "2,4" not in response.answer.current_state
+    assert "vibração média recente" not in response.answer.current_state
+    assert retriever.calls == chat.calls == []
 
 
 @pytest.mark.asyncio
@@ -499,7 +566,7 @@ async def test_manual_generation_remains_useful_when_operational_is_unavailable(
     )
 
     assert response.answer.manual == (
-        "Segundo o manual:\n- Inspect bearing lubrication before startup."
+        "- Inspect bearing lubrication before startup."
     )
     assert response.grounding_status == "operational_unavailable"
     assert response.fallback_used is False

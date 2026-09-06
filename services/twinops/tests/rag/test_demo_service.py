@@ -225,6 +225,21 @@ def test_future_or_misattributed_assessment_is_rejected():
 
 
 @pytest.mark.asyncio
+async def test_demo_refusal_preserves_guard_without_uncited_numeric_summary():
+    chat = _Chat()
+    result = await service(chat=chat).query(
+        "run", "secret", AssistantQueryRequest(question="Qual é a causa raiz da vibração?"), 8,
+    )
+    response = result["response"]
+    assert response["groundingStatus"] == "out_of_scope"
+    assert response["citations"] == []
+    assert "S1 (motor): atenção" in response["answer"]["currentState"]
+    assert "vibração média recente" not in response["answer"]["currentState"]
+    assert "2,4" not in response["answer"]["currentState"]
+    assert chat.calls == []
+
+
+@pytest.mark.asyncio
 async def test_guided_warmup_before_first_visible_row_is_operational_unavailable():
     repo = Repo()
     repo.current["replay"].update(sourceRow=None, sourceTime=None)
@@ -243,7 +258,9 @@ async def test_event_is_bound_to_immutable_revision_and_deduplicates():
     event = await assistant.recommendation("run", "secret", "event-1")
     assert event["status"] == "ready"
     assert event["contextRevision"] == 8
-    assert "revisão 8, linha 150" in event["recommendation"]["answer"]["currentState"]
+    assert "12/08/2026 às 10:01:00 (São Paulo)" in event["recommendation"]["answer"]["currentState"]
+    assert event["sourceRow"] == 150
+    assert "revisão" not in event["recommendation"]["answer"]["currentState"]
     assert await assistant.recommendation("run", "secret", "event-1") == event
     assert len(chat.calls) == 1
 
