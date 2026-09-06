@@ -1,6 +1,6 @@
 """Validated configuration for the version 2 TwinOps service boundary."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import ipaddress
 import math
 from pathlib import Path
@@ -12,6 +12,8 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 _SAFE_SSL_MODES = frozenset({"require", "verify-ca", "verify-full"})
 _DNS_LABEL = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?")
+_RAG_PROVIDERS = frozenset({"gateway", "gemini"})
+_GEMINI_API_BASE_URL = "https://generativelanguage.googleapis.com/v1beta"
 
 
 def normalize_https_origin(value: str) -> str:
@@ -84,7 +86,7 @@ def normalize_https_origin(value: str) -> str:
     return f"https://{authority}"
 
 
-def is_secure_pooled_database_url(value: str) -> bool:
+def is_secure_pooled_database_url(value: str, *, known_provider_only: bool = False) -> bool:
     """Return whether a libpq URI selects one secure mode on a pooled host."""
 
     if (
@@ -112,10 +114,33 @@ def is_secure_pooled_database_url(value: str) -> bool:
         return False
 
     ssl_modes = [query_value for name, query_value in query if name == "sslmode"]
+    hostname = (parsed.hostname or "").lower()
+    supabase_pooler = bool(re.fullmatch(
+        r"aws-[0-9]+-[a-z0-9-]+\.pooler\.supabase\.com", hostname
+    ))
+    # Session pooling preserves the drivers' prepared-statement behavior.
+    # Transaction pooling on 6543 requires a separate driver configuration.
+    # Connection-target overrides in URI query parameters must not bypass it.
+    safe_query = all(
+        name in {"sslmode", "channel_binding", "connect_timeout", "application_name"}
+        for name, _ in query
+    )
+    supabase_safe = (
+        supabase_pooler
+        and port in (None, 5432)
+        and safe_query
+    )
+    if known_provider_only and not (
+        supabase_safe
+        or (hostname.endswith(".neon.tech") and "-pooler" in hostname.split(".")[0]
+            and port in (None, 5432)
+            and safe_query)
+    ):
+        return False
     return (
         parsed.scheme in {"postgres", "postgresql"}
         and parsed.hostname is not None
-        and "-pooler" in parsed.hostname.lower()
+        and ("-pooler" in hostname or supabase_safe)
         and not parsed.fragment
         and (port is None or 1 <= port <= 65535)
         and len(ssl_modes) == 1
@@ -126,7 +151,8 @@ def is_secure_pooled_database_url(value: str) -> bool:
 @dataclass(frozen=True)
 class SettingsV2:
     upstream_base_url: str
-    database_url: str | None = None
+    database_url: str | None = field(default=None, repr=False)
+    demo_database_url: str | None = field(default=None, repr=False)
     database_path: Path = Path("var/twinops.sqlite3")
     asset_id: str = "forzy-motor-01"
     poll_interval_seconds: float = 5.0
@@ -135,8 +161,34 @@ class SettingsV2:
     ml_artifact_path: Path | None = None
     ml_manifest_hash: str | None = None
     ml_model_hash: str | None = None
+    vercel_environment: str | None = None
+    rag_admin_enabled: bool = False
+    rag_enabled: bool = False
+    demo_enabled: bool = False
+    rag_provider: str = "gateway"
+    ai_gateway_api_key: str | None = field(default=None, repr=False)
+    gemini_api_key: str | None = field(default=None, repr=False)
+    rag_embedding_model: str = "google/text-multilingual-embedding-002"
+    rag_embedding_dimensions: int = 768
+    rag_generation_model: str = "openai/gpt-5.6-luna"
+    rag_gateway_timeout_seconds: float = 10.0
+    rag_query_timeout_seconds: float = 10.0
+    rag_manufacturer: str | None = None
+    rag_equipment_model: str | None = None
+    demo_rag_equipment_model: str | None = None
 
     def __post_init__(self) -> None:
+        if self.demo_rag_equipment_model is not None and (
+            not self.demo_rag_equipment_model.strip()
+            or self.demo_rag_equipment_model != self.demo_rag_equipment_model.strip()
+        ):
+            raise ValueError("DEMO_RAG_EQUIPMENT_MODEL must be a nonempty trimmed identifier")
+        if self.demo_database_url is not None and not is_secure_pooled_database_url(
+            self.demo_database_url, known_provider_only=True
+        ):
+            raise ValueError(
+                "DEMO_DATABASE_URL must use a pooled PostgreSQL host with one safe sslmode"
+            )
         try:
             ZoneInfo(self.timezone_name)
         except (ZoneInfoNotFoundError, ValueError):
@@ -159,6 +211,40 @@ class SettingsV2:
                 and re.fullmatch(r"sha256:[0-9a-f]{64}", value) is None
             ):
                 raise ValueError("ML artifact hashes must be lowercase SHA-256 values")
+        if self.vercel_environment not in {None, "development", "preview", "production"}:
+            raise ValueError("VERCEL_ENV must be development, preview, or production")
+        if self.rag_provider not in _RAG_PROVIDERS:
+            raise ValueError("TWINOPS_RAG_PROVIDER must be gateway or gemini")
+        if self.rag_embedding_dimensions <= 0:
+            raise ValueError("RAG embedding dimensions must be positive")
+        if (
+            not self.rag_embedding_model.strip()
+            or self.rag_embedding_model != self.rag_embedding_model.strip()
+            or not self.rag_generation_model.strip()
+            or self.rag_generation_model != self.rag_generation_model.strip()
+        ):
+            raise ValueError("RAG model identifiers must not be empty")
+        if (
+            not math.isfinite(self.rag_gateway_timeout_seconds)
+            or self.rag_gateway_timeout_seconds <= 0
+        ):
+            raise ValueError("RAG Gateway timeout must be positive and finite")
+        if (
+            not math.isfinite(self.rag_query_timeout_seconds)
+            or not 1 <= self.rag_query_timeout_seconds <= 11
+        ):
+            raise ValueError("RAG query timeout must be in [1, 11]")
+        if (self.rag_enabled or self.rag_admin_enabled) and (
+            self.rag_manufacturer is None
+            or not self.rag_manufacturer.strip()
+            or self.rag_manufacturer != self.rag_manufacturer.strip()
+            or self.rag_equipment_model is None
+            or not self.rag_equipment_model.strip()
+            or self.rag_equipment_model != self.rag_equipment_model.strip()
+        ):
+            raise ValueError(
+                "RAG requires approved manufacturer and equipment model"
+            )
 
     @classmethod
     def from_env(cls, env: Mapping[str, str]) -> Self:
@@ -180,9 +266,31 @@ class SettingsV2:
         ):
             raise ValueError("poll interval and timeout must be positive finite numbers")
 
+        rag_admin_raw = env.get("RAG_ADMIN_ENABLED", "false").lower()
+        if rag_admin_raw not in {"true", "false"}:
+            raise ValueError("RAG_ADMIN_ENABLED must be true or false")
+        rag_enabled_raw = env.get("TWINOPS_RAG_ENABLED", "false").lower()
+        if rag_enabled_raw not in {"true", "false"}:
+            raise ValueError("TWINOPS_RAG_ENABLED must be true or false")
+        demo_enabled_raw = env.get("DEMO_ENABLED", "false").lower()
+        if demo_enabled_raw not in {"true", "false"}:
+            raise ValueError("DEMO_ENABLED must be true or false")
+        rag_provider = env.get("TWINOPS_RAG_PROVIDER", "gateway")
+        default_embedding_model = (
+            "gemini-embedding-2"
+            if rag_provider == "gemini"
+            else "google/text-multilingual-embedding-002"
+        )
+        default_generation_model = (
+            "gemini-3.5-flash-lite"
+            if rag_provider == "gemini"
+            else "openai/gpt-5.6-luna"
+        )
+
         return cls(
             upstream_base_url=upstream_base_url,
             database_url=env.get("DATABASE_URL") or None,
+            demo_database_url=env.get("DEMO_DATABASE_URL") or None,
             database_path=Path(env.get("TWINOPS_DATABASE_PATH", "var/twinops.sqlite3")),
             asset_id=env.get("TWINOPS_ASSET_ID", "forzy-motor-01"),
             poll_interval_seconds=poll_interval_seconds,
@@ -195,7 +303,51 @@ class SettingsV2:
             ),
             ml_manifest_hash=env.get("TWINOPS_ML_MANIFEST_HASH") or None,
             ml_model_hash=env.get("TWINOPS_ML_MODEL_HASH") or None,
+            vercel_environment=env.get("VERCEL_ENV") or None,
+            rag_admin_enabled=rag_admin_raw == "true",
+            rag_enabled=rag_enabled_raw == "true",
+            demo_enabled=demo_enabled_raw == "true",
+            rag_provider=rag_provider,
+            ai_gateway_api_key=(
+                env.get("AI_GATEWAY_API_KEY")
+                or env.get("VERCEL_OIDC_TOKEN")
+                or None
+            ),
+            gemini_api_key=env.get("GEMINI_API_KEY") or None,
+            rag_embedding_model=env.get(
+                "TWINOPS_RAG_EMBEDDING_MODEL",
+                default_embedding_model,
+            ),
+            rag_embedding_dimensions=int(
+                env.get("TWINOPS_RAG_EMBEDDING_DIMENSIONS", "768")
+            ),
+            rag_generation_model=env.get(
+                "TWINOPS_RAG_GENERATION_MODEL", default_generation_model
+            ),
+            rag_gateway_timeout_seconds=float(
+                env.get("TWINOPS_RAG_GATEWAY_TIMEOUT_SECONDS", "10")
+            ),
+            rag_query_timeout_seconds=float(
+                env.get("TWINOPS_RAG_QUERY_TIMEOUT_SECONDS", "10")
+            ),
+            rag_manufacturer=env.get("TWINOPS_RAG_MANUFACTURER") or None,
+            rag_equipment_model=(
+                env.get("TWINOPS_RAG_EQUIPMENT_MODEL") or None
+            ),
+            demo_rag_equipment_model=env.get("DEMO_RAG_EQUIPMENT_MODEL") or None,
         )
+
+    @property
+    def rag_api_key(self) -> str | None:
+        if self.rag_provider == "gemini":
+            return self.gemini_api_key
+        return self.ai_gateway_api_key
+
+    @property
+    def rag_chat_base_url(self) -> str:
+        if self.rag_provider == "gemini":
+            return _GEMINI_API_BASE_URL
+        return "https://ai-gateway.vercel.sh/v1"
 
     def for_deploy(self) -> Self:
         if self.database_url is None:
@@ -205,3 +357,18 @@ class SettingsV2:
                 "DATABASE_URL must use a pooled PostgreSQL host with one safe sslmode"
             )
         return self
+
+    @property
+    def effective_demo_database_url(self) -> str | None:
+        return self.demo_database_url or self.database_url
+
+    @property
+    def effective_demo_rag_equipment_model(self) -> str | None:
+        return self.demo_rag_equipment_model or self.rag_equipment_model
+
+    @property
+    def has_dedicated_demo_database(self) -> bool:
+        return bool(
+            self.demo_enabled and self.demo_database_url
+            and self.demo_database_url != self.database_url
+        )

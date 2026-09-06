@@ -5,6 +5,7 @@ import AssessmentPanel from "./AssessmentPanel.jsx";
 import AssetHeader from "./AssetHeader.jsx";
 import IntegrationHealth from "./IntegrationHealth.jsx";
 import SensorCard from "./SensorCard.jsx";
+import TechnicalAssistantPanel from "./TechnicalAssistantPanel.jsx";
 import TelemetryTrend from "./TelemetryTrend.jsx";
 
 const SNAPSHOT_LOADING_MESSAGES = [
@@ -28,8 +29,8 @@ export function TwinFallback() {
   );
 }
 
-export default function OperationsDashboard({ Twin3DComponent = null }) {
-  const { snapshot, error, refreshing, refreshNow } = useTwinOps();
+export default function OperationsDashboard({ Twin3DComponent = null, ragDataSource }) {
+  const { assetId, snapshot, error, refreshing, refreshNow } = useTwinOps();
 
   if (!snapshot && !error) {
     return (
@@ -107,6 +108,12 @@ export default function OperationsDashboard({ Twin3DComponent = null }) {
         <AssessmentPanel assessment={snapshot.assessment} />
         <IntegrationHealth integration={snapshot.integration} />
       </section>
+
+      <TechnicalAssistantPanel
+        assetId={assetId}
+        enabled={snapshot.capabilities.copilot === true}
+        dataSource={ragDataSource}
+      />
 
       <footer className="operations-footer">
         <p>

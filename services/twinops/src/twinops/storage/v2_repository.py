@@ -80,6 +80,13 @@ class RepositorySensorHealthV2:
     sample_count: int
 
 
+@dataclass(frozen=True)
+class RepositorySnapshotReadV2:
+    latest: tuple[CanonicalSensorReadingV2, ...]
+    history: tuple[CanonicalSensorReadingV2, ...]
+    health: tuple[RepositorySensorHealthV2, ...]
+
+
 class TelemetryRepositoryV2(Protocol):
     def initialize(self) -> None: ...
 
@@ -124,3 +131,11 @@ class TelemetryRepositoryV2(Protocol):
     def history(self, query: HistoryQueryV2) -> list[CanonicalSensorReadingV2]: ...
 
     def health(self, sensor_id: str) -> RepositorySensorHealthV2 | None: ...
+
+    def snapshot_read(
+        self,
+        asset_id: str,
+        *,
+        sensor_ids: tuple[str, ...],
+        history_limit_per_sensor: int,
+    ) -> RepositorySnapshotReadV2: ...

@@ -52,6 +52,15 @@ describe("DigitalTwinSnapshot v2 runtime contract", () => {
     expect(isDigitalTwinSnapshotV2(fixture("snapshot-last-known.valid.json"))).toBe(true);
   });
 
+  it("accepts both boolean copilot capability states", () => {
+    const disabled = fixture();
+    const enabled = fixture();
+    enabled.capabilities.copilot = true;
+
+    expect(() => assertDigitalTwinSnapshotV2(disabled)).not.toThrow();
+    expect(() => assertDigitalTwinSnapshotV2(enabled)).not.toThrow();
+  });
+
   it("rejects a plausible snapshot with a source timestamp claim", () => {
     const value = fixture();
     value.channels[0].timestampQuality = "source";

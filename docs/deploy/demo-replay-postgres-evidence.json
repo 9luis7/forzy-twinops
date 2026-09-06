@@ -1,0 +1,233 @@
+{
+  "verifiedAt": "2026-09-05T02:21:33.526156+00:00",
+  "database": "existing-postgresql",
+  "modelManifestHash": "sha256:fe2cbd7e1b576f04b2c6380e41ecb7c97df7faa5084c39c4b0d16db786afe7f0",
+  "modelHash": "sha256:68d00121edbf8c4c01cf7cd231cd57c4c8eff25661135494e3c791ca78e562ba",
+  "concurrentSessions": 3,
+  "matchedSourceCursorsAcrossAllRates": [
+    10,
+    20,
+    30,
+    40,
+    50,
+    60,
+    70,
+    80,
+    90,
+    100,
+    110,
+    120,
+    130,
+    140,
+    150,
+    160,
+    170,
+    180,
+    190,
+    200,
+    210,
+    220,
+    230,
+    240,
+    250,
+    260,
+    270,
+    280,
+    290,
+    300
+  ],
+  "scoresQualityEvidenceEqual": true,
+  "eventSequencesEqual": true,
+  "duplicateConcurrentCommandExactlyOnce": true,
+  "sessionIsolation": true,
+  "pauseAndRestart": true,
+  "runs": [
+    {
+      "speed": 1,
+      "pairs": 300,
+      "originalAndArrivalClocksDistinct": true,
+      "pipeline": {
+        "receivedPairs": 300,
+        "receivedReadings": 600,
+        "newInformationReadings": 298,
+        "repeatedReadings": 302,
+        "gapCount": 0,
+        "assessmentsComputed": 298,
+        "eventsCreated": 6,
+        "lastAdvanceMs": 0.123
+      },
+      "events": [
+        [
+          "sustained_watch",
+          151,
+          [
+            "s1",
+            "s2"
+          ]
+        ],
+        [
+          "recovery",
+          254,
+          [
+            "s2"
+          ]
+        ],
+        [
+          "recovery",
+          256,
+          [
+            "s1"
+          ]
+        ],
+        [
+          "sustained_watch",
+          300,
+          [
+            "s2"
+          ]
+        ],
+        [
+          "recovery",
+          324,
+          [
+            "s2"
+          ]
+        ],
+        [
+          "sustained_watch",
+          335,
+          [
+            "s1",
+            "s2"
+          ]
+        ]
+      ],
+      "elapsedSeconds": 164.154
+    },
+    {
+      "speed": 2,
+      "pairs": 300,
+      "originalAndArrivalClocksDistinct": true,
+      "pipeline": {
+        "receivedPairs": 300,
+        "receivedReadings": 600,
+        "newInformationReadings": 298,
+        "repeatedReadings": 302,
+        "gapCount": 0,
+        "assessmentsComputed": 298,
+        "eventsCreated": 6,
+        "lastAdvanceMs": 197.98
+      },
+      "events": [
+        [
+          "sustained_watch",
+          151,
+          [
+            "s1",
+            "s2"
+          ]
+        ],
+        [
+          "recovery",
+          254,
+          [
+            "s2"
+          ]
+        ],
+        [
+          "recovery",
+          256,
+          [
+            "s1"
+          ]
+        ],
+        [
+          "sustained_watch",
+          300,
+          [
+            "s2"
+          ]
+        ],
+        [
+          "recovery",
+          324,
+          [
+            "s2"
+          ]
+        ],
+        [
+          "sustained_watch",
+          335,
+          [
+            "s1",
+            "s2"
+          ]
+        ]
+      ],
+      "elapsedSeconds": 115.912
+    },
+    {
+      "speed": 5,
+      "pairs": 300,
+      "originalAndArrivalClocksDistinct": true,
+      "pipeline": {
+        "receivedPairs": 300,
+        "receivedReadings": 600,
+        "newInformationReadings": 298,
+        "repeatedReadings": 302,
+        "gapCount": 0,
+        "assessmentsComputed": 298,
+        "eventsCreated": 6,
+        "lastAdvanceMs": 655.294
+      },
+      "events": [
+        [
+          "sustained_watch",
+          151,
+          [
+            "s1",
+            "s2"
+          ]
+        ],
+        [
+          "recovery",
+          254,
+          [
+            "s2"
+          ]
+        ],
+        [
+          "recovery",
+          256,
+          [
+            "s1"
+          ]
+        ],
+        [
+          "sustained_watch",
+          300,
+          [
+            "s2"
+          ]
+        ],
+        [
+          "recovery",
+          324,
+          [
+            "s2"
+          ]
+        ],
+        [
+          "sustained_watch",
+          335,
+          [
+            "s1",
+            "s2"
+          ]
+        ]
+      ],
+      "elapsedSeconds": 77.813
+    }
+  ],
+  "note": "Service and PostgreSQL exercised directly; wall time is accelerated for verification. Browser pacing and actual RAG provider require deployed acceptance."
+}

@@ -1,13 +1,19 @@
 """HTTP routes for the single real TwinOps asset."""
 
+import asyncio
 from datetime import datetime, timezone
+from time import perf_counter
 from typing import Literal
 
 from fastapi import APIRouter, HTTPException, Query, Request
 
-from twinops.api.v2_snapshot import build_snapshot_v2
+from twinops.api.v2_snapshot import build_live_twin_context_v2, build_snapshot_v2
 from twinops.contracts.v2_projections import to_sensor_telemetry_frame_v2
 from twinops.ingestion.schedule import CollectionWindow
+from twinops.rag.operational import TrustedOperationalContext
+from twinops.rag.public_models import AssistantQueryRequest, AssistantQueryResponse
+from twinops.rag.public_service import prohibited_intent_response
+from twinops.rag.retrieval import CorpusUnavailableError
 from twinops.storage.v2_repository import HistoryQueryV2
 
 
@@ -16,6 +22,21 @@ PUBLIC_ASSET_ID = "forzy-motor-01"
 
 def create_v2_router() -> APIRouter:
     router = APIRouter(prefix="/api/v2", tags=["real-twin"])
+
+    @router.get("/assets/{asset_id}/twin-context")
+    def twin_context(request: Request, asset_id: str):
+        _require_asset(request, asset_id)
+        now = request.app.state.clock()
+        operational_state, freshness_basis = _persisted_state(request, now)
+        return build_live_twin_context_v2(
+            repository=request.app.state.repository,
+            scorer=request.app.state.assessment_scorer,
+            now=now,
+            operational_state=operational_state,
+            freshness_basis=freshness_basis,
+            twin3d_enabled=True,
+            copilot_enabled=_copilot_configured(request),
+        )
 
     @router.get("/assets/{asset_id}/snapshot")
     def snapshot(request: Request, asset_id: str):
@@ -76,6 +97,49 @@ def create_v2_router() -> APIRouter:
             ],
             "limit": limit,
         }
+
+    @router.post(
+        "/assets/{asset_id}/assistant/query",
+        response_model=AssistantQueryResponse,
+        response_model_by_alias=True,
+    )
+    async def assistant_query(
+        request: Request,
+        asset_id: str,
+        body: AssistantQueryRequest,
+    ):
+        started = perf_counter()
+        _require_asset(request, asset_id)
+        refusal = prohibited_intent_response(
+            body,
+            generation_model=request.app.state.settings.rag_generation_model,
+            started_at=started,
+        )
+        if refusal is not None:
+            return refusal
+        service = request.app.state.rag_assistant_service
+        if not _copilot_configured(request) or service is None:
+            raise HTTPException(status_code=503, detail="rag_unavailable")
+
+        async def load_operational():
+            return await asyncio.to_thread(_trusted_operational_context, request)
+
+        try:
+            response = await service.query_with_operational_loader(
+                asset_id,
+                body,
+                operational_loader=load_operational,
+                started_at=started,
+            )
+            return response.model_copy(
+                update={
+                    "latency_ms": max(
+                        0.0, (perf_counter() - started) * 1000.0
+                    )
+                }
+            )
+        except CorpusUnavailableError:
+            raise HTTPException(status_code=503, detail="rag_unavailable") from None
 
     @router.get("/integration/health")
     def integration_health(request: Request):
@@ -144,15 +208,72 @@ def _build_snapshot(
     operational_state,
     freshness_basis,
 ):
-    snapshot = build_snapshot_v2(
+    snapshot = _snapshot_model(
+        request,
+        now=now,
+        operational_state=operational_state,
+        freshness_basis=freshness_basis,
+    )
+    return snapshot.model_dump(mode="json", by_alias=True)
+
+
+def _snapshot_model(
+    request: Request,
+    *,
+    now,
+    operational_state,
+    freshness_basis,
+    copilot_enabled=None,
+):
+    return build_snapshot_v2(
         repository=request.app.state.repository,
         scorer=request.app.state.assessment_scorer,
         now=now,
         operational_state=operational_state,
         freshness_basis=freshness_basis,
         twin3d_enabled=True,
+        copilot_enabled=(
+            _copilot_available(request)
+            if copilot_enabled is None
+            else copilot_enabled
+        ),
     )
-    return snapshot.model_dump(mode="json", by_alias=True)
+
+
+def _trusted_operational_context(request: Request) -> TrustedOperationalContext:
+    now = request.app.state.clock()
+    operational_state, freshness_basis = _persisted_state(request, now)
+    snapshot = _snapshot_model(
+        request,
+        now=now,
+        operational_state=operational_state,
+        freshness_basis=freshness_basis,
+        copilot_enabled=True,
+    )
+    return TrustedOperationalContext.from_snapshot(snapshot)
+
+
+def _copilot_configured(request: Request) -> bool:
+    settings = request.app.state.settings
+    return bool(
+        settings.rag_enabled
+        and settings.rag_api_key is not None
+        and settings.rag_embedding_model
+        and settings.rag_generation_model
+        and settings.rag_manufacturer
+        and settings.rag_equipment_model
+        and request.app.state.rag_assistant_service is not None
+    )
+
+
+def _copilot_available(request: Request) -> bool:
+    service = request.app.state.rag_assistant_service
+    if not _copilot_configured(request) or service is None:
+        return False
+    try:
+        return bool(service.is_healthy(PUBLIC_ASSET_ID))
+    except Exception:
+        return False
 
 
 def _health_item(item):

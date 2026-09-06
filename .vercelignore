@@ -9,6 +9,7 @@ docs/**
 notebooks/**
 node_modules/**
 dist/**
+tmp/**
 services/twinops/.venv/**
 **/__pycache__/**
 **/.pytest_cache
@@ -19,15 +20,15 @@ services/twinops/.venv/**
 .env.*
 !.env.example
 
-# O runtime usa somente o bundle ML real fixado abaixo.
-artifacts/**
-!artifacts/ml/
-!artifacts/ml/real-forzy/
-!artifacts/ml/real-forzy/pipeline.joblib
-!artifacts/ml/real-forzy/pipeline-config.json
-!artifacts/ml/real-forzy/backtest-report.json
-!artifacts/ml/real-forzy/model-card.md
-!artifacts/ml/real-forzy/feature-manifest.json
+# O runtime usa somente o bundle ML real fixado abaixo. As exclusoes sao
+# explicitas porque a Vercel CLI nao reabre filhos de um diretorio ignorado.
+artifacts/ml/*.json
+artifacts/ml/*.joblib
+artifacts/ml/*.md
+artifacts/ml/real-forzy/source-summary.json
+artifacts/ml-public/**
+artifacts/research/**
+artifacts/twin3d/**
 
 # Os recursos web do mesmo conjunto motor-bomba permanecem publicáveis.
 !public/models/**

@@ -40,6 +40,31 @@ jobs:
       - name: Build production frontend
         run: npm run build
 
+  rag-e2e:
+    name: Deterministic RAG fake E2E
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Install bundled Chromium
+        run: npx playwright install --with-deps chromium
+
+      - name: Run deterministic RAG fake E2E
+        run: npm run test:e2e:rag
+
   deploy-lock:
     name: Deploy dependency lock
     runs-on: ubuntu-24.04
@@ -89,3 +114,47 @@ jobs:
 
       - name: Run backend tests
         run: python -m pytest services/twinops/tests -p no:cacheprovider -q
+
+  rag-pgvector:
+    name: RAG PostgreSQL + pgvector integration
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      PIP_DISABLE_PIP_VERSION_CHECK: "1"
+      PYTHONPATH: ${{ github.workspace }}/services/twinops/src
+      TEST_DATABASE_URL: postgresql://twinops_test:twinops_test@localhost:5432/twinops_test
+    services:
+      postgres:
+        image: pgvector/pgvector:0.8.6-pg16-bookworm
+        env:
+          POSTGRES_USER: twinops_test
+          POSTGRES_PASSWORD: twinops_test
+          POSTGRES_DB: twinops_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U twinops_test -d twinops_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version-file: .python-version
+          cache: pip
+          cache-dependency-path: services/twinops/pyproject.toml
+
+      - name: Install backend development dependencies
+        run: python -m pip install -e "services/twinops[dev]"
+
+      - name: Apply additive RAG migration to disposable database
+        shell: bash
+        run: python -c "import os,pathlib,psycopg; sql=pathlib.Path('services/twinops/migrations/003_rag_asset_aware_v1.sql').read_text(); c=psycopg.connect(os.environ['TEST_DATABASE_URL']); c.execute(sql); c.commit(); c.close()"
+
+      - name: Run real RAG repository integration test
+        run: python -m pytest services/twinops/tests/rag/test_pgvector_integration.py services/twinops/tests/demo/test_private_access_postgres.py -p no:cacheprovider -q

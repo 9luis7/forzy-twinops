@@ -4,6 +4,7 @@ import { Canvas } from "@react-three/fiber";
 import LoadingState from "../LoadingState.jsx";
 import { parseModelManifest } from "./modelManifest.js";
 import { buildTwinViewModel } from "./twinViewModel.js";
+import DemoTwin3DCanvas from "./DemoTwin3DCanvas.jsx";
 
 
 const MANIFEST_URL = "/models/conjunto-motor-bomba.manifest.json";
@@ -100,7 +101,7 @@ function ModelReadySignal({ children, onReady }) {
   return children;
 }
 
-export default function Twin3DCanvas({
+export function LiveTwin3DCanvas({
   snapshot,
   loadManifest = loadModelManifest,
   Model = TwinModel,
@@ -162,4 +163,8 @@ export default function Twin3DCanvas({
       </p>
     </section>
   );
+}
+
+export default function Twin3DCanvas(props) {
+  return props.snapshot?.schemaVersion === "demo-1.0" ? <DemoTwin3DCanvas {...props} /> : <LiveTwin3DCanvas {...props} />;
 }

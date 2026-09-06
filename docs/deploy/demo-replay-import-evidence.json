@@ -1,0 +1,38 @@
+{
+  "verifiedAt": "2026-09-05T02:07:04.706939+00:00",
+  "environment": "preview",
+  "dataset": {
+    "datasetId": "forzy-history-debbd57af9b90b8a",
+    "label": "Histórico real Forzy",
+    "pairCount": 7183,
+    "readingCount": 14366,
+    "startAt": "2026-05-19T14:46:10.921000Z",
+    "endAt": "2026-05-19T18:43:14.082000Z",
+    "sourceHash": "sha256:debbd57af9b90b8aa70f5794c48fa759afd0ec291d8b56c0c80ed63bfc670c5e",
+    "sourceFormat": "zip-ooxml",
+    "guided": {
+      "startRow": 141,
+      "endRow": 440
+    }
+  },
+  "databaseIdentityMatched": true,
+  "exactReadback": true,
+  "idempotentImport": true,
+  "liveBefore": {
+    "sampleCount": 94,
+    "latestCount": 2,
+    "sha256": "aca05c8bd8d9b3891e1e950d6fa99feac7ca49dbbf4618747f3cdad0959dd19e"
+  },
+  "liveAfter": {
+    "sampleCount": 94,
+    "latestCount": 2,
+    "sha256": "aca05c8bd8d9b3891e1e950d6fa99feac7ca49dbbf4618747f3cdad0959dd19e"
+  },
+  "equalTimestampPairs": 7,
+  "gapsOver15Seconds": 203,
+  "largestGapSeconds": 228.381,
+  "consecutiveRepeatedReadings": {
+    "s1": 4514,
+    "s2": 4423
+  }
+}

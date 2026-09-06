@@ -1,4 +1,5 @@
 import importlib
+import importlib.metadata
 import json
 import os
 from pathlib import Path
@@ -123,6 +124,8 @@ def test_vercel_requirements_only_include_runtime_science_dependencies():
     }
 
     assert "joblib>=1.4,<2" in requirements
+    assert "pypdf>=5,<6" in requirements
+    assert "python-multipart>=0.0.20,<1" in requirements
     assert not any(line.startswith("scipy") for line in requirements)
     assert not any(line.startswith("scikit-learn") for line in requirements)
 
@@ -133,6 +136,26 @@ def test_vercel_requirements_lock_every_runtime_distribution_by_hash():
     lock_text = (repository_root / "requirements.txt").read_text(encoding="utf-8")
 
     _assert_deploy_lock_contract(input_text, lock_text)
+
+
+@pytest.mark.parametrize(
+    ("distribution", "module"),
+    (("pypdf", "pypdf"), ("python-multipart", "multipart")),
+)
+def test_pdf_runtime_dependencies_import_at_the_hashed_lock_version(
+    distribution, module
+):
+    repository_root = Path(__file__).parents[4]
+    lock_text = (repository_root / "requirements.txt").read_text(encoding="utf-8")
+    match = re.search(
+        rf"^{re.escape(distribution)}==([^ \\\r\n]+)",
+        lock_text,
+        flags=re.MULTILINE,
+    )
+
+    assert match is not None
+    assert importlib.util.find_spec(module) is not None
+    assert importlib.metadata.version(distribution) == match.group(1)
 
 
 def test_deploy_lock_contract_rejects_an_input_missing_from_the_lock():
@@ -222,6 +245,15 @@ def test_vercel_function_excludes_local_secrets_and_nonruntime_files():
         assert pattern in exclude_files
 
 
+def test_vercel_function_bundles_both_additive_runtime_migrations():
+    repository_root = Path(__file__).parents[4]
+    config = json.loads((repository_root / "vercel.json").read_text(encoding="utf-8"))
+    include_files = config["functions"]["api/index.py"]["includeFiles"]
+
+    assert "002_real_twin_v2.sql" in include_files
+    assert "003_rag_asset_aware_v1.sql" in include_files
+
+
 def test_vercel_upload_context_ignores_agent_metadata():
     repository_root = Path(__file__).parents[4]
     ignore_patterns = {
@@ -236,6 +268,24 @@ def test_vercel_upload_context_ignores_agent_metadata():
     assert ".superpowers/**" in ignore_patterns
     assert "**/.pytest_cache" in ignore_patterns
     assert "skills-lock.json" in ignore_patterns
+
+
+def test_vercel_upload_context_keeps_runtime_ml_bundle_and_drops_tmp_outputs():
+    repository_root = Path(__file__).parents[4]
+    ignore_patterns = {
+        line.strip()
+        for line in (repository_root / ".vercelignore")
+        .read_text(encoding="utf-8")
+        .splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    }
+
+    assert "artifacts/**" not in ignore_patterns
+    assert "tmp/**" in ignore_patterns
+    assert "artifacts/ml-public/**" in ignore_patterns
+    assert "artifacts/research/**" in ignore_patterns
+    assert "artifacts/twin3d/**" in ignore_patterns
+    assert "artifacts/ml/real-forzy/source-summary.json" in ignore_patterns
 
 
 def test_real_runtime_assessment_does_not_import_training_dependencies():

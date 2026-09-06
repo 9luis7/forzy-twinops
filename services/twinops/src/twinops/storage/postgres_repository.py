@@ -18,6 +18,7 @@ from twinops.storage.v2_repository import (
     RefreshCycleClaimV2,
     RefreshCycleV2,
     RepositorySensorHealthV2,
+    RepositorySnapshotReadV2,
     SensorRefreshOutcomeV2,
     SensorRefreshWriteV2,
 )
@@ -142,15 +143,50 @@ def _parse_outcomes(value: str | None) -> dict[str, SensorRefreshOutcomeV2] | No
 
 
 class PostgresTelemetryRepository:
-    def __init__(self, database_url: str):
+    def __init__(
+        self,
+        database_url: str,
+        *,
+        connection_factory: Callable[[], object] | None = None,
+        connect_timeout_seconds: int = 5,
+        statement_timeout_ms: int = 5_000,
+    ):
+        if (
+            not isinstance(connect_timeout_seconds, int)
+            or connect_timeout_seconds <= 0
+        ):
+            raise ValueError("connect timeout must be a positive integer")
+        if not isinstance(statement_timeout_ms, int) or statement_timeout_ms <= 0:
+            raise ValueError("statement timeout must be a positive integer")
         self.database_url = database_url
+        self._connection_factory = connection_factory
+        self._connect_timeout_seconds = connect_timeout_seconds
+        self._statement_timeout_ms = statement_timeout_ms
 
     @contextmanager
     def _connection(self):
-        with psycopg.connect(
-            self.database_url,
-            row_factory=dict_row,
-        ) as connection:
+        resource = (
+            self._connection_factory()
+            if self._connection_factory is not None
+            else psycopg.connect(
+                self.database_url,
+                row_factory=dict_row,
+                connect_timeout=self._connect_timeout_seconds,
+            )
+        )
+        with resource as connection:
+            yield connection
+
+    @contextmanager
+    def _read_connection(self):
+        """Bound snapshot reads inside PostgreSQL, independent of ASGI cancellation."""
+
+        with self._connection() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    "SELECT set_config('statement_timeout', %s, true)",
+                    (str(self._statement_timeout_ms),),
+                )
             yield connection
 
     def initialize(self) -> None:
@@ -293,12 +329,13 @@ class PostgresTelemetryRepository:
             raise ValueError("sample and attempt sensor ids must match")
 
     def latest(self, asset_id: str) -> list[CanonicalSensorReadingV2]:
-        with self._connection() as connection:
-            rows = connection.execute(
-                "SELECT canonical_json FROM latest_readings_v2 "
-                "WHERE asset_id=%s ORDER BY sensor_id",
-                (asset_id,),
-            ).fetchall()
+        with self._read_connection() as connection:
+            with connection.cursor() as cursor:
+                rows = cursor.execute(
+                    "SELECT canonical_json FROM latest_readings_v2 "
+                    "WHERE asset_id=%s ORDER BY sensor_id",
+                    (asset_id,),
+                ).fetchall()
         return [
             CanonicalSensorReadingV2.model_validate(json.loads(row["canonical_json"]))
             for row in rows
@@ -325,38 +362,40 @@ class PostgresTelemetryRepository:
                 where.append(clause)
                 parameters.append(value)
         parameters.append(query.limit)
-        with self._connection() as connection:
-            rows = connection.execute(
-                "SELECT canonical_json FROM telemetry_samples_v2 WHERE "
-                + " AND ".join(where)
-                + " ORDER BY observed_at DESC, received_at DESC, reading_id DESC "
-                "LIMIT %s",
-                parameters,
-            ).fetchall()
+        with self._read_connection() as connection:
+            with connection.cursor() as cursor:
+                rows = cursor.execute(
+                    "SELECT canonical_json FROM telemetry_samples_v2 WHERE "
+                    + " AND ".join(where)
+                    + " ORDER BY observed_at DESC, received_at DESC, reading_id DESC "
+                    "LIMIT %s",
+                    parameters,
+                ).fetchall()
         return [
             CanonicalSensorReadingV2.model_validate(json.loads(row["canonical_json"]))
             for row in rows
         ]
 
     def health(self, sensor_id: str) -> RepositorySensorHealthV2 | None:
-        with self._connection() as connection:
-            latest = connection.execute(
-                "SELECT attempted_at, latency_ms, error_code "
-                "FROM collection_attempts_v2 WHERE sensor_id=%s "
-                "ORDER BY attempted_at DESC, attempt_id DESC LIMIT 1",
-                (sensor_id,),
-            ).fetchone()
-            last_success = connection.execute(
-                "SELECT MAX(attempted_at) AS attempted_at "
-                "FROM collection_attempts_v2 "
-                "WHERE sensor_id=%s AND succeeded=TRUE",
-                (sensor_id,),
-            ).fetchone()["attempted_at"]
-            sample_count = connection.execute(
-                "SELECT COUNT(*) AS sample_count FROM telemetry_samples_v2 "
-                "WHERE sensor_id=%s",
-                (sensor_id,),
-            ).fetchone()["sample_count"]
+        with self._read_connection() as connection:
+            with connection.cursor() as cursor:
+                latest = cursor.execute(
+                    "SELECT attempted_at, latency_ms, error_code "
+                    "FROM collection_attempts_v2 WHERE sensor_id=%s "
+                    "ORDER BY attempted_at DESC, attempt_id DESC LIMIT 1",
+                    (sensor_id,),
+                ).fetchone()
+                last_success = cursor.execute(
+                    "SELECT MAX(attempted_at) AS attempted_at "
+                    "FROM collection_attempts_v2 "
+                    "WHERE sensor_id=%s AND succeeded=TRUE",
+                    (sensor_id,),
+                ).fetchone()["attempted_at"]
+                sample_count = cursor.execute(
+                    "SELECT COUNT(*) AS sample_count FROM telemetry_samples_v2 "
+                    "WHERE sensor_id=%s",
+                    (sensor_id,),
+                ).fetchone()["sample_count"]
         if latest is None and sample_count == 0:
             return None
         return RepositorySensorHealthV2(
@@ -368,6 +407,92 @@ class PostgresTelemetryRepository:
             latency_ms=latest["latency_ms"] if latest else None,
             error_code=latest["error_code"] if latest else None,
             sample_count=sample_count,
+        )
+
+    def snapshot_read(
+        self,
+        asset_id: str,
+        *,
+        sensor_ids: tuple[str, ...],
+        history_limit_per_sensor: int,
+    ) -> RepositorySnapshotReadV2:
+        if (
+            not sensor_ids
+            or len(set(sensor_ids)) != len(sensor_ids)
+            or any(not sensor_id for sensor_id in sensor_ids)
+            or not 1 <= history_limit_per_sensor <= 1000
+        ):
+            raise ValueError("snapshot read parameters are invalid")
+        requested = list(sensor_ids)
+        with self._read_connection() as connection:
+            latest_rows = connection.execute(
+                "SELECT canonical_json FROM latest_readings_v2 "
+                "WHERE asset_id=%s AND sensor_id = ANY(%s) "
+                "ORDER BY sensor_id",
+                (asset_id, requested),
+            ).fetchall()
+            history_rows = connection.execute(
+                "SELECT canonical_json FROM ("
+                "SELECT canonical_json, sensor_id, "
+                "ROW_NUMBER() OVER (PARTITION BY sensor_id "
+                "ORDER BY observed_at DESC, received_at DESC, reading_id DESC) "
+                "AS sensor_rank FROM telemetry_samples_v2 "
+                "WHERE asset_id=%s AND sensor_id = ANY(%s)"
+                ") AS ranked WHERE sensor_rank <= %s "
+                "ORDER BY sensor_id, sensor_rank",
+                (asset_id, requested, history_limit_per_sensor),
+            ).fetchall()
+            health_rows = connection.execute(
+                "SELECT requested.sensor_id, latest.attempted_at, "
+                "latest.latency_ms, latest.error_code, "
+                "last_success.attempted_at AS last_success_at, "
+                "COALESCE(samples.sample_count, 0) AS sample_count "
+                "FROM unnest(%s::text[]) AS requested(sensor_id) "
+                "LEFT JOIN LATERAL ("
+                "SELECT attempted_at, latency_ms, error_code "
+                "FROM collection_attempts_v2 "
+                "WHERE sensor_id=requested.sensor_id "
+                "ORDER BY attempted_at DESC, attempt_id DESC LIMIT 1"
+                ") AS latest ON TRUE "
+                "LEFT JOIN LATERAL ("
+                "SELECT MAX(attempted_at) AS attempted_at "
+                "FROM collection_attempts_v2 "
+                "WHERE sensor_id=requested.sensor_id AND succeeded=TRUE"
+                ") AS last_success ON TRUE "
+                "LEFT JOIN LATERAL ("
+                "SELECT COUNT(*) AS sample_count FROM telemetry_samples_v2 "
+                "WHERE sensor_id=requested.sensor_id"
+                ") AS samples ON TRUE ORDER BY requested.sensor_id",
+                (requested,),
+            ).fetchall()
+        latest = tuple(
+            CanonicalSensorReadingV2.model_validate(
+                json.loads(row["canonical_json"])
+            )
+            for row in latest_rows
+        )
+        history = tuple(
+            CanonicalSensorReadingV2.model_validate(
+                json.loads(row["canonical_json"])
+            )
+            for row in history_rows
+        )
+        health = tuple(
+            RepositorySensorHealthV2(
+                sensor_id=row["sensor_id"],
+                last_attempt_at=_parse_timestamp(row["attempted_at"]),
+                last_success_at=_parse_timestamp(row["last_success_at"]),
+                latency_ms=row["latency_ms"],
+                error_code=row["error_code"],
+                sample_count=row["sample_count"],
+            )
+            for row in health_rows
+            if row["attempted_at"] is not None or row["sample_count"] > 0
+        )
+        return RepositorySnapshotReadV2(
+            latest=latest,
+            history=history,
+            health=health,
         )
 
     def claim_refresh_cycle(

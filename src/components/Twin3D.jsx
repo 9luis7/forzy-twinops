@@ -18,7 +18,7 @@ const TWIN_LOADING_MESSAGES = [
   "Preparando rotação e zoom…",
 ];
 
-export function Twin3DStaticFallback() {
+export function Twin3DStaticFallback({ snapshot }) {
   return (
     <figure className="card" aria-label="Prévia estática do conjunto motor-bomba">
       <img
@@ -30,6 +30,7 @@ export function Twin3DStaticFallback() {
       <figcaption className="muted small">
         Visualização 3D indisponível; exibindo a prévia estática do mesmo conjunto.
       </figcaption>
+      {snapshot?.mode === "replay" && <div className="demo-static-sensors" aria-label="Sensores na prévia estática">{["s1", "s2"].map((id) => <span key={id}>{id.toUpperCase()} · {id === "s1" ? "Motor" : "Bomba"}<br />{snapshot.sensors[id].latest?.measurements.vibrationVelocityRms?.value ?? "—"} mm/s · {snapshot.sensors[id].assessment?.assessment.status ?? "indisponível"}</span>)}</div>}
     </figure>
   );
 }
@@ -59,8 +60,8 @@ class Twin3DErrorBoundary extends Component {
 export function createTwin3DComponent(loadCanvas) {
   const LazyTwin3DCanvas = lazy(loadCanvas);
 
-  return function Twin3D({ snapshot, fallback }) {
-    const fallbackView = fallback ?? <Twin3DStaticFallback />;
+  return function Twin3D({ snapshot, fallback, selectedSensor, onSelectSensor }) {
+    const fallbackView = fallback ?? <Twin3DStaticFallback snapshot={snapshot} />;
     if (!snapshot || snapshot.capabilities?.twin3d !== true || !canUseWebGL()) {
       return fallbackView;
     }
@@ -76,7 +77,7 @@ export function createTwin3DComponent(loadCanvas) {
     return (
       <Twin3DErrorBoundary fallback={fallbackView} resetSignal={snapshot}>
         <Suspense fallback={loadingView}>
-          <LazyTwin3DCanvas snapshot={snapshot} />
+          <LazyTwin3DCanvas snapshot={snapshot} {...(selectedSensor !== undefined ? { selectedSensor } : {})} {...(onSelectSensor !== undefined ? { onSelectSensor } : {})} />
         </Suspense>
       </Twin3DErrorBoundary>
     );

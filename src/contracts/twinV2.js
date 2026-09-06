@@ -228,7 +228,7 @@ export function assertDigitalTwinSnapshotV2(value) {
   assertRecord(value.capabilities, "snapshot.capabilities", ["liveUpdates", "replayControls", "copilot", "twin3d"]);
   if (value.capabilities.liveUpdates !== true) fail("snapshot.capabilities.liveUpdates", "must be true");
   if (value.capabilities.replayControls !== false) fail("snapshot.capabilities.replayControls", "must be false");
-  if (value.capabilities.copilot !== false) fail("snapshot.capabilities.copilot", "must be false");
+  assertBoolean(value.capabilities.copilot, "snapshot.capabilities.copilot");
   assertBoolean(value.capabilities.twin3d, "snapshot.capabilities.twin3d");
   return value;
 }

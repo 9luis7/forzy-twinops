@@ -2,6 +2,7 @@ import json
 import os
 from contextlib import contextmanager
 import threading
+from unittest.mock import Mock
 
 import psycopg
 import pytest
@@ -73,6 +74,14 @@ class _OneRow:
         return self.row
 
 
+class _Rows:
+    def __init__(self, rows):
+        self.rows = rows
+
+    def fetchall(self):
+        return self.rows
+
+
 class _SchemaConnection:
     def __init__(self, schema_states):
         self.schema_states = iter(schema_states)
@@ -86,6 +95,121 @@ class _SchemaConnection:
                 {"tables_current": current, "indexes_current": current}
             )
         return _OneRow(None)
+
+
+class _TimeoutCursor:
+    def __init__(self, calls, *, fail_on_data=False):
+        self.calls = calls
+        self.fail_on_data = fail_on_data
+        self.closed = False
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, traceback):
+        self.closed = True
+        return False
+
+    def execute(self, query, params=None):
+        self.calls.append((query, params))
+        if self.fail_on_data and "latest_readings_v2" in query:
+            raise psycopg.errors.QueryCanceled("statement timeout")
+        return self
+
+    def fetchall(self):
+        return []
+
+
+class _TimeoutConnection:
+    def __init__(self):
+        self.calls = []
+        self.cursors = []
+        self.closed = False
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, traceback):
+        self.closed = True
+        return False
+
+    def cursor(self):
+        cursor = _TimeoutCursor(
+            self.calls,
+            fail_on_data=bool(self.cursors),
+        )
+        self.cursors.append(cursor)
+        return cursor
+
+
+def test_snapshot_read_statement_timeout_closes_cursor_and_connection():
+    connection = _TimeoutConnection()
+    repository = postgres_repository.PostgresTelemetryRepository(
+        "redacted",
+        connection_factory=lambda: connection,
+        connect_timeout_seconds=1,
+        statement_timeout_ms=250,
+    )
+
+    with pytest.raises(psycopg.errors.QueryCanceled):
+        repository.latest("forzy-motor-01")
+
+    assert "set_config('statement_timeout'" in connection.calls[0][0]
+    assert connection.calls[0][1] == ("250",)
+    assert connection.closed is True
+    assert len(connection.cursors) == 2
+    assert all(cursor.closed for cursor in connection.cursors)
+
+
+def test_postgres_connect_uses_bounded_connect_timeout(monkeypatch):
+    connection = _TimeoutConnection()
+    connect = Mock(return_value=connection)
+    monkeypatch.setattr(postgres_repository.psycopg, "connect", connect)
+    repository = postgres_repository.PostgresTelemetryRepository(
+        "redacted",
+        connect_timeout_seconds=3,
+        statement_timeout_ms=3_000,
+    )
+
+    with repository._connection():
+        pass
+
+    connect.assert_called_once_with(
+        "redacted",
+        row_factory=postgres_repository.dict_row,
+        connect_timeout=3,
+    )
+    assert connection.closed is True
+
+
+def test_snapshot_read_reuses_one_bounded_postgres_connection():
+    connection = _TimeoutConnection()
+    connection.execute = Mock(
+        side_effect=[_Rows([]), _Rows([]), _Rows([])]
+    )
+    connection_factory = Mock(return_value=connection)
+    repository = postgres_repository.PostgresTelemetryRepository(
+        "redacted",
+        connection_factory=connection_factory,
+        connect_timeout_seconds=1,
+        statement_timeout_ms=250,
+    )
+
+    reader = getattr(repository, "snapshot_read", None)
+    assert reader is not None, "atomic PostgreSQL snapshot read is missing"
+    result = reader(
+        "forzy-motor-01",
+        sensor_ids=("s1", "s2"),
+        history_limit_per_sensor=1000,
+    )
+
+    assert result.latest == ()
+    assert result.history == ()
+    assert result.health == ()
+    connection_factory.assert_called_once_with()
+    assert connection.closed is True
+    assert len(connection.cursors) == 1
+    assert connection.execute.call_count == 3
 
 
 def test_initialize_skips_migration_file_and_lock_when_schema_is_current(monkeypatch):

@@ -1,0 +1,72 @@
+{
+  "schemaVersion": "1.0",
+  "capturedAt": "2026-09-04T21:48:36.5626247Z",
+  "deployment": {
+    "id": "dpl_CYGqNGG8BFQbUiYPEeJ8PkqkKPtm",
+    "url": "https://forzy-twinops-o7bm10s3r-9luis7s-projects.vercel.app",
+    "target": "preview",
+    "codeCommit": "39535bef398e4049e553011cc70422451a661d1a"
+  },
+  "lineage": {
+    "exploratoryCorpusId": "56f0e62f-4308-4b70-9b82-a73cb2075e83"
+  },
+  "corpus": {
+    "id": "4fc8063f-aa3a-4283-8b14-2f54bf08358c",
+    "status": "published",
+    "embeddingModel": "gemini-embedding-2",
+    "embeddingDimensions": 768,
+    "chunkTargetTokens": 700,
+    "chunkOverlapTokens": 100,
+    "minRelevanceScore": 0.5897445762442176
+  },
+  "document": {
+    "id": "9513b1a8-d158-4f2a-bf0e-509a4e4bf87a",
+    "sha256": "0eb6265cc1bafc7ed90d4cd91f64e87597063b841836373f951e7e753bad10d0",
+    "pages": 233,
+    "coveragePages": 233,
+    "chunks": 117,
+    "language": "pt-BR,en,es",
+    "sourceUrl": "https://static.weg.net/medias/downloadcenter/ha6/h39/WEG-WMO-safe-area-50033244-manual-pt-en-es.pdf",
+    "ingestionMethod": "official-source-url"
+  },
+  "artifacts": {
+    "captureSha256": "420cdb00259fb7784cefb8a22465be2b9299cbfba0cb60918c1464f7a5b6bfde",
+    "answersSha256": "6679ea11f70f73908721f8b932b71d5b0fc10e020d349176ed8ff703f3ebf9ab",
+    "realAnswersSha256": "1e85260bcd37047498c25d0b05bbae1db8b3b78bbbcc47e042a49dcb880b650f",
+    "syntheticAnswersSha256": "70c3ba0ea2cc78ce5dfce48303641939f6280329dd0d27ecf64cd7ad2810dada",
+    "manifestSha256": "116d3de5f7ddb63dcb749f8335f9cb89c8366a9ede97cb127a27f43f8131a3a8",
+    "answerCaptureRetention": "ephemeral-local-only; operational snapshots are not committed",
+    "realManualCases": 16
+  },
+  "calibration": {
+    "recallAt6": 1.0,
+    "refusalAccuracy": 1.0,
+    "recommendedThreshold": 0.64285713,
+    "validatedActiveThreshold": 0.5897445762442176,
+    "thresholdDecision": "Preserve the immutable published corpus; the active conservative threshold passes the final retrieval and refusal gates."
+  },
+  "acceptance": {
+    "cases": 33,
+    "citationValidity": 1.0,
+    "inventedEvidence": 0,
+    "inventedProcedure": 0,
+    "recallAt6": 1.0,
+    "refusalAccuracy": 1.0,
+    "failureProbabilityPresentations": 0,
+    "p95LatencyMs": 7859.281,
+    "grounding": {
+      "degradedFallback": 9,
+      "grounded": 13,
+      "manualInsufficient": 2,
+      "operationalUnavailable": 3,
+      "outOfScope": 6
+    },
+    "realPreviewGeneration": {
+      "degradedFallback": 4,
+      "grounded": 7,
+      "manualInsufficient": 1,
+      "outOfScope": 4,
+      "note": "Every provider-selected citation was validated before display; invalid selections used deterministic exact-substring fallback."
+    }
+  }
+}

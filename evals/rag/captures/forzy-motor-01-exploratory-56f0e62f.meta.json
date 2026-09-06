@@ -1,0 +1,32 @@
+{
+  "schemaVersion": "1.0",
+  "capturedAt": "2026-09-04T10:10:36.6524384-03:00",
+  "deployment": {
+    "id": "dpl_2563b4WGk14VFQhUGC1MKmWourxt",
+    "url": "https://forzy-twinops-hyjkk5hm0-9luis7s-projects.vercel.app",
+    "target": "preview",
+    "codeCommit": "fd3219baff61f1c766e3eae9dba2409257694479"
+  },
+  "corpus": {
+    "id": "56f0e62f-4308-4b70-9b82-a73cb2075e83",
+    "status": "draft",
+    "minRelevanceScore": 0.0
+  },
+  "document": {
+    "id": "379867a0-782f-4d93-8bd8-5f37973e4fe7",
+    "sha256": "0eb6265cc1bafc7ed90d4cd91f64e87597063b841836373f951e7e753bad10d0",
+    "pages": 233,
+    "chunks": 117,
+    "sourceUrl": "https://static.weg.net/medias/downloadcenter/ha6/h39/WEG-WMO-safe-area-50033244-manual-pt-en-es.pdf"
+  },
+  "artifacts": {
+    "captureSha256": "7a951cd8da213d5950cdb28e333da821e2c346d7b3121647f2395639e59da037",
+    "manifestSha256": "a8df0212fa2c0c5e1e5cbbfb824437d8a83041113283563a41d79a1a7a640a35",
+    "realManualCases": 16
+  },
+  "calibration": {
+    "recallAt6": 1.0,
+    "refusalAccuracy": 1.0,
+    "recommendedThreshold": 0.5897445762442176
+  }
+}
