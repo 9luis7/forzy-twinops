@@ -10,6 +10,15 @@ const fullClock = (v) => v ? `${new Date(v).toLocaleString("pt-BR", { timeZone: 
 const EVENT_LABELS = { sustained_watch: "Atenção sustentada", escalation: "Escalada para alerta", recovery: "Recuperação sustentada" };
 const EVENT_STATES = { pending: "Na fila", processing: "Consultando manual", ready: "Recomendação disponível", degraded: "Resposta limitada" };
 
+function EventStatus({ event, recommendationPending }) {
+  const awaiting = !["ready", "degraded"].includes(event.status)
+    && recommendationPending?.eventId === event.eventId
+    && recommendationPending.generation === event.generation;
+  return <span className="small muted" role="status" title={awaiting ? "Consulta enviada; aguardando resposta do serviço." : undefined}>
+    {awaiting ? "Consultando manual" : EVENT_STATES[event.status]}
+  </span>;
+}
+
 function Answer({ response }) {
   return <div className="demo-answer">
     <p><strong>Leitura operacional</strong><br />{response.answer.currentState}</p>
@@ -85,7 +94,7 @@ export default function DemoDashboard({ dataSource }) {
       <div className="demo-bottom-grid">
         <section className="panel demo-events"><p className="eyebrow">Episódios preservados</p><h2>Eventos e recomendações</h2><p className="muted small">Cada resposta pertence ao contexto congelado do evento, mesmo quando o replay avança.</p>
           {!events.length && <p className="empty-state">Nenhum episódio sustentado neste prefixo do histórico.</p>}
-          <ol>{[...events].reverse().map((event) => <li key={event.eventId} className="demo-event"><div className="demo-event-title"><strong>{EVENT_LABELS[event.kind]}</strong><span className="small muted">{EVENT_STATES[event.status]}</span></div><p className="muted small">{event.sensorIds.map((id) => id.toUpperCase()).join(" + ")} · linha {event.sourceRow} · {clockLabel(event.observedAt)} UTC · revisão {event.contextRevision}</p>{event.recommendation && <details><summary>Ver recomendação e fontes do evento</summary><Answer response={event.recommendation} /></details>}{event.errorCode && <p className="small muted">{event.retryable ? "Aguardando nova tentativa." : "Geração concluída com limitação."}</p>}</li>)}</ol>
+          <ol>{[...events].reverse().map((event) => <li key={event.eventId} className="demo-event"><div className="demo-event-title"><strong>{EVENT_LABELS[event.kind]}</strong><EventStatus event={event} recommendationPending={state.recommendationPending} /></div><p className="muted small">{event.sensorIds.map((id) => id.toUpperCase()).join(" + ")} · linha {event.sourceRow} · {clockLabel(event.observedAt)} UTC · revisão {event.contextRevision}</p>{event.recommendation && <details><summary>Ver recomendação e fontes do evento</summary><Answer response={event.recommendation} /></details>}{event.errorCode && <p className="small muted">{event.retryable ? "Aguardando nova tentativa." : "Geração concluída com limitação."}</p>}</li>)}</ol>
         </section>
         <section className="panel demo-copilot"><p className="eyebrow">Copiloto técnico · corpus WEG</p><h2>Pergunte sobre este instante</h2><p className="muted small">A pergunta fixa a revisão exibida ao enviar. Pause o replay para explorar o mesmo instante.</p>
           <form onSubmit={(e) => { e.preventDefault(); if (question.trim()) controller.query(question.trim()); }}><label htmlFor="demo-question">Pergunta</label><textarea id="demo-question" value={question} onChange={(e) => setQuestion(e.target.value)} maxLength={500} placeholder="Quais evidências justificam a atenção e o que verificar no motor?" /><button disabled={state.manualPending || !question.trim() || !replay.sourceRow}>{state.manualPending ? "Consultando fontes…" : `Consultar revisão ${context.revision}`}</button></form>

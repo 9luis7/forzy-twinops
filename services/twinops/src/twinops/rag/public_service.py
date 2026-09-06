@@ -399,7 +399,7 @@ class RagAssistantService:
         )
         validation_started = perf_counter()
         try:
-            generated = validate_generated_payload(
+            generated = self._validate_generated_payload(
                 generated,
                 retrieval=retrieval,
             )
@@ -440,6 +440,10 @@ class RagAssistantService:
             trace_id=trace_id,
             started=started,
         )
+
+    def _validate_generated_payload(self, payload, *, retrieval):
+        """Default/live path retains the original strict citation guard."""
+        return validate_generated_payload(payload, retrieval=retrieval)
 
     def _log_total(
         self,

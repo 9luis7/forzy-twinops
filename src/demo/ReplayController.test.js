@@ -112,6 +112,65 @@ it("automatic recommendation does not block telemetry and has one pending reques
   c.tick(); c.tick(); expect(source.recommend).toHaveBeenCalledTimes(1); expect(source.advance).toHaveBeenCalledTimes(1);
   pending.resolve(event({ status: "ready" })); await pending.promise;
 });
+it("exposes only request identity while telemetry advances, then clears it on completion", async () => {
+  const { c, source } = setup(); await c.create(dataset.datasetId);
+  c.accept(context(1, { events: [event()] }), c.epoch);
+  const pending = deferred(); source.recommend.mockReturnValue(pending.promise);
+  const request = c.recommendNext();
+  expect(c.state.recommendationPending).toEqual({ eventId: "test-event", generation: 0 });
+  expect(c.state.events[0]).toMatchObject({ status: "pending", attempts: 0 });
+  source.advance.mockResolvedValue(context(2, { events: [event()] }));
+  await c.transact("advance");
+  expect(c.context.revision).toBe(2); expect(c.state.recommendationPending?.eventId).toBe("test-event");
+  expect(source.recommend).toHaveBeenCalledTimes(1);
+  pending.resolve(event({ status: "ready", attempts: 1 })); await request;
+  expect(c.state.recommendationPending).toBeNull(); expect(c.state.events[0].status).toBe("ready");
+});
+it("clears request feedback on error without fabricating a backend status", async () => {
+  const { c, source } = setup(); await c.create(dataset.datasetId); c.accept(context(1, { events: [event()] }), c.epoch);
+  source.recommend.mockRejectedValue(new Error("interrupted")); await c.recommendNext();
+  expect(c.state.recommendationPending).toBeNull(); expect(c.state.events[0].status).toBe("pending");
+  expect(c.state.assistantError).toMatch(/pendente/);
+});
+it("does not let an old session request clear the new request feedback when abort is ignored", async () => {
+  const { c, source } = setup(); await c.create(dataset.datasetId); c.accept(context(1, { events: [event()] }), c.epoch);
+  const old = deferred(), next = deferred(); source.recommend.mockReturnValueOnce(old.promise).mockReturnValueOnce(next.promise);
+  const oldRequest = c.recommendNext(); const oldSignal = source.recommend.mock.calls[0][2].signal;
+  await c.create(dataset.datasetId); expect(oldSignal.aborted).toBe(true); expect(c.state.recommendationPending).toBeNull();
+  c.accept(context(1, { events: [event({ eventId: "next-event" })] }), c.epoch);
+  const nextRequest = c.recommendNext();
+  old.resolve(event({ status: "ready" })); await oldRequest;
+  expect(c.state.recommendationPending?.eventId).toBe("next-event");
+  next.resolve(event({ eventId: "next-event", status: "ready" })); await nextRequest;
+  expect(c.state.recommendationPending).toBeNull();
+});
+it("clears request feedback on disposal even if the transport ignores abort", async () => {
+  const { c, source } = setup(); await c.create(dataset.datasetId); c.accept(context(1, { events: [event()] }), c.epoch);
+  const pending = deferred(); source.recommend.mockReturnValue(pending.promise); const request = c.recommendNext();
+  c.dispose(); expect(source.recommend.mock.calls[0][2].signal.aborted).toBe(true);
+  expect(c.state.recommendationPending).toBeNull();
+  pending.resolve(event({ status: "ready" })); await request;
+  expect(c.state.events[0].status).toBe("pending"); expect(c.state.recommendationPending).toBeNull();
+});
+it("accepts a newer processing attempt over an old cached retryable pending result", async () => {
+  const { c, source } = setup(); await c.create(dataset.datasetId); c.accept(context(1, { events: [event()] }), c.epoch);
+  source.recommend.mockResolvedValue(event({ status: "pending", attempts: 1, retryable: true })); await c.recommendNext();
+  const processing = event({ status: "processing", attempts: 2 });
+  c.accept(context(2, { events: [processing] }), c.epoch);
+  expect(c.state.events[0]).toBe(processing);
+  c.accept(context(3, { events: [event({ status: "pending", attempts: 1, retryable: true })] }), c.epoch);
+  expect(c.state.events[0]).toBe(processing);
+  const completedAttempt = event({ status: "pending", attempts: 2, retryable: true });
+  c.accept(context(4, { events: [completedAttempt] }), c.epoch);
+  expect(c.state.events[0]).toBe(completedAttempt);
+});
+it("does not regress processing when an older pending POST response arrives late", async () => {
+  const { c, source } = setup(); await c.create(dataset.datasetId); c.accept(context(1, { events: [event()] }), c.epoch);
+  const pending = deferred(); source.recommend.mockReturnValue(pending.promise); const request = c.recommendNext();
+  const processing = event({ status: "processing", attempts: 2 }); c.accept(context(2, { events: [processing] }), c.epoch);
+  pending.resolve(event({ status: "pending", attempts: 1, retryable: true })); await request;
+  expect(c.state.events[0]).toBe(processing); expect(c.state.recommendationPending).toBeNull();
+});
 it("backs off processing/transient recommendations and preserves terminal responses across context refresh", async () => {
   vi.useFakeTimers(); const { c, source } = setup(); await c.create(dataset.datasetId);
   c.accept(context(1, { events: [event()] }), c.epoch);
@@ -145,7 +204,9 @@ it("discards a recommendation from the previous generation after restart", async
   const { c, source } = setup(); await c.create(dataset.datasetId); c.accept(context(1, { events: [event()] }), c.epoch);
   const pending = deferred(); source.recommend.mockReturnValue(pending.promise); const task = c.recommendNext();
   source.control.mockResolvedValue(context(2, { replay: { ...context().replay, generation: 1 } })); await c.command("restart");
+  expect(c.state.recommendationPending).toBeNull(); expect(source.recommend.mock.calls[0][2].signal.aborted).toBe(true);
   pending.resolve(event({ status: "ready" })); await task; expect(c.state.events).toEqual([]);
+  expect(c.state.recommendationPending).toBeNull();
 });
 it("pauses on visibility loss and requires explicit continue when visible", async () => {
   const { c, source } = setup(); let handler; c.document = { hidden: false, addEventListener: (_, cb) => { handler = cb; }, removeEventListener: vi.fn() };

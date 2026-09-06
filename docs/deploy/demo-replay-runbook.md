@@ -42,6 +42,8 @@ Gemini direto e os modelos existentes continuam em uso. Confirmar que o projeto 
 
 O orçamento específico do RAG demo é 40 s no total, até 30 s na geração, dentro do limite da função de 60 s; o orçamento live permanece preservado. A reconstrução do índice WEG no destino dedicado utiliza IDs novos, com verificação do mesmo PDF, páginas e hashes. Integridade da indexação e testes com provedor simulado não substituem o aceite publicado com geração real.
 
+Na demo, se o modelo copiar uma citação literal mas vinculá-la ao ID de outro trecho conhecido, o servidor pode corrigir apenas essa referência: a mesma citação deve aparecer em exatamente um dos trechos recuperados e autorizados. O texto não é alterado; páginas, documento e link vêm do trecho encontrado. IDs desconhecidos, texto sem correspondência, ambiguidade e duplicatas continuam sujeitos à recusa pelo validador. A resolução não busca documentos adicionais nem modifica a validação live.
+
 O CLI de indexação espaça os lotes em 65 segundos após cada resposta bem-sucedida. Os quatro lotes do manual exigem pelo menos 195 segundos de intervalos, além da extração, rede e gravação. Isso limita a rajada de ingestão no plano Free; não garante disponibilidade da cota. Uma resposta 429 interrompe a execução sem repetição automática ou persistência parcial de documento. A retomada conserva o UUID do corpus e reutiliza um documento já concluído. O limiar de busca aceita somente a diferença de arredondamento do PostgreSQL, com tolerância absoluta de `1e-15`; valores materialmente distintos continuam bloqueados.
 
 A função usa `gru1` (São Paulo), próxima ao PostgreSQL existente em `sa-east-1`. Cada avanço confirma várias operações na mesma transação; manter função e banco próximos evita acumular latência entre regiões. A região está versionada em `vercel.json` e só passa a valer em um novo deployment. Validar a duração HTTP e o roteiro completo no Preview antes de promover a versão final.
@@ -52,7 +54,7 @@ Uma cota esgotada no Neon impede o live, mas não deve impedir o cenário demons
 
 Sessões duram 24 h e usam token separado por aba. Uma única requisição de avanço pode ficar pendente por sessão. Conflitos de revisão exigem leitura do contexto; não repetir automaticamente um avanço ambíguo. Todos os IDs de comandos ficam registrados durante a sessão, com respostas completas dos oito mais recentes. Repetir um ID antigo retorna `command_response_expired` sem reexecutar.
 
-Eventos mantêm contexto congelado e resultados terminais imutáveis. A geração ocorre fora da transação de avanço. Falhas transitórias têm no máximo três tentativas, com lease de 60 s; a interface exibe a limitação se a geração não puder concluir. O painel permanece funcional sem WebGL, exibindo prévia estática e sensores.
+Eventos mantêm contexto congelado e resultados terminais imutáveis. A geração ocorre fora da transação de avanço. Falhas transitórias e respostas do modelo recusadas pela validação de citações têm no máximo três tentativas, com lease de 60 s. Cada tentativa exige uma resposta nova e citações literais válidas; texto recusado não é publicado. A interface indica a consulta em andamento enquanto a requisição está pendente e exibe a limitação se as tentativas não concluírem. O painel permanece funcional sem WebGL, exibindo prévia estática e sensores.
 
 Depois de 24 h, uma sessão ainda retida responde 410; depois da limpeza limitada, 404. Em ambos os casos, preparar uma nova sessão.
 

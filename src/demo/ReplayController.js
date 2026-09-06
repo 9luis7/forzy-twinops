@@ -1,6 +1,14 @@
 const SESSION_KEY = "twinops.demo.session.v1";
 const commandId = () => globalThis.crypto.randomUUID();
 const terminalEvent = (event) => ["ready", "degraded"].includes(event?.status);
+const eventPhase = (event) => event.status === "pending" && event.retryable ? 2 : event.status === "processing" ? 1 : 0;
+function newerEvent(current, incoming) {
+  if (!current || terminalEvent(incoming) && !terminalEvent(current)) return incoming;
+  if (terminalEvent(current)) return current;
+  if (current.attempts !== incoming.attempts) return current.attempts > incoming.attempts ? current : incoming;
+  // A retryable pending result completes an attempt; processing starts it.
+  return eventPhase(current) > eventPhase(incoming) ? current : incoming;
+}
 
 /** Owns transport only. Every telemetry view receives the same server context. */
 export class ReplayController {
@@ -14,7 +22,7 @@ export class ReplayController {
     this.visibilityVersion = 0;
     this.state = { context: null, datasets: [], loading: true, busy: false, error: null,
       suspended: false, events: [], manualPending: false, answers: [], assistantError: null,
-      pendingOperation: null, queuedAction: null };
+      pendingOperation: null, queuedAction: null, recommendationPending: null };
   }
   subscribe = (listener) => { this.listeners.add(listener); return () => this.listeners.delete(listener); };
   getSnapshot = () => this.state;
@@ -26,14 +34,14 @@ export class ReplayController {
     if (this.context && context.replay.generation !== this.context.replay.generation) {
       this.rag?.abort(); this.manual?.abort(); this.eventResults.clear(); this.retryAt.clear();
       this.rag = null; this.manual = null;
-      this.publish({ answers: [], assistantError: null, manualPending: false });
+      this.publish({ answers: [], assistantError: null, manualPending: false, recommendationPending: null });
     }
     this.context = context;
     const events = context.events.map((event) => {
       const result = this.eventResults.get(event.eventId);
-      if (result?.generation === context.replay.generation && terminalEvent(result)) return result;
-      if (terminalEvent(event)) { this.eventResults.set(event.eventId, event); return event; }
-      return result && result.generation === context.replay.generation ? result : event;
+      const merged = newerEvent(result?.generation === context.replay.generation ? result : null, event);
+      if (result || terminalEvent(merged)) this.eventResults.set(event.eventId, merged);
+      return merged;
     });
     this.publish({ context, events }); return true;
   }
@@ -71,13 +79,14 @@ export class ReplayController {
   dispose() {
     ++this.epoch; this.clear(this.timer); this.lifecycle?.abort(); this.transport?.abort();
     this.rag?.abort(); this.manual?.abort(); this.document?.removeEventListener("visibilitychange", this.visibility);
+    this.rag = null; this.publish({ recommendationPending: null });
   }
   async create(datasetId, scenario = "guided", speed = 1) {
     const epoch = ++this.epoch;
     this.lifecycle?.abort(); this.transport?.abort(); this.rag?.abort(); this.manual?.abort();
     this.rag = null; this.manual = null; this.queued = null;
     this.context = null; this.session = null; this.eventResults.clear(); this.retryAt.clear();
-    this.publish({ context: null, events: [], busy: true, error: null, answers: [], assistantError: null, manualPending: false, suspended: false, pendingOperation: "create", queuedAction: null });
+    this.publish({ context: null, events: [], busy: true, error: null, answers: [], assistantError: null, manualPending: false, suspended: false, pendingOperation: "create", queuedAction: null, recommendationPending: null });
     const controller = new AbortController(); this.transport = controller;
     try {
       const run = await this.source.create({ datasetId, scenario, speed }, { signal: controller.signal });
@@ -171,6 +180,8 @@ export class ReplayController {
     if (!event) return;
     const epoch = this.epoch, generation = this.context.replay.generation;
     const controller = new AbortController(); this.rag = controller;
+    // Transport feedback is separate from the persisted event status/attempts.
+    this.publish({ recommendationPending: { eventId: event.eventId, generation } });
     this.retryAt.set(event.eventId, Date.now() + 5000);
     try {
       const result = await this.source.recommend(this.session, event.eventId, { signal: controller.signal });
@@ -183,13 +194,18 @@ export class ReplayController {
         this.eventResults.set(event.eventId, terminalEvent(latest) ? latest : cached);
         return;
       }
-      this.eventResults.set(event.eventId, result);
-      this.publish({ events: this.state.events.map((e) => e.eventId === event.eventId ? result : e), assistantError: null });
+      const merged = newerEvent(latest, result);
+      this.eventResults.set(event.eventId, merged);
+      this.publish({ events: this.state.events.map((e) => e.eventId === event.eventId ? merged : e), assistantError: null });
     } catch (error) {
       if (epoch === this.epoch && generation === this.context?.replay.generation && error.name !== "AbortError") {
         this.publish({ assistantError: "Recomendação pendente. Nova tentativa automática em alguns segundos." });
       }
-    } finally { if (this.rag === controller) this.rag = null; }
+    } finally {
+      if (this.rag === controller) {
+        this.rag = null; this.publish({ recommendationPending: null });
+      }
+    }
   }
   async query(question) {
     if (this.manual || !this.session || !this.context) return;

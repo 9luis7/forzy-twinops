@@ -4,7 +4,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-libra
 import { afterEach, expect, it, vi } from "vitest";
 import DemoDashboard from "./DemoDashboard.jsx";
 import { buildTrendPoints } from "./DemoTrends.jsx";
-import { context, dataset, deferred, frame } from "./testFixtures.js";
+import { context, dataset, deferred, event, frame } from "./testFixtures.js";
 
 afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.useRealTimers(); sessionStorage.clear(); });
 it("prepares the real gateway session and offers keyboard controls with static 3D fallback", async () => {
@@ -44,4 +44,33 @@ it("keeps pause/restart clickable during advance and acknowledges the queued pau
   await act(async () => { await vi.advanceTimersByTimeAsync(3000); }); expect(source.advance).toHaveBeenCalledTimes(1);
   await act(async () => { pending.resolve(context(2)); await pending.promise; });
   expect(source.control.mock.calls[0][1]).toMatchObject({ action: "pause", expectedRevision: 2 });
+});
+it.each(["ready", "degraded"])("shows request feedback across advances and preserves a %s event before POST finishes", async (status) => {
+  vi.useFakeTimers(); vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue(null);
+  const pending = deferred();
+  const events = [event(), event({ eventId: "waiting-event", kind: "recovery" })];
+  const running = (revision, nextEvents = events) => context(revision, {
+    events: nextEvents, replay: { ...context().replay, state: "running", cursor: revision },
+  });
+  const source = {
+    datasets: vi.fn(async () => [dataset]), create: vi.fn(async () => ({ runId: "test-run", token: "test", context: running(1) })),
+    advance: vi.fn().mockResolvedValueOnce(running(2)).mockResolvedValueOnce(running(3, [event({ status, attempts: 1 }), events[1]])),
+    recommend: vi.fn(() => pending.promise),
+  };
+  const view = render(<DemoDashboard dataSource={source} />);
+  await act(async () => {});
+  await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Preparar replay" })); });
+  expect(screen.getAllByText("Na fila")).toHaveLength(2);
+  await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
+  expect(view.container.querySelector(".demo-twin-grid")).toHaveAttribute("data-revision", "2");
+  expect(screen.getByText("Consultando manual")).toHaveAttribute("title", "Consulta enviada; aguardando resposta do serviço.");
+  expect(screen.getAllByText("Na fila")).toHaveLength(1);
+  expect(events[0].status).toBe("pending");
+  await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
+  expect(view.container.querySelector(".demo-twin-grid")).toHaveAttribute("data-revision", "3");
+  expect(source.recommend).toHaveBeenCalledTimes(1); expect(source.advance).toHaveBeenCalledTimes(2);
+  expect(screen.queryByText("Consultando manual")).not.toBeInTheDocument();
+  expect(screen.getByText(status === "ready" ? "Recomendação disponível" : "Resposta limitada")).toBeVisible();
+  await act(async () => { pending.resolve(event({ status: "processing" })); await pending.promise; });
+  expect(screen.queryByText("Consultando manual")).not.toBeInTheDocument();
 });

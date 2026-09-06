@@ -133,3 +133,83 @@ async def test_real_repository_transient_retry_then_validated_result(storage):
     assert ready["attempts"] == 2
     assert ready["recommendation"]["fallbackUsed"] is False
     assert any(c["type"] == "manual" for c in ready["recommendation"]["citations"])
+
+
+@pytest.mark.asyncio
+async def test_real_repository_invalid_citation_then_new_valid_generation_preserves_frozen_context(storage):
+    from twinops.rag.generation import GeneratedManualReference
+    from .test_public_service import _generated
+    repo, _ = storage
+    chat = _Chat(_generated(manual_citations=(GeneratedManualReference(
+        chunkId="chunk-1", exactQuote="invalid private quote"),)))
+    assistant = service(repo, chat)
+    first = await assistant.recommendation("run", "secret", "event-1")
+    assert first["status"] == "pending" and first["attempts"] == 1
+    assert first["retryable"] is True and first["errorCode"] == "invalid_citation"
+    assert first["recommendation"] is None
+    assert repo.get_event("run", "secret", "event-1") == first
+    assert len(chat.calls) == 1
+    with repo.transaction() as connection:
+        state = repo.authorized(connection, "run", "secret")
+        state["public"]["revision"] = 9
+        state["public"]["replay"]["sourceRow"] = 151
+        repo.save(connection, state)
+    chat.output = _generated()
+    ready = await assistant.recommendation("run", "secret", "event-1")
+    assert ready["status"] == "ready" and ready["attempts"] == 2
+    assert ready["retryable"] is False and ready["errorCode"] is None
+    assert ready["recommendation"]["fallbackUsed"] is False
+    manual = [c for c in ready["recommendation"]["citations"] if c["type"] == "manual"]
+    assert [c["excerpt"] for c in manual] == [_generated().manual_citations[0].exact_quote]
+    assert "revisão 8, linha 150" in ready["recommendation"]["answer"]["currentState"]
+    assert chat.calls[0] == chat.calls[1]
+    assert repo.get_context("run", "secret")["revision"] == 9
+    assert await assistant.recommendation("run", "secret", "event-1") == ready
+    assert len(chat.calls) == 2
+
+
+@pytest.mark.asyncio
+async def test_real_repository_three_invalid_citations_are_terminal_without_recommendation(storage):
+    from twinops.rag.generation import GeneratedManualReference
+    from .test_public_service import _generated
+    repo, _ = storage
+    chat = _Chat(_generated(manual_citations=(GeneratedManualReference(
+        chunkId="invented", exactQuote="invalid private quote"),)))
+    assistant = service(repo, chat)
+    for attempt in range(1, 4):
+        event = await assistant.recommendation("run", "secret", "event-1")
+        assert event["attempts"] == attempt
+        assert event["status"] == ("pending" if attempt < 3 else "degraded")
+        assert event["retryable"] is (attempt < 3)
+        assert event["recommendation"] is None
+        assert event["errorCode"] == "invalid_citation"
+        assert repo.get_event("run", "secret", "event-1") == event
+        assert len(chat.calls) == attempt
+    chat.output = _generated()
+    assert await assistant.recommendation("run", "secret", "event-1") == event
+    assert len(chat.calls) == 3
+
+
+@pytest.mark.asyncio
+async def test_unique_literal_resolution_persists_actual_chunk_provenance_without_another_call(storage):
+    from twinops.rag.demo_service import DemoAssistantService, DemoRagAssistantService
+    from .test_demo_service import misattributed_retrieval
+    from .test_public_service import _Retriever, _generated
+    repo, _ = storage
+    retriever, chat = _Retriever(misattributed_retrieval()), _Chat()
+    assistant = DemoAssistantService(repo, DemoRagAssistantService(retriever, chat))
+    ready = await assistant.recommendation("run", "secret", "event-1")
+    assert ready["status"] == "ready" and ready["attempts"] == 1
+    assert ready["recommendation"]["fallbackUsed"] is False
+    citations = [c for c in ready["recommendation"]["citations"] if c["type"] == "manual"]
+    assert len(citations) == 1
+    citation = citations[0]
+    assert citation["chunkId"] == "chunk-right" and citation["documentId"] == "document-right"
+    assert (citation["pageStart"], citation["pageEnd"]) == (7, 8)
+    assert citation["revision"] == "verified-revision"
+    assert citation["sourceUrl"] == "https://manufacturer.example/verified-manual.pdf"
+    assert citation["contentHash"] == retriever.result.hits[1].candidate.chunk.content_hash
+    assert citation["excerpt"] == _generated().manual_citations[0].exact_quote
+    assert repo.get_event("run", "secret", "event-1") == ready
+    assert await assistant.recommendation("run", "secret", "event-1") == ready
+    assert len(chat.calls) == len(retriever.calls) == 1

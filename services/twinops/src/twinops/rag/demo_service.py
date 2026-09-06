@@ -87,6 +87,31 @@ class DemoRagAssistantService(RagAssistantService):
         super().__init__(retriever, _GenerationBudget(chat, generation_timeout_seconds),
                          query_timeout_seconds=query_timeout_seconds)
 
+    def _validate_generated_payload(self, payload, *, retrieval):
+        """Resolve a known ID's literal quote only to one already authorized hit.
+
+        Preserve quote characters and the original payload. Unknown IDs and
+        ambiguous/absent quotes remain invalid; the original guard runs last.
+        """
+        ids = [citation.chunk_id for citation in payload.manual_citations]
+        if len(set(ids)) != len(ids):
+            # Original duplicates must not escape by resolving to distinct hits.
+            raise GeneratedOutputError("duplicate_manual_citation")
+        chunks = {hit.candidate.chunk.chunk_id: hit.candidate.chunk for hit in retrieval.hits}
+        citations = []
+        for citation in payload.manual_citations:
+            supplied = chunks.get(citation.chunk_id)
+            if supplied is not None and citation.exact_quote not in supplied.text:
+                matches = [chunk for chunk in chunks.values()
+                           if chunk.corpus_id == retrieval.corpus.corpus_id
+                           and citation.exact_quote in chunk.text]
+                if len(matches) == 1:
+                    citation = citation.model_copy(update={"chunk_id": matches[0].chunk_id})
+            citations.append(citation)
+        resolved = payload.model_copy(update={"manual_citations": tuple(citations)})
+        # Includes collisions between distinct original IDs after resolution.
+        return super()._validate_generated_payload(resolved, retrieval=retrieval)
+
 
 def _timestamp(value):
     result = datetime.fromisoformat(value.replace("Z", "+00:00"))
@@ -261,7 +286,9 @@ def _failure(error):
             (error.status_code in (408, 429) or (error.status_code or 0) >= 500))
         return transient, "generation_" + error.reason
     if isinstance(error, GeneratedOutputError):
-        return False, "invalid_citation"
+        # Discard invalid output; a later event claim may generate again within
+        # the same shared MAX_EVENT_ATTEMPTS budget. Never bypass validation.
+        return True, "invalid_citation"
     if isinstance(error, psycopg.Error):
         return _transient_database_failure(error), "retrieval_database_unavailable"
     return False, "recommendation_unavailable"

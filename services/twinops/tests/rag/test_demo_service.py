@@ -1,5 +1,7 @@
 import asyncio
 from copy import deepcopy
+from dataclasses import replace
+from hashlib import sha256
 import json
 from uuid import uuid4
 
@@ -91,6 +93,93 @@ class Repo:
 
 def service(repo=None, chat=None, **budgets):
     return DemoAssistantService(repo or Repo(), DemoRagAssistantService(_Retriever(), chat or _Chat(), **budgets))
+
+
+def misattributed_retrieval(*, ambiguous=False, candidate_only=False):
+    """Known wrong ID and a literal quote belonging to another authorized hit."""
+    base = _Retriever().result
+    original = base.hits[0]
+    source = original.candidate
+    unrelated = "Electrical installation instructions only."
+    wrong = replace(original, candidate=replace(source, chunk=replace(
+        source.chunk, text=unrelated, content_hash=sha256(unrelated.encode()).hexdigest(),
+    )))
+    document = replace(source.document, document_id="document-right", revision="verified-revision",
+                       source_url="https://manufacturer.example/verified-manual.pdf")
+    right = replace(original, candidate=replace(source, document=document, chunk=replace(
+        source.chunk, chunk_id="chunk-right", document_id=document.document_id, ordinal=1,
+        page_start=7, page_end=8, content_hash=sha256(source.chunk.text.encode()).hexdigest(),
+    )))
+    hits = [wrong] if candidate_only else [wrong, right]
+    if ambiguous:
+        hits.append(replace(right, candidate=replace(right.candidate, chunk=replace(
+            right.candidate.chunk, chunk_id="chunk-ambiguous", ordinal=2,
+        ))))
+    return replace(base, hits=tuple(hits), vector_candidates=(wrong.candidate, right.candidate),
+                   lexical_candidates=(wrong.candidate, right.candidate))
+
+
+def test_demo_resolves_unique_literal_to_authorized_hit_without_changing_quote_or_live():
+    from twinops.rag.generation import GeneratedOutputError
+    retrieval, payload = misattributed_retrieval(), _generated()
+    before = payload.model_dump()
+    demo = DemoRagAssistantService(_Retriever(retrieval), _Chat())
+    resolved = demo._validate_generated_payload(payload, retrieval=retrieval)
+    assert resolved.manual_citations[0].chunk_id == "chunk-right"
+    assert resolved.manual_citations[0].exact_quote == payload.manual_citations[0].exact_quote
+    assert payload.model_dump() == before
+    live = RagAssistantService(_Retriever(retrieval), _Chat(), query_timeout_seconds=10)
+    with pytest.raises(GeneratedOutputError, match="invalid_manual_citation"):
+        live._validate_generated_payload(payload, retrieval=retrieval)
+
+
+@pytest.mark.parametrize("case", ["unknown", "missing", "ambiguous", "candidate_only", "converged_duplicates"])
+def test_demo_literal_resolution_preserves_refusals(case):
+    from twinops.rag.generation import GeneratedManualReference, GeneratedOutputError
+    retrieval = misattributed_retrieval(ambiguous=case == "ambiguous", candidate_only=case == "candidate_only")
+    good = _generated().manual_citations[0]
+    references = (good,)
+    if case == "unknown":
+        references = (good.model_copy(update={"chunk_id": "unknown"}),)
+    elif case == "missing":
+        references = (good.model_copy(update={"exact_quote": "absent quote"}),)
+    elif case == "converged_duplicates":
+        references = (good, GeneratedManualReference(chunkId="chunk-right", exactQuote=good.exact_quote))
+    payload = _generated(manual_citations=references)
+    with pytest.raises(GeneratedOutputError):
+        DemoRagAssistantService(_Retriever(retrieval), _Chat())._validate_generated_payload(payload, retrieval=retrieval)
+
+
+def test_original_duplicate_ids_cannot_resolve_into_separate_chunks():
+    from twinops.rag.generation import GeneratedManualReference, GeneratedOutputError
+    retrieval = misattributed_retrieval()
+    wrong = retrieval.hits[0].candidate.chunk
+    payload = _generated(manual_citations=(
+        _generated().manual_citations[0],
+        GeneratedManualReference(chunkId=wrong.chunk_id, exactQuote=wrong.text),
+    ))
+    with pytest.raises(GeneratedOutputError, match="duplicate_manual_citation"):
+        DemoRagAssistantService(_Retriever(retrieval), _Chat())._validate_generated_payload(payload, retrieval=retrieval)
+
+
+def test_already_correct_quote_keeps_its_id_even_if_another_hit_contains_it():
+    retrieval = misattributed_retrieval(ambiguous=True)
+    payload = _generated(manual_citations=(_generated().manual_citations[0].model_copy(
+        update={"chunk_id": "chunk-right"}),))
+    validated = DemoRagAssistantService(_Retriever(retrieval), _Chat())._validate_generated_payload(payload, retrieval=retrieval)
+    assert validated.model_dump() == payload.model_dump()
+
+
+@pytest.mark.asyncio
+async def test_ambiguous_literal_resolution_still_stops_after_three_event_attempts():
+    repo, chat, retriever = Repo(), _Chat(), _Retriever(misattributed_retrieval(ambiguous=True))
+    assistant = DemoAssistantService(repo, DemoRagAssistantService(retriever, chat))
+    for attempt in range(1, 4):
+        event = await assistant.recommendation("run", "secret", "event-1")
+        assert event["status"] == ("pending" if attempt < 3 else "degraded")
+        assert event["recommendation"] is None and event["attempts"] == attempt
+    assert await assistant.recommendation("run", "secret", "event-1") == event
+    assert len(chat.calls) == len(retriever.calls) == 3
 
 
 @pytest.mark.asyncio
@@ -319,14 +408,27 @@ async def test_permanent_or_unclassified_postgres_error_is_immediately_terminal(
 
 
 @pytest.mark.asyncio
-async def test_invalid_citation_never_becomes_ready():
+@pytest.mark.parametrize("kind", ["unknown_id", "nonliteral_quote", "duplicate_id"])
+async def test_invalid_citation_never_delivered_and_stops_at_existing_attempt_limit(kind):
     from twinops.rag.generation import GeneratedManualReference
-    chat = _Chat(_generated(manual_citations=(GeneratedManualReference(
-        chunkId="invented", exactQuote="invented"),)))
-    event = await service(chat=chat).recommendation("run", "secret", "event-1")
-    assert event["status"] == "degraded"
-    assert event["errorCode"] == "invalid_citation"
-    assert event["recommendation"] is None
+    good = _generated().manual_citations[0]
+    references = {
+        "unknown_id": (GeneratedManualReference(chunkId="invented", exactQuote=good.exact_quote),),
+        "nonliteral_quote": (GeneratedManualReference(chunkId=good.chunk_id, exactQuote="invented"),),
+        "duplicate_id": (good, good),
+    }
+    chat = _Chat(_generated(manual_citations=references[kind]))
+    assistant = service(chat=chat)
+    for attempt in range(1, 4):
+        event = await assistant.recommendation("run", "secret", "event-1")
+        assert event["status"] == ("pending" if attempt < 3 else "degraded")
+        assert event["retryable"] is (attempt < 3)
+        assert event["attempts"] == attempt
+        assert event["errorCode"] == "invalid_citation"
+        assert event["recommendation"] is None
+        assert len(chat.calls) == attempt  # No nested retry/generation loop.
+    assert await assistant.recommendation("run", "secret", "event-1") == event
+    assert len(chat.calls) == 3
 
 
 def test_demo_and_live_budgets_are_separate():
