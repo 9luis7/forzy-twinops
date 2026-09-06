@@ -143,8 +143,21 @@ test("Preview draft to explicit publish and grounded public answer", async ({ pa
   await expect(page.getByText(
     "O assessment atual está normal e foi calculado pelo backend.",
   )).toBeVisible();
-  await expect(page.getByText("Manual · WEG W22 · revisão 2026-01")).toBeVisible();
-  await expect(page.getByText("Telemetria · vibration")).toBeVisible();
+  const manualExcerpt = page.getByText("Aterre o motor antes da energização.", { exact: true });
+  await expect(manualExcerpt).toBeHidden();
+  await expect(page.getByRole("link", { name: "Abrir fonte oficial" })).toBeHidden();
+  await page.getByText("Fontes e evidências", { exact: true }).click();
+  await expect(page.getByText("Manual · WEG W22 · p. 2–3", { exact: true })).toBeVisible();
+  await expect(manualExcerpt).toBeHidden();
+  await page.getByText("Manual · WEG W22 · p. 2–3", { exact: true }).click();
+  await expect(page.getByText("INSTALLATION · revisão 2026-01", { exact: true })).toBeVisible();
+  await expect(manualExcerpt).toBeVisible();
+  await expect(page.getByRole("link", { name: "Abrir fonte oficial" })).toHaveAttribute(
+    "href", assistantResponse.citations[0].sourceUrl,
+  );
+  await page.getByText("Sensor · vibration", { exact: true }).click();
+  await expect(page.getByText("1,2 mm/s", { exact: true })).toBeVisible();
+  await expect(page.getByText("Recebido em 12/08/2026, 12:00:00 · São Paulo", { exact: true })).toBeVisible();
   expect(fake.state.assistantRequest).toEqual({
     question: "O que o manual orienta e qual é o estado atual?",
     history: [],
