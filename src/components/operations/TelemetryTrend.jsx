@@ -98,8 +98,8 @@ export default function TelemetryTrend({ history }) {
         <p className="empty-state">Ainda não há histórico operacional coletado.</p>
       ) : (
         <div className="trend-series-grid" aria-label="Gráficos independentes da tendência de S1 e S2">
-          <SensorTrendSeries sensorId="s1" points={series.s1} stroke="#2dd4bf" />
-          <SensorTrendSeries sensorId="s2" points={series.s2} stroke="#60a5fa" />
+          <SensorTrendSeries sensorId="s1" points={series.s1} stroke="#60a5fa" />
+          <SensorTrendSeries sensorId="s2" points={series.s2} stroke="#2dd4bf" />
         </div>
       )}
     </section>

@@ -6,7 +6,7 @@ const STATUS_COPY = Object.freeze({
   operational_unavailable: "O estado operacional está indisponível; a seção do manual permanece separada.",
   out_of_scope: "A solicitação está fora do escopo seguro deste assistente.",
   degraded_fallback:
-    "A resposta completa não pôde ser validada; exibindo o fallback seguro disponível.",
+    "A resposta completa não pôde ser validada; exibindo a orientação de contingência disponível.",
 });
 
 const formatNumber = (value) => new Intl.NumberFormat("pt-BR", {
@@ -14,7 +14,6 @@ const formatNumber = (value) => new Intl.NumberFormat("pt-BR", {
 }).format(value);
 
 const MANUAL_HISTORY_LABEL = "Segundo o manual:\n";
-const CURRENT_HISTORY_LABEL = "\nEstado atual:\n";
 
 const truncateHistorySection = (value, budget) => {
   if (value.length <= budget) return value;
@@ -22,10 +21,11 @@ const truncateHistorySection = (value, budget) => {
   return `${value.slice(0, budget - 1)}…`;
 };
 
-export const completedAnswer = (response) => {
+export const completedAnswer = (response, stateLabel = "Estado atual") => {
+  const currentHistoryLabel = `\n${stateLabel}:\n`;
   const available = MAX_HISTORY_ANSWER_CHARACTERS
     - MANUAL_HISTORY_LABEL.length
-    - CURRENT_HISTORY_LABEL.length;
+    - currentHistoryLabel.length;
   let manualBudget = Math.min(response.answer.manual.length, Math.floor(available / 2));
   let currentBudget = Math.min(response.answer.currentState.length, available - manualBudget);
   let remainder = available - manualBudget - currentBudget;
@@ -39,7 +39,7 @@ export const completedAnswer = (response) => {
   return [
     MANUAL_HISTORY_LABEL,
     truncateHistorySection(response.answer.manual, manualBudget),
-    CURRENT_HISTORY_LABEL,
+    currentHistoryLabel,
     truncateHistorySection(response.answer.currentState, currentBudget),
   ].join("");
 };
@@ -82,10 +82,10 @@ function TelemetryCitation({ citation }) {
   );
 }
 
-function AssistantAnswer({ response, answerRef }) {
+function AssistantAnswer({ response, answerRef, stateLabel, renderStateEvidence, statusNotices }) {
   const manualCitations = response.citations.filter((item) => item.type === "manual");
   const telemetryCitations = response.citations.filter((item) => item.type === "telemetry");
-  const stateNotice = STATUS_COPY[response.groundingStatus];
+  const stateNotice = statusNotices?.[response.groundingStatus] ?? STATUS_COPY[response.groundingStatus];
 
   return (
     <article
@@ -102,7 +102,7 @@ function AssistantAnswer({ response, answerRef }) {
       ) : null}
       {response.fallbackUsed && response.groundingStatus !== "degraded_fallback" ? (
         <p className="warning-banner" role="alert">
-          A resposta completa não pôde ser validada; exibindo o fallback seguro disponível.
+          A resposta completa não pôde ser validada; exibindo a orientação de contingência disponível.
         </p>
       ) : null}
 
@@ -124,11 +124,11 @@ function AssistantAnswer({ response, answerRef }) {
         </section>
 
         <section aria-labelledby="assistant-current-title">
-          <p className="eyebrow">Assessment do backend</p>
-          <h3 id="assistant-current-title">Estado atual</h3>
+          <p className="eyebrow">O que os dados mostram</p>
+          <h3 id="assistant-current-title">{stateLabel}</h3>
           <p>{response.answer.currentState}</p>
           <div className="assistant-citations" aria-label="Evidências operacionais">
-            {telemetryCitations.length > 0
+            {renderStateEvidence ? renderStateEvidence(response) : telemetryCitations.length > 0
               ? telemetryCitations.map((citation) => (
                 <TelemetryCitation
                   citation={citation}
@@ -145,15 +145,16 @@ function AssistantAnswer({ response, answerRef }) {
         {response.limitations.length > 0 ? (
           <ul>{response.limitations.map((item) => <li key={item}>{item}</li>)}</ul>
         ) : null}
-        <small>
-          Corpus {response.corpus?.corpusId ?? "indisponível"} · trace {response.traceId}
-        </small>
+        <details className="assistant-technical-details">
+          <summary>Detalhes técnicos da resposta</summary>
+          <small>Corpus {response.corpus?.corpusId ?? "indisponível"} · trace {response.traceId}</small>
+        </details>
       </aside>
     </article>
   );
 }
 
-export default function TechnicalAssistantPanel({ assetId, enabled, dataSource }) {
+export default function TechnicalAssistantPanel({ assetId, enabled, dataSource, isActive = true, stateLabel = "Estado atual", renderStateEvidence, statusNotices }) {
   if (typeof assetId !== "string" || assetId.length === 0) {
     throw new TypeError("TechnicalAssistantPanel assetId must be a non-empty string");
   }
@@ -170,6 +171,8 @@ export default function TechnicalAssistantPanel({ assetId, enabled, dataSource }
   const requestRef = useRef({ id: 0, controller: null });
   const mountedRef = useRef(true);
   const answerRef = useRef(null);
+  const isActiveRef = useRef(isActive);
+  isActiveRef.current = isActive;
   const contextRef = useRef({ enabled, assetId, dataSource });
 
   useEffect(() => {
@@ -182,7 +185,7 @@ export default function TechnicalAssistantPanel({ assetId, enabled, dataSource }
   }, []);
 
   useEffect(() => {
-    if (response) answerRef.current?.focus();
+    if (response && isActiveRef.current) answerRef.current?.focus();
   }, [response]);
 
   useEffect(() => {
@@ -232,7 +235,7 @@ export default function TechnicalAssistantPanel({ assetId, enabled, dataSource }
       setConversationId(nextResponse.conversationId);
       setTurns((current) => [...current, {
         question: submittedQuestion,
-        answer: completedAnswer(nextResponse),
+        answer: completedAnswer(nextResponse, stateLabel),
       }].slice(-4));
       setQuestion("");
     } catch (requestError) {
@@ -261,8 +264,8 @@ export default function TechnicalAssistantPanel({ assetId, enabled, dataSource }
           </div>
         </div>
         <p className="assistant-unavailable" role="status">
-          O assistente exige um corpus técnico ativo e configuração saudável no backend.
-          Nenhuma resposta foi simulada.
+          O manual do equipamento ou o serviço de consulta está indisponível.
+          Tente novamente mais tarde.
         </p>
       </section>
     );
@@ -289,7 +292,7 @@ export default function TechnicalAssistantPanel({ assetId, enabled, dataSource }
           aria-describedby="technical-assistant-help"
         />
         <p id="technical-assistant-help">
-          Pergunte sobre o manual ou peça uma explicação das evidências atuais. A conversa não é salva.
+          Consulte o manual do motor e os dados operacionais disponíveis. A conversa fica apenas nesta sessão.
         </p>
         <div className="assistant-form__actions">
           <button type="submit" disabled={loading || question.trim().length === 0}>
@@ -304,8 +307,8 @@ export default function TechnicalAssistantPanel({ assetId, enabled, dataSource }
           <div role="status" aria-label="Consultando fontes validadas">
             <strong>Consultando fontes validadas…</strong>
             <ol>
-              <li>Buscando trechos no corpus ativo</li>
-              <li>Carregando o assessment real no backend</li>
+              <li>Buscando trechos no manual do motor</li>
+              <li>Consultando os dados disponíveis</li>
               <li>Validando citações antes de exibir</li>
             </ol>
           </div>
@@ -317,9 +320,11 @@ export default function TechnicalAssistantPanel({ assetId, enabled, dataSource }
         ) : null}
       </div>
 
+      {response ? <AssistantAnswer response={response} answerRef={answerRef} stateLabel={stateLabel} renderStateEvidence={renderStateEvidence} statusNotices={statusNotices} /> : null}
+
       {turns.length > 1 ? (
-        <section className="assistant-session-history" aria-labelledby="assistant-history-title">
-          <h3 id="assistant-history-title">Turnos anteriores desta sessão</h3>
+        <details className="assistant-session-history">
+          <summary>Perguntas anteriores ({turns.length - 1})</summary>
           <ol>
             {turns.slice(0, -1).map((turn, index) => (
               <li key={`${turn.question}-${index}`}>
@@ -328,10 +333,8 @@ export default function TechnicalAssistantPanel({ assetId, enabled, dataSource }
               </li>
             ))}
           </ol>
-        </section>
+        </details>
       ) : null}
-
-      {response ? <AssistantAnswer response={response} answerRef={answerRef} /> : null}
     </section>
   );
 }

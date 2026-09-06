@@ -12,8 +12,8 @@ S1 representa o canal 1 na carcaça do motor, junto ao acoplamento; S2 represent
 2. Mostrar as duas posições assumidas, os valores e a distinção entre relógio histórico e horário de chegada.
 3. Usar **Continuar** a 1 par/s. O cenário dura aproximadamente cinco minutos, além da latência de rede e das pausas do apresentador.
 4. Acompanhar 3D, avaliações S1/S2 e os três gráficos. Cada revisão é compartilhada por todas as visualizações. Repetições contam como chegadas, sem gerar desvios artificiais.
-5. No primeiro episódio de atenção sustentada, abrir **Ver recomendação e fontes do evento** quando a resposta estiver pronta. O contexto da resposta continua sendo o do evento enquanto a telemetria avança.
-6. Pausar, selecionar S1 ou S2, focar/isolar o componente, avançar um par e enviar uma pergunta sobre a revisão pausada.
+5. No primeiro episódio de atenção sustentada, abrir **Ver orientação** quando a resposta estiver pronta. A resposta aparece no painel **Copiloto**, vinculada ao evento enquanto a telemetria avança. Fechar o painel preserva a conversa.
+6. Pausar, selecionar S1 ou S2, focar/isolar o componente, avançar um par e abrir **Copiloto** para enviar uma pergunta sobre a revisão pausada.
 7. Retomar; demonstrar os ritmos de 2 e 5 pares/s. Reiniciar restaura somente esta sessão. Uma segunda aba cria uma sessão independente.
 8. No modo livre, explorar o histórico completo e as lacunas. Ocultar a aba suspende a reprodução; voltar exige **Continuar**.
 

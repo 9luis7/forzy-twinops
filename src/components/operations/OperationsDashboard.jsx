@@ -1,4 +1,4 @@
-import React from "react";
+import React, { lazy, Suspense, useState } from "react";
 import { useTwinOps } from "../../TwinOpsContext.jsx";
 import LoadingState from "../LoadingState.jsx";
 import AssessmentPanel from "./AssessmentPanel.jsx";
@@ -7,9 +7,13 @@ import IntegrationHealth from "./IntegrationHealth.jsx";
 import SensorCard from "./SensorCard.jsx";
 import TechnicalAssistantPanel from "./TechnicalAssistantPanel.jsx";
 import TelemetryTrend from "./TelemetryTrend.jsx";
+import OperationalSummary from "./OperationalSummary.jsx";
+import CopilotDock from "../assistant/CopilotDock.jsx";
+
+const HistoricalWorkspace = lazy(() => import("../../history/HistoricalWorkspace.jsx"));
 
 const SNAPSHOT_LOADING_MESSAGES = [
-  "Conectando ao snapshot operacional…",
+  "Conectando à fonte de dados…",
   "Validando telemetria S1 e S2…",
   "Preparando o painel operacional…",
   "Sincronizando o gêmeo digital…",
@@ -29,14 +33,15 @@ export function TwinFallback() {
   );
 }
 
-export default function OperationsDashboard({ Twin3DComponent = null, ragDataSource }) {
+export default function OperationsDashboard({ Twin3DComponent = null, ragDataSource, historyDataSource }) {
   const { assetId, snapshot, error, refreshing, refreshNow } = useTwinOps();
+  const [copilotOpen, setCopilotOpen] = useState(false);
 
   if (!snapshot && !error) {
     return (
       <main className="operations-shell operations-shell--centered">
         <LoadingState
-          label="Carregando o último snapshot real…"
+          label="Consultando os dados do equipamento…"
           messages={SNAPSHOT_LOADING_MESSAGES}
           variant="panel"
         />
@@ -45,12 +50,28 @@ export default function OperationsDashboard({ Twin3DComponent = null, ragDataSou
   }
 
   if (!snapshot) {
+    if (historyDataSource) {
+      return (
+        <main className="operations-shell">
+          <header><p className="eyebrow">TwinOps · Motor e bomba</p><h1>Visão geral</h1></header>
+          <div className="dashboard-actions dashboard-actions--compact">
+            <p>Medições preservadas do conjunto motor-bomba</p>
+            <button className="button-secondary" type="button" onClick={() => void refreshNow()} disabled={refreshing}>
+              {refreshing ? "Atualizando…" : "Atualizar agora"}
+            </button>
+          </div>
+          <Suspense fallback={<p role="status">Consultando o histórico disponível…</p>}>
+            <HistoricalWorkspace dataSource={historyDataSource} compact liveUnavailable Twin3DComponent={Twin3DComponent ?? undefined} />
+          </Suspense>
+        </main>
+      );
+    }
     return (
       <main className="operations-shell operations-shell--centered">
         <section className="fatal-state" role="alert">
           <p className="eyebrow">TwinOps</p>
           <h1>Dados reais indisponíveis</h1>
-          <p>O backend não forneceu um snapshot válido. Nenhum dado sintético foi usado.</p>
+          <p>Não foi possível consultar os dados do equipamento. Tente novamente em instantes.</p>
           <button type="button" onClick={() => void refreshNow()} disabled={refreshing}>
             {refreshing ? "Atualizando…" : "Atualizar agora"}
           </button>
@@ -62,11 +83,13 @@ export default function OperationsDashboard({ Twin3DComponent = null, ragDataSou
   const fallback = <TwinFallback />;
 
   return (
-    <main className="operations-shell">
+    <main className={`operations-shell${copilotOpen ? " has-copilot-open" : ""}`}>
       <AssetHeader asset={snapshot.asset} operationalState={snapshot.operationalState} />
 
+      <OperationalSummary snapshot={snapshot} />
+
       <div className="dashboard-actions">
-        <p>Atualização automática apenas seg/ter/qua, das 12h às 14h (America/Sao_Paulo).</p>
+        <p>Consulta automática: segunda a quarta, das 12h às 14h, horário de Brasília.</p>
         <button type="button" onClick={() => void refreshNow()} disabled={refreshing}>
           {refreshing ? "Atualizando…" : "Atualizar agora"}
         </button>
@@ -80,6 +103,14 @@ export default function OperationsDashboard({ Twin3DComponent = null, ragDataSou
       {snapshot.operationalState === "unavailable" && (
         <p className="warning-banner">Nenhuma leitura real foi persistida ainda.</p>
       )}
+
+      <section className="sensor-grid" aria-label="Valores disponíveis dos sensores">
+        {snapshot.channels.map((channel) => (
+          <SensorCard channel={channel} key={channel.sensorId} />
+        ))}
+      </section>
+
+      <TelemetryTrend history={snapshot.history} />
 
       <section className="panel twin-panel" aria-labelledby="twin-title">
         <div className="panel-heading">
@@ -96,24 +127,21 @@ export default function OperationsDashboard({ Twin3DComponent = null, ragDataSou
         ) : fallback}
       </section>
 
-      <section className="sensor-grid" aria-label="Valores atuais dos sensores">
-        {snapshot.channels.map((channel) => (
-          <SensorCard channel={channel} key={channel.sensorId} />
-        ))}
-      </section>
-
-      <TelemetryTrend history={snapshot.history} />
-
       <section className="details-grid">
         <AssessmentPanel assessment={snapshot.assessment} />
         <IntegrationHealth integration={snapshot.integration} />
       </section>
 
-      <TechnicalAssistantPanel
-        assetId={assetId}
-        enabled={snapshot.capabilities.copilot === true}
-        dataSource={ragDataSource}
-      />
+      <CopilotDock open={copilotOpen} onOpenChange={setCopilotOpen}
+        available={snapshot.capabilities.copilot === true}
+        contextLabel="Últimos dados operacionais disponíveis · Manual do motor WEG">
+        <TechnicalAssistantPanel
+          assetId={assetId}
+          enabled={snapshot.capabilities.copilot === true}
+          dataSource={ragDataSource}
+          isActive={copilotOpen}
+        />
+      </CopilotDock>
 
       <footer className="operations-footer">
         <p>

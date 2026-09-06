@@ -109,8 +109,9 @@ test("Preview draft to explicit publish and grounded public answer", async ({ pa
   expect(fake.state.publishCalls).toBe(0);
 
   await page.goto("/");
+  await page.getByRole("button", { name: "Copiloto", exact: true }).click();
   await expect(page.getByRole("heading", { name: "Assistente técnico" })).toBeVisible();
-  await expect(page.getByText(/O assistente exige um corpus técnico ativo/)).toBeVisible();
+  await expect(page.getByText(/O manual do equipamento ou o serviço de consulta está indisponível/)).toBeVisible();
   await expect(page.getByRole("form", { name: "Consultar o assistente técnico" })).toHaveCount(0);
   expect(fake.state.published).toBe(false);
 
@@ -126,6 +127,7 @@ test("Preview draft to explicit publish and grounded public answer", async ({ pa
   await expect.poll(() => fake.state.publishCalls).toBe(1);
 
   await page.goto("/");
+  await page.getByRole("button", { name: "Copiloto", exact: true }).click();
   await expect(page.getByRole("heading", { name: "Assistente técnico" })).toBeVisible();
   const assistant = page.getByRole("form", { name: "Consultar o assistente técnico" });
   await assistant.getByLabel("Pergunta técnica").fill(

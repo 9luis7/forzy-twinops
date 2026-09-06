@@ -1,4 +1,5 @@
 import React from "react";
+import "./operationalDetails.css";
 
 const numberFormatter = new Intl.NumberFormat("pt-BR", {
   minimumFractionDigits: 2,
@@ -25,18 +26,23 @@ const capturedAt = (channel) => {
 
 export default function SensorCard({ channel }) {
   const captured = capturedAt(channel);
+  const componentLabel = channel.sensorId === "s1" ? "Motor" : "Bomba";
+  const qualityLabel = channel.qualityFlags.length === 1 && channel.qualityFlags.includes("last_known")
+    ? "Leitura anterior"
+    : channel.qualityFlags.length === 0 ? "Sem alertas de qualidade" : "Dados com ressalvas";
 
   return (
-    <article className="panel sensor-card" aria-labelledby={`sensor-${channel.sensorId}`}>
+    <article className="panel sensor-card" data-sensor={channel.sensorId} aria-labelledby={`sensor-${channel.sensorId}`}>
       <div className="panel-heading">
         <div>
-          <p className="eyebrow">Canal real</p>
-          <h2 id={`sensor-${channel.sensorId}`}>{channel.sensorId.toUpperCase()}</h2>
+          <p className="eyebrow">Leitura do sensor</p>
+          <h2 id={`sensor-${channel.sensorId}`}><span className="sensor-identity-dot" aria-hidden="true" />{channel.sensorId.toUpperCase()} · {componentLabel}</h2>
         </div>
         <span className="quality-chip">
-          {channel.qualityFlags.length === 0 ? "Sem flags de qualidade" : "Qualidade degradada"}
+          {qualityLabel}
         </span>
       </div>
+      <p className="sensor-placement-note">Vínculo com {componentLabel.toLowerCase()} e posição assumidos para demonstração.</p>
 
       <dl className="measurement-list">
         {measurementRows.map(([key, label]) => {

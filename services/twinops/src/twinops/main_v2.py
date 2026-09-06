@@ -18,6 +18,9 @@ from twinops.config_v2 import SettingsV2
 from twinops.demo.repository import DemoRepository
 from twinops.demo.routes import create_demo_router
 from twinops.demo.service import DemoService
+from twinops.history.routes import create_history_router
+from twinops.history.service import HistoryService
+from twinops.history.assistant import HistoricalAssistantService
 from twinops.ingestion.refresh_service import RefreshService
 from twinops.ingestion.schedule import CollectionWindow
 from twinops.ingestion.upstream import UpstreamClient
@@ -164,6 +167,8 @@ def create_app_v2(
     rag_assistant_service: RagAssistantService | None = None,
     demo_service: DemoService | None = None,
     demo_assistant_service: DemoAssistantService | None = None,
+    history_service: HistoryService | None = None,
+    historical_assistant_service: HistoricalAssistantService | None = None,
 ) -> FastAPI:
     app = FastAPI(title="Forzy TwinOps API", version="2.0.0")
     app.state.repository = repository
@@ -176,8 +181,14 @@ def create_app_v2(
     app.state.rag_assistant_service = rag_assistant_service
     app.state.demo_service = demo_service
     app.state.demo_assistant_service = demo_assistant_service
+    app.state.historical_assistant_service = historical_assistant_service
+    app.state.history_service = history_service or (
+        HistoryService(demo_service.repository, app.state.assessment_scorer, clock)
+        if demo_service is not None else None
+    )
     app.state.live_availability = None
     app.include_router(create_v2_router())
+    app.include_router(create_history_router())
     if settings.demo_enabled:
         app.include_router(create_demo_router())
         app.include_router(create_demo_rag_router())
@@ -246,7 +257,8 @@ def create_app_v2_from_env(
         )
     else:
         repository = SQLiteTelemetryRepositoryV2(settings.database_path)
-    if settings.has_dedicated_demo_database:
+    # The dedicated imported archive and its corpus are independent of replay.
+    if settings.demo_database_url and settings.demo_database_url != settings.database_url:
         demo_rag_repository = PostgresRagRepository(
             settings.demo_database_url,
             connect_timeout_seconds=max(1, int(settings.rag_query_timeout_seconds)),
@@ -274,7 +286,12 @@ def _runtime_lifespan(
 ):
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        if settings.has_dedicated_demo_database:
+        # Imported history remains available when replay controls are disabled.
+        # Its existing dedicated connection also isolates live startup failures.
+        has_dedicated_history = bool(
+            settings.demo_database_url and settings.demo_database_url != settings.database_url
+        )
+        if has_dedicated_history:
             app.state.live_availability = _LiveAvailability(repository)
         else:
             repository.initialize()
@@ -294,13 +311,18 @@ def _runtime_lifespan(
             )
             app.state.assessment_scorer = scorer or _UnavailableAssessmentScorer()
             demo_repository = None
-            if settings.demo_enabled:
+            if settings.demo_enabled or has_dedicated_history:
                 demo_repository = DemoRepository(
                     settings.effective_demo_database_url or (
                         "sqlite:///" + str(settings.database_path.with_name("demo.sqlite3"))
                     ),
                     clock=app.state.clock,
+                    initialize=None if settings.demo_enabled else False,
                 )
+                app.state.history_service = HistoryService(
+                    demo_repository, app.state.assessment_scorer, app.state.clock,
+                )
+            if settings.demo_enabled:
                 app.state.demo_service = DemoService(
                     demo_repository, app.state.assessment_scorer, app.state.clock,
                 )
@@ -309,7 +331,7 @@ def _runtime_lifespan(
             demo_corpus_repository = (
                 demo_rag_repository if settings.has_dedicated_demo_database else rag_repository
             )
-            if rag_repository is not None or demo_corpus_repository is not None:
+            if rag_repository is not None or demo_rag_repository is not None or demo_corpus_repository is not None:
                 document_embedding_client, query_embedding_client = (
                     _build_embedding_clients(http, settings)
                 )
@@ -331,7 +353,7 @@ def _runtime_lifespan(
                     query_timeout_seconds=settings.rag_query_timeout_seconds,
                 )
             if (
-                settings.rag_enabled and demo_repository is not None
+                settings.demo_enabled and settings.rag_enabled and demo_repository is not None
                 and demo_corpus_repository is not None and query_embedding_client is not None
             ):
                 app.state.demo_assistant_service = DemoAssistantService(
@@ -339,6 +361,24 @@ def _runtime_lifespan(
                     DemoRagAssistantService(
                         HybridRetriever(
                             demo_corpus_repository, query_embedding_client,
+                            manufacturer=settings.rag_manufacturer,
+                            equipment_model=settings.effective_demo_rag_equipment_model,
+                        ),
+                        _build_chat_client(http, settings, timeout_seconds=30.0),
+                    ),
+                )
+            if (
+                has_dedicated_history and settings.rag_enabled
+                and app.state.history_service is not None
+                and demo_rag_repository is not None and query_embedding_client is not None
+            ):
+                # Explicit dedicated corpus only: never substitute Neon when
+                # the historical manual is missing, incompatible or unavailable.
+                app.state.historical_assistant_service = HistoricalAssistantService(
+                    app.state.history_service,
+                    DemoRagAssistantService(
+                        HybridRetriever(
+                            demo_rag_repository, query_embedding_client,
                             manufacturer=settings.rag_manufacturer,
                             equipment_model=settings.effective_demo_rag_equipment_model,
                         ),
@@ -377,6 +417,8 @@ def _runtime_lifespan(
                 app.state.rag_assistant_service = None
                 app.state.demo_service = None
                 app.state.demo_assistant_service = None
+                app.state.history_service = None
+                app.state.historical_assistant_service = None
                 app.state.live_availability = None
 
     return lifespan

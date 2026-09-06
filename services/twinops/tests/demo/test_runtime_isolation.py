@@ -155,7 +155,7 @@ def test_missing_dedicated_corpus_never_falls_back_to_live(monkeypatch, tmp_path
         assert client.get('/api/demo/v1/datasets').status_code == 200
 
 
-@pytest.mark.parametrize('dedicated,enabled', [(False, True), (True, False)])
+@pytest.mark.parametrize('dedicated,enabled', [(False, True), (False, False)])
 def test_default_live_startup_and_shared_corpus_unchanged(monkeypatch, tmp_path, dedicated, enabled):
     app, live, demo, corpus, urls = runtime(monkeypatch, tmp_path, dedicated=dedicated, enabled=enabled)
     with TestClient(app):

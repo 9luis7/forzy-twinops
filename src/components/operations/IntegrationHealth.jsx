@@ -1,4 +1,5 @@
 import React from "react";
+import "./operationalDetails.css";
 
 const numberFormatter = new Intl.NumberFormat("pt-BR");
 const dateFormatter = new Intl.DateTimeFormat("pt-BR", {
@@ -9,7 +10,7 @@ const dateFormatter = new Intl.DateTimeFormat("pt-BR", {
 const errorLabels = {
   upstream_unavailable: "Origem indisponível",
   invalid_payload: "Resposta inválida da origem",
-  null: "Integração sem erro registrado",
+  null: "Nenhum erro de coleta registrado",
 };
 
 const formatDate = (value) => {
@@ -28,24 +29,29 @@ export default function IntegrationHealth({ integration }) {
     <section className="panel integration-panel">
       <div className="panel-heading">
         <div>
-          <p className="eyebrow">Fronteira server-side</p>
-          <h2>Saúde da integração</h2>
+          <h2>Atualização dos dados</h2>
         </div>
       </div>
+      <p className="model-meta">A disponibilidade da coleta não indica a condição do equipamento.</p>
       <div className="health-grid">
         {Object.entries(integration.sensors).map(([sensorId, health]) => (
           <article className="health-card" key={sensorId}>
-            <h3>{sensorId.toUpperCase()}</h3>
-            <p className="health-status">{safeErrorLabel(health.error)}</p>
+            <h3>{sensorId.toUpperCase()} · {sensorId === "s1" ? "Motor" : "Bomba"}</h3>
+            <p className="health-status" data-has-error={health.error !== null}>{safeErrorLabel(health.error)}</p>
             <dl>
-              <div><dt>Última tentativa</dt><dd>{formatDate(health.lastAttemptAt)}</dd></div>
-              <div><dt>Último sucesso</dt><dd>{formatDate(health.lastSuccessAt)}</dd></div>
-              <div>
-                <dt>Latência do gateway</dt>
-                <dd>{health.latencyMs === null ? "Indisponível" : `${numberFormatter.format(health.latencyMs)} ms`}</dd>
-              </div>
-              <div><dt>Amostras reais</dt><dd>{numberFormatter.format(health.sampleCount)}</dd></div>
+              <div><dt>Última coleta válida</dt><dd>{formatDate(health.lastSuccessAt)}</dd></div>
             </dl>
+            <details className="operational-details">
+              <summary>Detalhes técnicos de {sensorId.toUpperCase()}</summary>
+              <dl>
+                <div><dt>Última tentativa de coleta</dt><dd>{formatDate(health.lastAttemptAt)}</dd></div>
+                <div>
+                  <dt>Latência do gateway</dt>
+                  <dd>{health.latencyMs === null ? "Indisponível" : `${numberFormatter.format(health.latencyMs)} ms`}</dd>
+                </div>
+                <div><dt>Amostras reais</dt><dd>{numberFormatter.format(health.sampleCount)}</dd></div>
+              </dl>
+            </details>
           </article>
         ))}
       </div>

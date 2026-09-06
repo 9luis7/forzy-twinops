@@ -1,7 +1,7 @@
 import React from "react";
 
 const stateLabels = {
-  received_now: "Resposta recebida neste ciclo",
+  received_now: "Coleta recebida neste ciclo",
   last_known: "Último dado real conhecido",
   expected_idle: "Fora da janela de atualização",
   unavailable: "Dados indisponíveis",
@@ -11,12 +11,12 @@ export default function AssetHeader({ asset, operationalState }) {
   return (
     <header className="asset-header">
       <div>
-        <p className="eyebrow">Ativo único monitorado</p>
+        <p className="eyebrow">Equipamento monitorado</p>
         <h1>{asset.displayName}</h1>
-        <p className="asset-tag">{asset.officialTag ?? "TAG não fornecida"}</p>
+        {asset.officialTag && <p className="asset-tag">{asset.officialTag}</p>}
       </div>
       <p className={`operational-state operational-state--${operationalState}`}>
-        {stateLabels[operationalState] ?? "Estado operacional indisponível"}
+        {stateLabels[operationalState] ?? "Atualização dos dados indisponível"}
       </p>
     </header>
   );

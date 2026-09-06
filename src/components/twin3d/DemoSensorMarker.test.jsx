@@ -29,7 +29,14 @@ it("does not pulse absent or preloaded warmup frames", () => {
   expect(screen.getByRole("button")).toHaveAttribute("data-arrival", "false");
 });
 it("retains the reduced-motion opt-out for receipt animations", () => {
-  const css = readFileSync("src/demo/demo.css", "utf8");
+  const css = readFileSync("src/components/twin3d/twinPresentation.css", "utf8");
   expect(css).toMatch(/@media\s*\(prefers-reduced-motion:\s*reduce\)\s*\{\s*\.demo-marker\[data-arrival=true\]\s*\{animation:none\}/);
   expect(css).not.toContain(".demo-marker[data-new=true]");
+});
+
+it("does not animate a historical selection as a new arrival", () => {
+  const latest = { ...frame("s1", 141), receivedAt: null, preloaded: false };
+  render(<DemoSensorMarker sensor={sensor} data={{ latest, newInformation: false, assessment: { assessment: { status: "watch" } } }} onSelect={vi.fn()} />);
+  expect(screen.getByRole("button")).toHaveAttribute("data-arrival", "false");
+  expect(screen.getByRole("button")).toHaveTextContent("Posição assumida · Atenção");
 });

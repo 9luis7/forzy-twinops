@@ -1,5 +1,6 @@
 import React, { Component, Suspense, lazy } from "react";
 import LoadingState from "./LoadingState.jsx";
+import "./twin3d/twinPresentation.css";
 
 export function canUseWebGL() {
   if (typeof document === "undefined") return false;
@@ -30,7 +31,7 @@ export function Twin3DStaticFallback({ snapshot }) {
       <figcaption className="muted small">
         Visualização 3D indisponível; exibindo a prévia estática do mesmo conjunto.
       </figcaption>
-      {snapshot?.mode === "replay" && <div className="demo-static-sensors" aria-label="Sensores na prévia estática">{["s1", "s2"].map((id) => <span key={id}>{id.toUpperCase()} · {id === "s1" ? "Motor" : "Bomba"}<br />{snapshot.sensors[id].latest?.measurements.vibrationVelocityRms?.value ?? "—"} mm/s · {snapshot.sensors[id].assessment?.assessment.status ?? "indisponível"}</span>)}</div>}
+      {["replay", "historical"].includes(snapshot?.mode) && <div className="demo-static-sensors" aria-label="Sensores na prévia estática">{["s1", "s2"].map((id) => <span key={id}>{id.toUpperCase()} · {id === "s1" ? "Motor" : "Bomba"}<br />{snapshot.sensors[id].latest?.measurements.vibrationVelocityRms?.value ?? "—"} mm/s</span>)}</div>}
     </figure>
   );
 }
