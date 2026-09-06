@@ -166,5 +166,5 @@ export function LiveTwin3DCanvas({
 }
 
 export default function Twin3DCanvas(props) {
-  return props.snapshot?.schemaVersion === "demo-1.0" ? <DemoTwin3DCanvas {...props} /> : <LiveTwin3DCanvas {...props} />;
+  return ["demo-1.0", "historical-1.0"].includes(props.snapshot?.schemaVersion) ? <DemoTwin3DCanvas {...props} /> : <LiveTwin3DCanvas {...props} />;
 }

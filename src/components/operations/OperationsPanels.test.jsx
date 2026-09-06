@@ -1,6 +1,6 @@
 import "@testing-library/jest-dom/vitest";
 import React from "react";
-import { cleanup, render, screen, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterAll, afterEach, beforeAll, expect, it, vi } from "vitest";
 import snapshotFixture from "../../../contracts/v2/fixtures/snapshot-received-now.valid.json";
 import AssetHeader from "./AssetHeader.jsx";
@@ -33,7 +33,7 @@ it("identifies the real assembly without inventing a tag", () => {
   );
 
   expect(screen.getByText("Conjunto motor-bomba monitorado")).toBeInTheDocument();
-  expect(screen.getByText("TAG não fornecida")).toBeInTheDocument();
+  expect(screen.queryByText("TAG não fornecida")).not.toBeInTheDocument();
   expect(screen.queryByText(/MTR-BMB-042/)).not.toBeInTheDocument();
 });
 
@@ -49,6 +49,15 @@ it("labels assumed retrieval time honestly", () => {
 
   expect(screen.getByText(/Capturado pelo TwinOps às/)).toBeInTheDocument();
   expect(screen.getByText(/Horário assumido a partir da captura/)).toBeInTheDocument();
+  expect(screen.getByRole("heading", { name: "S1 · Motor" })).toBeInTheDocument();
+  expect(screen.getByText(/Vínculo com motor e posição assumidos/)).toBeVisible();
+});
+
+it("labels a last-known reading without implying a sensor defect", () => {
+  const channel = { ...snapshot.channels[0], qualityFlags: ["last_known"] };
+  render(<SensorCard channel={channel} />);
+  expect(screen.getByText("Leitura anterior")).toBeVisible();
+  expect(screen.queryByText("Qualidade degradada")).not.toBeInTheDocument();
 });
 
 it("distinguishes unavailable measurements from a valid zero", () => {
@@ -94,6 +103,9 @@ it("draws independent interleaved sensor series while preserving a real null gap
   expect([...within(s2).getAllByRole("listitem")].map((item) => item.dataset.value)).toEqual([
     "10", "11", "12",
   ]);
+  const firstTime = within(s1).getAllByRole("listitem")[0].querySelector("time");
+  expect(firstTime).toHaveTextContent("12/08/2026, 12:00:00");
+  expect(firstTime).toHaveAttribute("datetime", "2026-08-12T15:00:00.000Z");
   expect(s1.querySelector(".recharts-line-curve")?.getAttribute("d")).toMatch(/L/);
   expect(s2.querySelector(".recharts-line-curve")?.getAttribute("d")).toMatch(/L/);
 });
@@ -125,7 +137,13 @@ it("renders contract assessment scores without turning them into percentages", (
   render(<AssessmentPanel assessment={assessment} />);
 
   expect(screen.getByText("Atenção")).toBeInTheDocument();
-  expect(screen.getByText("0,00")).toBeInTheDocument();
+  expect(screen.getByText("15,00 s")).toBeVisible();
+  expect(screen.getByText("Validação humana obrigatória.")).toBeVisible();
+  expect(screen.getByText("0,00")).not.toBeVisible();
+  expect(screen.getByText(/Modelo robust-baseline/)).not.toBeVisible();
+  fireEvent.click(screen.getByText("Detalhes da avaliação"));
+  expect(screen.getByText("0,00")).toBeVisible();
+  expect(screen.getByText(/Modelo robust-baseline/)).toBeVisible();
   expect(screen.queryByText(/%/)).not.toBeInTheDocument();
 });
 
@@ -139,4 +157,11 @@ it("sanitizes integration errors instead of exposing arbitrary detail", () => {
   expect(screen.getByText("Erro de integração")).toBeInTheDocument();
   expect(screen.getByText("Resposta inválida da origem")).toBeInTheDocument();
   expect(screen.queryByText(/secret/)).not.toBeInTheDocument();
+  expect(screen.getByRole("heading", { name: "Atualização dos dados" })).toBeVisible();
+  expect(screen.getByText(/A disponibilidade da coleta não indica a condição/)).toBeVisible();
+  expect(screen.getAllByText("Última coleta válida").every((label) => label.closest("details") === null)).toBe(true);
+  const s1Details = screen.getByText("Detalhes técnicos de S1").closest("details");
+  expect(within(s1Details).getByText("100 ms")).not.toBeVisible();
+  fireEvent.click(screen.getByText("Detalhes técnicos de S1"));
+  expect(within(s1Details).getByText("100 ms")).toBeVisible();
 });

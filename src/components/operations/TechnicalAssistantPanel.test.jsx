@@ -4,6 +4,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testi
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createGatewayRagDataSource } from "../../dataSources/GatewayRagDataSource.js";
 import TechnicalAssistantPanel from "./TechnicalAssistantPanel.jsx";
+import CopilotDock from "../assistant/CopilotDock.jsx";
 
 afterEach(() => {
   cleanup();
@@ -80,7 +81,7 @@ describe("TechnicalAssistantPanel availability", () => {
     );
 
     expect(screen.getByRole("heading", { name: "Assistente técnico" })).toBeInTheDocument();
-    expect(screen.getByText(/corpus técnico ativo e configuração saudável/i)).toBeInTheDocument();
+    expect(screen.getByText(/manual do equipamento ou o serviço de consulta está indisponível/i)).toBeInTheDocument();
     expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
     expect(dataSource.query).not.toHaveBeenCalled();
   });
@@ -144,7 +145,7 @@ describe("TechnicalAssistantPanel availability", () => {
       obsolete.answer.manual = "Resposta obsoleta não pode reaparecer";
       await act(async () => resolveOld(obsolete));
       expect(screen.queryByText("Resposta obsoleta não pode reaparecer")).not.toBeInTheDocument();
-      expect(screen.queryByText("Turnos anteriores desta sessão")).not.toBeInTheDocument();
+      expect(screen.queryByText(/Perguntas anteriores/)).not.toBeInTheDocument();
 
       submitQuestion("Pergunta do contexto novo");
       expect(await screen.findByText("Resposta do contexto novo")).toBeInTheDocument();
@@ -156,6 +157,54 @@ describe("TechnicalAssistantPanel availability", () => {
 });
 
 describe("TechnicalAssistantPanel grounded answer", () => {
+  it("sends contextual suggestions immediately and blocks duplicate requests", async () => {
+    let resolve;
+    const dataSource = { query: vi.fn(() => new Promise((done) => { resolve = done; })) };
+    render(<TechnicalAssistantPanel assetId="forzy-motor-01" enabled dataSource={dataSource} suggestionContext={{ status: "watch", sensor: "s1" }} />);
+    expect(dataSource.query).not.toHaveBeenCalled();
+    const chip = screen.getByRole("button", { name: "Por que o motor pede atenção?" });
+    fireEvent.click(chip);
+    fireEvent.click(chip);
+    expect(dataSource.query).toHaveBeenCalledTimes(1);
+    expect(dataSource.query.mock.calls[0][1].question).toBe("Quais evidências justificam a atenção do motor S1 neste instante?");
+    expect(chip).toBeDisabled();
+    await act(async () => resolve(groundedResponse()));
+    expect(screen.getByText("IA + manual · fontes validadas")).toBeVisible();
+    expect(screen.getByRole("button", { name: "Verificar lubrificação" })).toBeEnabled();
+    expect(dataSource.query).toHaveBeenCalledTimes(1);
+  });
+
+  it("formats narrative and citation timestamps for Sao Paulo without changing the response", async () => {
+    const response = groundedResponse();
+    response.answer.currentState = "Janela de 2026-05-19T14:49:01.524000+00:00 a 2026-05-19T14:50:01.633000+00:00.";
+    const before = JSON.stringify(response);
+    const dataSource = { query: vi.fn().mockResolvedValue(response) };
+    render(<TechnicalAssistantPanel assetId="forzy-motor-01" enabled dataSource={dataSource} />);
+    fireEvent.click(screen.getByRole("button", { name: "Entender os dados do motor" }));
+    expect(await screen.findByText(/Janela de 19\/05\/2026, 11:49:01 \(São Paulo\) a 19\/05\/2026, 11:50:01/)).toBeVisible();
+    fireEvent.click(screen.getByText("Fontes e evidências"));
+    fireEvent.click(screen.getByText("Sensor · Vibração média recente"));
+    expect(screen.getByText("03/09/2026, 09:00:00")).toBeVisible();
+    expect(screen.getByText("03/09/2026, 09:00:00")).toHaveAttribute("datetime", "2026-09-03T12:00:00+00:00");
+    expect(JSON.stringify(response)).toBe(before);
+  });
+
+  it("keeps unvalidated fallback excerpts out of the main answer while preserving them in sources", async () => {
+    const response = groundedResponse();
+    response.fallbackUsed = true;
+    response.groundingStatus = "degraded_fallback";
+    response.answer.manual = "Trecho de contingência extraído do documento, sem orientação gerada validada.";
+    const dataSource = { query: vi.fn().mockResolvedValue(response) };
+    render(<TechnicalAssistantPanel assetId="forzy-motor-01" enabled dataSource={dataSource} />);
+    fireEvent.click(screen.getByRole("button", { name: "Entender os dados do motor" }));
+    expect(await screen.findByText(/A IA não entregou uma orientação validada/)).toBeVisible();
+    expect(screen.getByText(response.answer.manual)).not.toBeVisible();
+    expect(screen.queryByText("IA + manual · fontes validadas")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByText("Fontes e evidências"));
+    fireEvent.click(screen.getByText("Texto de contingência"));
+    expect(screen.getByText(response.answer.manual)).toBeVisible();
+  });
+
   it("renders a complete response with separate provenance and accessible citations", async () => {
     const dataSource = { query: vi.fn().mockResolvedValue(groundedResponse()) };
 
@@ -179,11 +228,15 @@ describe("TechnicalAssistantPanel grounded answer", () => {
     expect(within(answer).getByText(groundedResponse().answer.currentState)).toBeInTheDocument();
     expect(answer).toHaveFocus();
 
-    const manualSummary = screen.getByText(/Manual · WEG W22 · revisão 2026-01/);
+    const sources = screen.getByText("Fontes e evidências").closest("details");
+    expect(sources).not.toHaveAttribute("open");
+    expect(screen.getByText(/Inspect bearing lubrication/)).not.toBeVisible();
+    fireEvent.click(screen.getByText("Fontes e evidências"));
+    const manualSummary = screen.getByText(/Manual · WEG W22 · p. 4–5/);
     const manualDetails = manualSummary.closest("details");
     fireEvent.click(manualSummary);
     expect(manualDetails).toHaveAttribute("open");
-    expect(within(manualDetails).getByText("Páginas 4–5 · MAINTENANCE")).toBeInTheDocument();
+    expect(within(manualDetails).getByText("MAINTENANCE · revisão 2026-01")).toBeInTheDocument();
     expect(within(manualDetails).getByText(/Inspect bearing lubrication/)).toBeInTheDocument();
     expect(within(manualDetails).getByText(`SHA-256 ${"a".repeat(64)}`)).toBeInTheDocument();
     expect(within(manualDetails).getByRole("link", { name: "Abrir fonte oficial" })).toHaveAttribute(
@@ -191,7 +244,7 @@ describe("TechnicalAssistantPanel grounded answer", () => {
       "https://manufacturer.example/manual.pdf"
     );
 
-    const telemetrySummary = screen.getByText(/Telemetria · velocity_ewma/);
+    const telemetrySummary = screen.getByText(/Sensor · Vibração média recente/);
     const telemetryDetails = telemetrySummary.closest("details");
     fireEvent.click(telemetrySummary);
     expect(within(telemetryDetails).getByText("2,4 mm/s")).toBeInTheDocument();
@@ -262,7 +315,7 @@ describe("TechnicalAssistantPanel grounded answer", () => {
     fireEvent.submit(form);
 
     expect(screen.getByRole("status", { name: "Consultando fontes validadas" })).toHaveTextContent(
-      "Validando citações antes de exibir"
+      "As citações serão validadas antes de aparecer."
     );
     expect(screen.queryByTestId("assistant-answer")).not.toBeInTheDocument();
 
@@ -375,6 +428,9 @@ describe("TechnicalAssistantPanel grounded answer", () => {
     expect(screen.getByText("Pergunta 3")).toBeInTheDocument();
     expect(screen.getByText("Pergunta 5")).toBeInTheDocument();
     expect(screen.queryByText("Pergunta 2")).not.toBeInTheDocument();
+    expect(screen.getByText("Pergunta 5")).not.toBeVisible();
+    fireEvent.click(screen.getByText("Perguntas anteriores (3)"));
+    expect(screen.getByText("Pergunta 5")).toBeVisible();
   });
 
   it("serializes two 6000-character answer sections within the real history contract", async () => {
@@ -423,10 +479,10 @@ describe("TechnicalAssistantPanel grounded answer", () => {
 
 describe("TechnicalAssistantPanel explicit safety states", () => {
   it.each([
-    ["manual_insufficient", false, "não contém evidência suficiente"],
-    ["operational_unavailable", false, "estado operacional está indisponível"],
+    ["manual_insufficient", false, "não traz evidência suficiente"],
+    ["operational_unavailable", false, "dados atuais estão indisponíveis"],
     ["out_of_scope", false, "fora do escopo seguro"],
-    ["degraded_fallback", true, "fallback seguro disponível"],
+    ["degraded_fallback", true, "orientação de contingência disponível"],
   ])("renders %s as a first-class state", async (groundingStatus, fallbackUsed, expected) => {
     const response = groundedResponse();
     response.groundingStatus = groundingStatus;
@@ -513,5 +569,73 @@ describe("TechnicalAssistantPanel explicit safety states", () => {
     }
     expect(screen.queryByText(/serviço de geração/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/fallback extrativo/i)).not.toBeInTheDocument();
+  });
+});
+
+describe("TechnicalAssistantPanel in a collapsible copilot", () => {
+  it("preserves a draft and ongoing query across closing, without moving focus for a hidden answer", async () => {
+    let finish;
+    let signal;
+    const dataSource = {
+      query: vi.fn((assetId, input, options) => {
+        signal = options.signal;
+        if (dataSource.query.mock.calls.length === 1) {
+          return new Promise((resolve) => { finish = resolve; });
+        }
+        return Promise.resolve(groundedResponse());
+      }),
+    };
+    function Harness() {
+      const [open, setOpen] = React.useState(false);
+      return <CopilotDock open={open} onOpenChange={setOpen}>
+        <TechnicalAssistantPanel assetId="forzy-motor-01" enabled dataSource={dataSource} isActive={open} />
+      </CopilotDock>;
+    }
+    render(<Harness />);
+    const launcher = screen.getByRole("button", { name: "Copiloto" });
+    fireEvent.click(launcher);
+    fireEvent.change(screen.getByLabelText("Pergunta técnica"), { target: { value: "Como verificar o rolamento?" } });
+    fireEvent.click(screen.getByRole("button", { name: "Fechar copiloto" }));
+    fireEvent.click(launcher);
+    expect(screen.getByLabelText("Pergunta técnica")).toHaveValue("Como verificar o rolamento?");
+    fireEvent.submit(screen.getByRole("form", { name: "Consultar o assistente técnico" }));
+    expect(dataSource.query).toHaveBeenCalledTimes(1);
+    fireEvent.click(screen.getByRole("button", { name: "Fechar copiloto" }));
+    expect(signal.aborted).toBe(false);
+    expect(launcher).toHaveFocus();
+
+    await act(async () => { finish(groundedResponse()); });
+    expect(signal.aborted).toBe(false);
+    expect(launcher).toHaveFocus();
+    expect(screen.getByTestId("assistant-answer")).not.toBeVisible();
+    fireEvent.click(launcher);
+    expect(screen.getByTestId("assistant-answer")).toBeVisible();
+    expect(screen.getByRole("button", { name: "Fechar copiloto" })).toHaveFocus();
+    expect(screen.getByLabelText("Pergunta técnica")).toHaveValue("");
+
+    fireEvent.change(screen.getByLabelText("Pergunta técnica"), { target: { value: "E a lubrificação?" } });
+    fireEvent.submit(screen.getByRole("form", { name: "Consultar o assistente técnico" }));
+    await waitFor(() => expect(dataSource.query).toHaveBeenCalledTimes(2));
+    expect(dataSource.query.mock.calls[1][1]).toMatchObject({
+      conversationId: ID,
+      history: [{ question: "Como verificar o rolamento?", answer: expect.stringContaining(groundedResponse().answer.manual) }],
+    });
+    await waitFor(() => expect(screen.getByTestId("assistant-answer")).toHaveFocus());
+    const technical = screen.getByText("Detalhes técnicos da resposta").closest("details");
+    expect(technical).not.toHaveAttribute("open");
+    expect(within(technical).getByText(/Corpus corpus-1 · trace/)).not.toBeVisible();
+  });
+
+  it("does not refocus an existing answer just because isActive changes", async () => {
+    const dataSource = { query: vi.fn().mockResolvedValue(groundedResponse()) };
+    const view = render(<TechnicalAssistantPanel assetId="forzy-motor-01" enabled dataSource={dataSource} isActive={false} />);
+    fireEvent.change(screen.getByLabelText("Pergunta técnica"), { target: { value: "Consulte o manual" } });
+    fireEvent.submit(screen.getByRole("form", { name: "Consultar o assistente técnico" }));
+    const answer = await screen.findByTestId("assistant-answer");
+    expect(answer).not.toHaveFocus();
+    screen.getByLabelText("Pergunta técnica").focus();
+    view.rerender(<TechnicalAssistantPanel assetId="forzy-motor-01" enabled dataSource={dataSource} isActive />);
+    expect(screen.getByLabelText("Pergunta técnica")).toHaveFocus();
+    expect(dataSource.query).toHaveBeenCalledTimes(1);
   });
 });

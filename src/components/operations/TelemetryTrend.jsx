@@ -1,4 +1,5 @@
 import React, { useMemo } from "react";
+import { formatClock, formatDateTime } from "../../lib/displayTime.js";
 import {
   CartesianGrid,
   Line,
@@ -8,13 +9,6 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
-
-const timeFormatter = new Intl.DateTimeFormat("pt-BR", {
-  timeZone: "America/Sao_Paulo",
-  hour: "2-digit",
-  minute: "2-digit",
-  second: "2-digit",
-});
 
 function trendSeries(history) {
   const series = { s1: [], s2: [] };
@@ -46,12 +40,12 @@ function SensorTrendSeries({ sensorId, points, stroke }) {
               <CartesianGrid strokeDasharray="3 3" vertical={false} />
               <XAxis
                 dataKey="timestamp"
-                tickFormatter={(value) => timeFormatter.format(new Date(value))}
+                tickFormatter={(value) => formatClock(value)}
                 minTickGap={28}
               />
               <YAxis width={48} />
               <Tooltip
-                labelFormatter={(value) => timeFormatter.format(new Date(value))}
+                labelFormatter={(value) => `${formatDateTime(value)} · São Paulo`}
                 formatter={(value) => [value ?? "Indisponível", sensorId.toUpperCase()]}
               />
               <Line
@@ -70,7 +64,7 @@ function SensorTrendSeries({ sensorId, points, stroke }) {
                 data-value={point.value === null ? "unavailable" : String(point.value)}
                 key={point.id}
               >
-                {point.timestamp}: {point.value === null ? "Indisponível" : point.value}
+                <time dateTime={point.timestamp}>{formatDateTime(point.timestamp)}</time>: {point.value === null ? "Indisponível" : point.value}
               </li>
             ))}
           </ol>
@@ -91,15 +85,15 @@ export default function TelemetryTrend({ history }) {
           <p className="eyebrow">Histórico coletado pelo TwinOps</p>
           <h2>Tendência operacional real</h2>
         </div>
-        <p className="trend-unit">Velocidade RMS (mm/s)</p>
+        <p className="trend-unit">Velocidade RMS (mm/s) · horário de São Paulo</p>
       </div>
 
       {!hasHistory ? (
         <p className="empty-state">Ainda não há histórico operacional coletado.</p>
       ) : (
         <div className="trend-series-grid" aria-label="Gráficos independentes da tendência de S1 e S2">
-          <SensorTrendSeries sensorId="s1" points={series.s1} stroke="#2dd4bf" />
-          <SensorTrendSeries sensorId="s2" points={series.s2} stroke="#60a5fa" />
+          <SensorTrendSeries sensorId="s1" points={series.s1} stroke="#60a5fa" />
+          <SensorTrendSeries sensorId="s2" points={series.s2} stroke="#2dd4bf" />
         </div>
       )}
     </section>

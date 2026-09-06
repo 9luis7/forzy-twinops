@@ -180,9 +180,10 @@ def _validate_answer_support(case: dict, capture: ScoreCapture) -> None:
 
     if manual_citations:
         quotes = list(dict.fromkeys(item.excerpt for item in manual_citations))
-        generated = "Segundo o manual:\n" + "\n".join(f"- {quote}" for quote in quotes)
+        generated = "\n".join(f"- {quote}" for quote in quotes)
+        legacy_generated = "Segundo o manual:\n" + generated
         extractive = f"Trecho mais relevante recuperado do manual: {quotes[0]}"
-        if response.answer.manual not in {generated, extractive}:
+        if response.answer.manual not in {generated, legacy_generated, extractive}:
             raise ValueError("manual answer is not deterministic/extractive from citations")
     elif response.grounding_status == "manual_insufficient":
         if response.answer.manual != _MANUAL_INSUFFICIENT:
@@ -280,7 +281,9 @@ def _validate_case(case: dict, capture: ScoreCapture) -> None:
         context.operational_state != case["expectedOperationalState"]
     ):
         raise ValueError("operational state does not match manifest")
-    if capture.response.answer.current_state != _deterministic_current_state(context):
+    if capture.response.answer.current_state != _deterministic_current_state(
+        context, include_evidence=capture.response.grounding_status != "out_of_scope",
+    ):
         raise ValueError("current-state answer is not server deterministic")
     _validate_answer_support(case, capture)
 

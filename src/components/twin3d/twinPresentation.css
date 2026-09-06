@@ -1,0 +1,17 @@
+.demo-model-controls{display:flex;gap:8px;flex-wrap:wrap;margin:12px 0}.demo-model-controls button{font-size:11px;min-height:35px;padding:6px 10px}.demo-marker{min-height:36px;padding:5px 9px;font-size:10px;white-space:nowrap;color:#e8eef7;background:#0b182ee8;border:1px solid #60a5fa;border-radius:7px;box-shadow:0 4px 16px #0008}.demo-marker[data-status=watch]{border-color:#fbbf24}.demo-marker[data-status=alert]{border-color:#fb7185}.demo-marker[data-arrival=true]{animation:demo-pulse 1s ease-out}.demo-marker:hover:not(:disabled){background:#1c3046}.demo-marker strong{display:block;font-size:12px}.demo-marker span{font-size:9px;font-weight:400}.demo-static-sensors{display:flex;justify-content:space-between;gap:15px;margin:10px 0}.demo-static-sensors span{font-size:12px}@keyframes demo-pulse{0%{box-shadow:0 0 0 0 #5eead477}100%{box-shadow:0 0 0 14px #5eead400}}@media(prefers-reduced-motion:reduce){.demo-marker[data-arrival=true]{animation:none}}
+.demo-canvas-viewport { width: 100%; min-width: 0; max-width: 100%; overflow: hidden; contain: inline-size; }
+.demo-canvas-viewport canvas { max-width: 100%; }
+.demo-marker-anchor { position: relative; display: block; width: 0; height: 0; color: #a9bad0; }
+.demo-marker-point { position: absolute; left: -3px; top: -3px; width: 6px; height: 6px; border: 1px solid #e8eef7; border-radius: 50%; background: #122238; }
+.demo-marker-leader { position: absolute; left: -70px; top: -50px; pointer-events: none; overflow: visible; }
+.demo-marker-anchor .demo-marker { position: absolute; }
+.demo-marker-anchor.s1 .demo-marker { right: 68px; bottom: 25px; }
+.demo-marker-anchor.s2 .demo-marker { left: 68px; top: 18px; }
+@media (max-width: 700px) {
+  .demo-marker-anchor.s1 .demo-marker { right: 26px; bottom: 30px; }
+  .demo-marker-anchor.s2 .demo-marker { left: 26px; top: 24px; }
+  .demo-marker-leader { transform: scaleX(.55); }
+  .demo-marker { padding: 4px 6px; }
+  .demo-marker strong { font-size: 10px; }
+  .demo-marker span { font-size: 8px; }
+}

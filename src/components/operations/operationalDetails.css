@@ -1,0 +1,56 @@
+.operational-details {
+  margin-top: 1rem;
+  border-top: 1px solid var(--border, #263c57);
+  padding-top: 0.5rem;
+}
+
+.operational-details > summary {
+  cursor: pointer;
+  min-height: 44px;
+  padding: 0.65rem 0;
+  color: #b7d3ed;
+  font-size: 0.85rem;
+}
+
+.operational-details > summary:focus-visible {
+  outline: 2px solid #60a5fa;
+  outline-offset: 3px;
+  border-radius: 4px;
+}
+
+.assessment-panel .score-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.assessment-persistence,
+.sensor-placement-note {
+  color: var(--muted, #a9bad0);
+  font-size: 0.8rem;
+}
+
+.sensor-placement-note {
+  margin-top: -0.5rem;
+}
+
+.sensor-identity-dot {
+  display: inline-block;
+  width: 0.6rem;
+  height: 0.6rem;
+  margin-right: 0.5rem;
+  border-radius: 50%;
+  background: #60a5fa;
+}
+
+.sensor-card[data-sensor="s2"] .sensor-identity-dot {
+  background: #2dd4bf;
+}
+
+.health-card .health-status[data-has-error="false"] {
+  color: var(--muted, #a9bad0);
+}
+
+@media (max-width: 480px) {
+  .assessment-panel .score-grid {
+    grid-template-columns: 1fr;
+  }
+}

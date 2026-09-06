@@ -196,15 +196,13 @@ def _operational_snapshot():
 
 def _current_state():
     return (
-        "O assessment atual está em normal, com qualidade ok. A janela vai de "
-        f"{WINDOW_START} a {WINDOW_END} e o frescor é 0 ms."
+        "Condição em 03/09/2026 às 09:01:00 (São Paulo): sem desvio identificado."
     )
 
 
 def _unavailable_current_state():
     return (
-        "O assessment operacional atual está indisponível; não é seguro "
-        "inferir o estado do equipamento."
+        "Avaliação indisponível; os dados não permitem informar a condição."
     )
 
 
@@ -283,7 +281,7 @@ def _response(case, hits, *, latency=1000):
         else:
             manual = (
                 "Não posso determinar causa raiz. Posso apresentar somente evidências "
-                "do manual e do assessment atual para validação humana."
+                "do manual e dos sensores para validação humana."
             )
         grounding = "out_of_scope"
         corpus = None
@@ -575,7 +573,7 @@ def test_synthetic_capture_runner_exercises_service_guardrails(tmp_path):
     assert "antigo" in rows["state-stale-001"]["response"]["answer"][
         "currentState"
     ]
-    assert "fora da janela operacional" in rows["state-outside-001"]["response"][
+    assert "fora do horário programado" in rows["state-outside-001"]["response"][
         "answer"
     ]["currentState"]
 

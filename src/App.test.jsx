@@ -33,6 +33,25 @@ const ragSource = () => ({
   reactivate: vi.fn(),
 });
 
+const historySource = () => {
+  const time = "2026-05-19T17:40:14.229Z";
+  const dataset = { datasetId: "history-test", label: "Histórico de teste", pairCount: 1, readingCount: 2, startAt: time, endAt: time, sourceFormat: "OOXML" };
+  const frames = ["s1", "s2"].map((sensorId) => ({
+    sensorId, frameId: sensorId, sourceRow: 1, observedAt: time, receivedAt: null, preloaded: false, qualityFlags: [], gapBefore: false,
+    measurements: { vibrationVelocityRms: { value: 1.2, unit: "mm/s" }, temperature: { value: 30, unit: "degC" }, vibrationAcceleration: { value: 0.1, unit: "g" } },
+  }));
+  return {
+    datasets: vi.fn().mockResolvedValue([dataset]),
+    context: vi.fn().mockResolvedValue({
+      schemaVersion: "historical-1.0", mode: "historical", revision: "a".repeat(64), dataset, assetId: "forzy-motor-01",
+      selection: { from: null, to: null, endRow: 1, limit: 300, observedAt: time, totalPairs: 1, returnedPairs: 1, hasPrevious: false, hasNext: false, previousEndRow: null, nextEndRow: null },
+      sensors: Object.fromEntries(frames.map((frame) => [frame.sensorId, { latest: frame, assessment: null, assessmentState: "unavailable", newInformation: false }])),
+      history: frames, status: "insufficient_data", generatedAt: time, capabilities: { twin3d: true, copilot: false, replayControls: false },
+    }),
+    query: vi.fn(), create: vi.fn(), advance: vi.fn(),
+  };
+};
+
 beforeAll(() => {
   vi.stubGlobal("ResizeObserver", class {
     observe() {}
@@ -55,14 +74,18 @@ afterEach(() => {
 });
 afterAll(() => vi.unstubAllGlobals());
 
-it("renders one real asset and no fictional navigation", async () => {
+it("renders one real asset with working product navigation and an optional demonstration", async () => {
   render(<App dataSource={sourceWithSnapshot()} />);
   await flush();
 
   expect(screen.getByText("Conjunto motor-bomba monitorado")).toBeInTheDocument();
-  for (const label of ["Planta", "Ordens", "Documentos", "MTR-BMB-042", "Copiloto"]) {
+  for (const label of ["Planta", "Ordens", "Documentos", "MTR-BMB-042"]) {
     expect(screen.queryByText(label)).not.toBeInTheDocument();
   }
+  expect(screen.getByRole("link", { name: "Visão geral" })).toHaveAttribute("aria-current", "page");
+  expect(screen.getByRole("link", { name: "Histórico", exact: true })).toHaveAttribute("href", "/history");
+  expect(screen.getByRole("link", { name: "Demonstração" })).toHaveAttribute("href", "/demo");
+  expect(screen.getByRole("button", { name: "Copiloto", exact: true })).toHaveAttribute("aria-expanded", "false");
 });
 
 it("shows an honest loading state before the first real snapshot", () => {
@@ -74,11 +97,11 @@ it("shows an honest loading state before the first real snapshot", () => {
   render(<App dataSource={source} />);
 
   const loading = screen.getByRole("status", {
-    name: "Carregando o último snapshot real…",
+    name: "Consultando os dados do equipamento…",
   });
   expect(loading).toHaveAttribute("aria-live", "polite");
   expect(loading).toHaveTextContent(
-    /Conectando ao snapshot operacional|Validando telemetria S1 e S2|Preparando o painel operacional|Sincronizando o gêmeo digital/,
+    /Conectando à fonte de dados|Validando telemetria S1 e S2|Preparando o painel operacional|Sincronizando o gêmeo digital/,
   );
 });
 
@@ -106,7 +129,7 @@ it("starts a fresh bootstrap after StrictMode aborts the first setup outside the
 
   expect(source.getSnapshot).toHaveBeenCalledTimes(2);
   expect(screen.getByText("Conjunto motor-bomba monitorado")).toBeInTheDocument();
-  expect(screen.queryByText("Carregando o último snapshot real…")).not.toBeInTheDocument();
+  expect(screen.queryByText("Consultando os dados do equipamento…")).not.toBeInTheDocument();
   expect(source.refresh).not.toHaveBeenCalled();
 });
 
@@ -116,7 +139,7 @@ it("shows backend unavailability without creating a normal snapshot", async () =
     refresh: vi.fn(),
   };
 
-  render(<App dataSource={source} />);
+  render(<App dataSource={source} historyDataSource={null} />);
   await flush();
 
   expect(screen.getByText("Dados reais indisponíveis")).toBeInTheDocument();
@@ -193,10 +216,47 @@ it("integrates the public assistant only from the backend copilot capability", a
   render(<App dataSource={sourceWithSnapshot(snapshot)} ragDataSource={ragDataSource} />);
   await flush();
 
+  expect(screen.queryByRole("heading", { name: "Assistente técnico" })).not.toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: "Copiloto", exact: true }));
   expect(screen.getByRole("heading", { name: "Assistente técnico" })).toBeInTheDocument();
   expect(screen.getByRole("form", { name: "Consultar o assistente técnico" })).toBeInTheDocument();
   expect(screen.queryByRole("link", { name: /admin/i })).not.toBeInTheDocument();
   expect(ragDataSource.query).not.toHaveBeenCalled();
+  fireEvent.change(screen.getByLabelText("Pergunta técnica"), { target: { value: "Como interpretar esta vibração?" } });
+  fireEvent.click(screen.getByRole("button", { name: "Fechar copiloto" }));
+  fireEvent.click(screen.getByRole("button", { name: "Copiloto", exact: true }));
+  expect(screen.getByLabelText("Pergunta técnica")).toHaveValue("Como interpretar esta vibração?");
+  expect(ragDataSource.query).not.toHaveBeenCalled();
+});
+
+it("keeps real historical records usable on the overview when current collection fails", async () => {
+  vi.useRealTimers();
+  const source = { getSnapshot: vi.fn().mockRejectedValue(new Error("live unavailable")), refresh: vi.fn() };
+  const historyDataSource = historySource();
+  const TwinProbe = ({ snapshot }) => <div data-testid="historical-main-twin" data-mode={snapshot.mode} data-revision={snapshot.revision} />;
+  render(<App dataSource={source} historyDataSource={historyDataSource} Twin3DComponent={TwinProbe} />);
+  expect(await screen.findByTestId("historical-main-twin")).toHaveAttribute("data-mode", "historical");
+  expect(screen.getByRole("heading", { name: "Motor e bomba" })).toBeVisible();
+  expect(screen.getByText(/A coleta atual está indisponível/)).toBeVisible();
+  expect(screen.getByText(/Análise retrospectiva · score relativo, não probabilidade de falha/)).toBeVisible();
+  expect(screen.queryByRole("form", { name: "Filtros do histórico" })).not.toBeInTheDocument();
+  expect(historyDataSource.create).not.toHaveBeenCalled();
+  expect(historyDataSource.advance).not.toHaveBeenCalled();
+  expect(historyDataSource.query).not.toHaveBeenCalled();
+  expect(source.refresh).not.toHaveBeenCalled();
+});
+
+it("opens the full history route without bootstrapping current collection or replay", async () => {
+  vi.useRealTimers();
+  const source = sourceWithSnapshot(), historyDataSource = historySource();
+  render(<App pathname="/history" dataSource={source} historyDataSource={historyDataSource} Twin3DComponent={() => null} />);
+  expect(await screen.findByRole("form", { name: "Filtros do histórico" })).toBeVisible();
+  expect(await screen.findByRole("table")).toBeVisible();
+  expect(screen.getByRole("link", { name: "Histórico", exact: true })).toHaveAttribute("aria-current", "page");
+  expect(source.getSnapshot).not.toHaveBeenCalled();
+  expect(source.refresh).not.toHaveBeenCalled();
+  expect(historyDataSource.create).not.toHaveBeenCalled();
+  expect(historyDataSource.query).not.toHaveBeenCalled();
 });
 
 it.each(["/rag-admin", "/rag-admin/"])(
