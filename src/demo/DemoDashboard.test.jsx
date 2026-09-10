@@ -87,7 +87,7 @@ it("preserves the manual draft and pending request when closing the dock, withou
   expect(textbox).toHaveValue("O que verificar no motor?");
   fireEvent.submit(screen.getByRole("form", { name: "Perguntar ao copiloto da demonstração" }));
   expect(source.query).toHaveBeenCalledTimes(1);
-  expect(source.query.mock.calls[0][1]).toEqual({ question: "O que verificar no motor?", contextRevision: 1 });
+  expect(source.query.mock.calls[0][1]).toEqual({ question: "O que verificar no motor?", contextRevision: 1, history: [] });
   const signal = source.query.mock.calls[0][2].signal;
   fireEvent.click(screen.getByRole("button", { name: "Fechar copiloto" }));
   expect(signal.aborted).toBe(false);
@@ -215,16 +215,16 @@ it.each(["ready", "degraded"])("shows request feedback across advances and prese
   expect(screen.getAllByText("Na fila")).toHaveLength(2);
   await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
   expect(view.container.querySelector(".demo-twin-grid")).toHaveAttribute("data-revision", "2");
-  expect(screen.getByText("Consultando manual")).toHaveAttribute("title", "Consulta enviada; aguardando resposta do serviço.");
+  expect(screen.getByText("Gerando análise")).toHaveAttribute("title", "Consulta enviada; aguardando resposta do serviço.");
   expect(screen.getAllByText("Na fila")).toHaveLength(1);
   expect(events[0].status).toBe("pending");
   await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
   expect(view.container.querySelector(".demo-twin-grid")).toHaveAttribute("data-revision", "3");
   expect(source.recommend).toHaveBeenCalledTimes(1); expect(source.advance).toHaveBeenCalledTimes(2);
-  expect(screen.queryByText("Consultando manual")).not.toBeInTheDocument();
-  expect(screen.getByText(status === "ready" ? "Recomendação disponível" : "Resposta limitada")).toBeVisible();
+  expect(screen.queryByText("Gerando análise")).not.toBeInTheDocument();
+  expect(screen.getByText(status === "ready" ? "Análise disponível" : "Resposta limitada")).toBeVisible();
   await act(async () => { pending.resolve(event({ status: "processing" })); await pending.promise; });
-  expect(screen.queryByText("Consultando manual")).not.toBeInTheDocument();
+  expect(screen.queryByText("Gerando análise")).not.toBeInTheDocument();
 });
 
 const attentionContext = (revision = 1, playback = "paused", extra = {}) => readyContext({
@@ -253,7 +253,7 @@ it("offers contextual prompt chips that send once immediately and disable while 
   fireEvent.click(chip);
   fireEvent.click(chip);
   expect(source.query).toHaveBeenCalledTimes(1);
-  expect(source.query.mock.calls[0][1]).toEqual({ question: demoSuggestions(attentionContext())[0].question, contextRevision: 1 });
+  expect(source.query.mock.calls[0][1]).toEqual({ question: demoSuggestions(attentionContext())[0].question, contextRevision: 1, history: [] });
   expect(screen.getByRole("textbox", { name: "Pergunta" })).toHaveValue(demoSuggestions(attentionContext())[0].question);
   expect(chip).toBeDisabled();
   expect(screen.getByRole("button", { name: "O que verificar no motor?" })).toBeDisabled();
@@ -262,64 +262,28 @@ it("offers contextual prompt chips that send once immediately and disable while 
   expect(source.control).not.toHaveBeenCalled();
 });
 
-it("waits for the in-flight advance and confirmed pause before opening analysis, then sends the confirmed revision", async () => {
+it("opens analysis and accepts a suggestion during an advance without pausing the replay", async () => {
   vi.useFakeTimers();
   vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue(null);
-  const advance = deferred(), pause = deferred();
+  const advance = deferred(), answer = deferred();
   const source = demoSource({
     create: vi.fn(async () => ({ runId: "test-run", token: "test", context: attentionContext(1, "running") })),
-    advance: vi.fn(() => advance.promise), control: vi.fn(() => pause.promise), query: vi.fn(() => new Promise(() => {})),
+    advance: vi.fn(() => advance.promise), query: vi.fn(() => answer.promise),
   });
   await act(async () => { render(<DemoDashboard dataSource={source} />); });
   await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Preparar replay" })); });
   await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
-  const analyze = screen.getByRole("button", { name: "Pausar e analisar" });
-  expect(analyze).toBeEnabled();
-  fireEvent.click(analyze);
-  fireEvent.click(analyze);
-  expect(screen.getByRole("button", { name: "Copiloto" })).toHaveAttribute("aria-expanded", "false");
-  expect(screen.getByRole("button", { name: "Aguardando pausa…" })).toBeDisabled();
-  expect(source.control).not.toHaveBeenCalled();
-  expect(source.query).not.toHaveBeenCalled();
-  await act(async () => { await vi.advanceTimersByTimeAsync(3000); });
-  expect(source.advance).toHaveBeenCalledTimes(1);
-  await act(async () => { advance.resolve(attentionContext(2, "running")); await advance.promise; });
-  expect(source.control).toHaveBeenCalledTimes(1);
-  expect(source.control.mock.calls[0][1]).toMatchObject({ action: "pause", expectedRevision: 2 });
-  expect(screen.getByRole("button", { name: "Copiloto" })).toHaveAttribute("aria-expanded", "false");
-  await act(async () => { pause.resolve(attentionContext(3)); await pause.promise; });
+  fireEvent.click(screen.getByRole("button", { name: "Analisar este instante" }));
   expect(screen.getByRole("button", { name: "Copiloto" })).toHaveAttribute("aria-expanded", "true");
-  expect(source.query).not.toHaveBeenCalled();
   fireEvent.click(screen.getByRole("button", { name: "Por que o motor exige atenção?" }));
   expect(source.query).toHaveBeenCalledTimes(1);
-  expect(source.query.mock.calls[0][1].contextRevision).toBe(3);
-});
-
-it("keeps analysis closed and makes no query when pause cannot be confirmed", async () => {
-  const source = demoSource({
-    create: vi.fn(async () => ({ runId: "test-run", token: "test", context: attentionContext(1, "running") })),
-    control: vi.fn(async () => { throw new Error("Não foi possível confirmar a pausa."); }),
-  });
-  await prepare(source);
-  fireEvent.click(screen.getByRole("button", { name: "Pausar e analisar" }));
-  await screen.findByText("Não foi possível confirmar a pausa.");
-  expect(screen.getByRole("button", { name: "Copiloto" })).toHaveAttribute("aria-expanded", "false");
-  expect(source.query).not.toHaveBeenCalled();
-});
-
-it("does not open a prepared question from an obsolete generation after awaiting pause", async () => {
-  const pause = deferred();
-  const source = demoSource({
-    create: vi.fn(async () => ({ runId: "test-run", token: "test", context: attentionContext(1, "running") })),
-    control: vi.fn(() => pause.promise),
-  });
-  await prepare(source);
-  fireEvent.click(screen.getByRole("button", { name: "Pausar e analisar" }));
-  await act(async () => { pause.resolve(attentionContext(2, "paused", { replay: { ...readyContext().replay, generation: 1 } })); await pause.promise; });
-  expect(screen.getByRole("button", { name: "Copiloto" })).toHaveAttribute("aria-expanded", "false");
-  expect(source.query).not.toHaveBeenCalled();
-  fireEvent.click(screen.getByRole("button", { name: "Copiloto" }));
-  expect(screen.getByRole("textbox", { name: "Pergunta" })).toHaveValue("");
+  const signal = source.query.mock.calls[0][2].signal;
+  await act(async () => { advance.resolve(attentionContext(3, "running", { replay: { ...attentionContext(3, "running").replay, sourceRow: 143 } })); await advance.promise; });
+  expect(signal.aborted).toBe(false);
+  expect(screen.getByRole("button", { name: "Ⅱ Pausar" })).toBeEnabled();
+  await act(async () => { answer.resolve({ contextRevision: 2, sourceRow: 142, observedAt: time, response: recommendation }); await answer.promise; });
+  expect(screen.getByText(/resposta de um instante anterior/)).toBeVisible();
+  expect(source.control).not.toHaveBeenCalled();
 });
 
 it("offers a review action and general suggestion even when no sensor requires attention", async () => {
@@ -333,16 +297,33 @@ it("offers a review action and general suggestion even when no sensor requires a
   expect(source.control).not.toHaveBeenCalled();
 });
 
-it("blocks manual queries and suggestion clicks while playback is running", async () => {
-  const source = demoSource({ create: vi.fn(async () => ({ runId: "test-run", token: "test", context: attentionContext(1, "running") })) });
+it.each([
+  { sourceRow: 142, contextRevision: 2 },
+  { sourceRow: 141, contextRevision: 0 },
+])("does not mark a server answer as older when its reading is ahead or unchanged: %o", async (snapshot) => {
+  const source = demoSource({ query: vi.fn(async () => ({ ...snapshot, observedAt: time, response: recommendation })) });
+  await prepare(source);
+  fireEvent.click(screen.getByRole("button", { name: "Analisar este instante" }));
+  fireEvent.click(screen.getByRole("button", { name: "Resumir este instante" }));
+  await screen.findByRole("article", { name: `Resposta: ${demoSuggestions(readyContext())[0].question}` });
+  expect(screen.queryByText(/resposta de um instante anterior/)).not.toBeInTheDocument();
+  expect(screen.getByText(/Instante consultado:/)).toBeVisible();
+});
+
+it("accepts typed questions while playback is running through the same query path", async () => {
+  const pending = deferred();
+  const source = demoSource({
+    create: vi.fn(async () => ({ runId: "test-run", token: "test", context: attentionContext(1, "running") })),
+    query: vi.fn(() => pending.promise),
+  });
   await prepare(source);
   fireEvent.click(screen.getByRole("button", { name: "Copiloto" }));
-  expect(screen.getByRole("button", { name: "Por que o motor exige atenção?" })).toBeDisabled();
+  expect(screen.getByRole("button", { name: "Por que o motor exige atenção?" })).toBeEnabled();
   fireEvent.change(screen.getByRole("textbox", { name: "Pergunta" }), { target: { value: "Analise o motor" } });
-  expect(screen.getByRole("button", { name: "Perguntar sobre este instante" })).toBeDisabled();
   fireEvent.submit(screen.getByRole("form", { name: "Perguntar ao copiloto da demonstração" }));
-  expect(source.query).not.toHaveBeenCalled();
-  expect(screen.getByRole("button", { name: "Pausar para analisar" })).toBeEnabled();
+  expect(source.query).toHaveBeenCalledTimes(1);
+  expect(source.query.mock.calls[0][1]).toEqual({ question: "Analise o motor", contextRevision: 1, history: [] });
+  expect(source.control).not.toHaveBeenCalled();
 });
 
 it("keeps pump suggestions scoped to measured evidence and shows both sensors when each requires attention", async () => {

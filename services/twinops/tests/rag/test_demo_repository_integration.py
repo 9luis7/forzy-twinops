@@ -8,8 +8,7 @@ from hashlib import sha256
 import pytest
 
 from twinops.demo.repository import DemoRepository, DemoError, encode, stamp
-from .test_demo_service import Repo, service
-from .test_public_service import _Chat
+from .test_demo_service import Repo, service, _Chat, GENERATED_TEXT
 
 
 @pytest.fixture
@@ -82,7 +81,8 @@ async def test_real_repository_allows_advance_during_generation_and_preserves_re
     assert ready["status"] == "ready"
     assert ready["contextRevision"] == 8
     assert ready["sourceRow"] == 150
-    assert "12/08/2026 às 10:01:00 (São Paulo)" in ready["recommendation"]["answer"]["currentState"]
+    assert ready["recommendation"]["answer"]["currentState"] == GENERATED_TEXT
+    assert ready["recommendation"]["generation"]["status"] == "generated"
     assert repo.get_context("run", "secret")["revision"] == 9
     assert await assistant.recommendation("run", "secret", "event-1") == ready
 
@@ -155,7 +155,7 @@ async def test_real_repository_invalid_citation_then_new_valid_generation_preser
         state["public"]["revision"] = 9
         state["public"]["replay"]["sourceRow"] = 151
         repo.save(connection, state)
-    chat.output = _generated()
+    chat.output = _Chat().output
     ready = await assistant.recommendation("run", "secret", "event-1")
     assert ready["status"] == "ready" and ready["attempts"] == 2
     assert ready["retryable"] is False and ready["errorCode"] is None
@@ -163,7 +163,8 @@ async def test_real_repository_invalid_citation_then_new_valid_generation_preser
     manual = [c for c in ready["recommendation"]["citations"] if c["type"] == "manual"]
     assert [c["excerpt"] for c in manual] == [_generated().manual_citations[0].exact_quote]
     assert ready["contextRevision"] == 8 and ready["sourceRow"] == 150
-    assert "12/08/2026 às 10:01:00 (São Paulo)" in ready["recommendation"]["answer"]["currentState"]
+    assert ready["recommendation"]["answer"]["currentState"] == GENERATED_TEXT
+    assert ready["recommendation"]["generation"]["status"] == "generated"
     assert chat.calls[0] == chat.calls[1]
     assert repo.get_context("run", "secret")["revision"] == 9
     assert await assistant.recommendation("run", "secret", "event-1") == ready

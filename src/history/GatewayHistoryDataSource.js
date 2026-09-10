@@ -132,6 +132,9 @@ export function parseHistoricalAssistantResponse(value, expected) {
     if (sensor.assessmentId !== null) text(sensor.assessmentId);
     for (const key of ["windowStart", "windowEnd", "trainedUntil"]) timestamp(sensor[key], true);
     if (sensor.scoreSemantics !== null) text(sensor.scoreSemantics);
+    for (const key of ["anomalyScore", "deteriorationScore", "persistenceSeconds"]) {
+      if (sensor[key] != null && (!Number.isFinite(sensor[key]) || sensor[key] < 0)) fail();
+    }
     if (Boolean(sensor.windowStart) !== Boolean(sensor.windowEnd)
       || (sensor.windowEnd && (Date.parse(sensor.windowEnd) > Date.parse(sensor.observedAt) || Date.parse(sensor.windowStart) > Date.parse(sensor.windowEnd)))) fail();
     if (!Array.isArray(sensor.evidence) || sensor.evidence.length > 50) fail();
@@ -139,6 +142,10 @@ export function parseHistoricalAssistantResponse(value, expected) {
       if (!record(evidence) || !Number.isFinite(evidence.value) || "receivedAt" in evidence || "freshnessMs" in evidence) fail();
       ["id", "feature", "unit"].forEach((key) => text(evidence[key]));
       if (evidence.windowSeconds !== null && (!Number.isFinite(evidence.windowSeconds) || evidence.windowSeconds < 0)) fail();
+      for (const key of ["baseline", "deviation", "robustScale", "normalizedDistance", "anomalyScoreComponent", "positiveScoreComponent"]) {
+        if (evidence[key] != null && !Number.isFinite(evidence[key])) fail();
+      }
+      if (evidence.direction != null && !["up", "down", "stable", "unknown"].includes(evidence.direction)) fail();
     }
   }
   return value;

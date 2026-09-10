@@ -191,6 +191,17 @@ class AssessmentScorer:
                 scoreSemantics="relative_to_historical_baseline_not_failure_probability",
                 episodeId=episode_id,
                 persistenceSeconds=persistence_seconds,
+                scoreCalculation=None if insufficient else {
+                    "robustZAtScore100": self.baseline.config.robust_z_at_score_100,
+                    "positiveDistanceScore": float(score_row.positive_distance_score),
+                    "previousDeteriorationScore": float(score_row.previous_deterioration_score),
+                    "ewmaAlpha": self.baseline.config.ewma_alpha,
+                    "watchThreshold": self.baseline.config.watch_threshold,
+                    "alertThreshold": self.baseline.config.alert_threshold,
+                    "persistenceRequiredSeconds": self.baseline.config.persistence_seconds,
+                    "shortWindowSeconds": self.feature_config.short_window_seconds,
+                    "longWindowSeconds": self.feature_config.long_window_seconds,
+                },
             ),
             componentTag=None,
             recommendation=None,
@@ -225,6 +236,8 @@ class AssessmentScorer:
                 continue
             baseline = self.baseline.centers_[sensor_id][feature]
             deviation = value - baseline
+            scale = self.baseline.scales_[sensor_id][feature]
+            distance = deviation / scale
             direction = "stable" if abs(deviation) <= 1e-12 else ("up" if deviation > 0 else "down")
             evidence.append(
                 AssessmentEvidence(
@@ -235,7 +248,13 @@ class AssessmentScorer:
                     baseline=baseline,
                     deviation=deviation,
                     direction=direction,
-                    windowSeconds=self.feature_config.long_window_seconds,
+                    windowSeconds=(self.feature_config.short_window_seconds
+                                   if feature in ("velocity_ewma", "velocity_slope")
+                                   else self.feature_config.long_window_seconds),
+                    robustScale=scale,
+                    normalizedDistance=distance,
+                    anomalyScoreComponent=float(np.clip(abs(distance) / self.baseline.config.robust_z_at_score_100 * 100, 0, 100)),
+                    positiveScoreComponent=float(np.clip(distance / self.baseline.config.robust_z_at_score_100 * 100, 0, 100)),
                 )
             )
         return evidence

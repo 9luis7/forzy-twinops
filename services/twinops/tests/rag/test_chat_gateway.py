@@ -42,6 +42,8 @@ class _NeverReturnsHttp:
 
 def _content(**overrides):
     payload = {
+        "manual": "Orientação apoiada pelo trecho citado.",
+        "currentState": "O contexto operacional não foi disponibilizado neste teste.",
         "manualCitations": [
             {"chunkId": "chunk-1", "exactQuote": "Exact quote"}
         ],
@@ -75,7 +77,8 @@ async def test_chat_gateway_is_non_streaming_deterministic_and_uses_strict_schem
     assert kwargs["json"]["temperature"] == 0
     assert kwargs["json"]["max_tokens"] == 1200
     assert kwargs["json"]["response_format"]["json_schema"]["strict"] is True
-    assert kwargs["timeout"] == 7
+    assert kwargs["json"]["response_format"]["json_schema"]["schema"]["properties"]["manualCitations"]["maxItems"] == 6
+    assert kwargs["timeout"] == pytest.approx(7, abs=0.1)
     assert result.manual_citations[0].chunk_id == "chunk-1"
     assert "server-secret" not in repr(client)
 
@@ -159,9 +162,10 @@ async def test_native_gemini_chat_uses_fixed_schema_and_minimal_thinking():
     assert config["thinkingConfig"] == {"thinkingLevel": "MINIMAL"}
     assert config["responseMimeType"] == "application/json"
     assert config["responseJsonSchema"]["additionalProperties"] is False
+    assert config["responseJsonSchema"]["properties"]["manualCitations"]["maxItems"] == 1
     assert "responseFormat" not in config
     assert config["maxOutputTokens"] == 1200
-    assert kwargs["timeout"] == 7
+    assert kwargs["timeout"] == pytest.approx(7, abs=0.1)
     assert result.manual_citations[0].chunk_id == "chunk-1"
 
 

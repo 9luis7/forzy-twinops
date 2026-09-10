@@ -11,6 +11,7 @@ from pydantic import (
     StringConstraints,
     model_validator,
 )
+from twinops.contracts.models import ScoreCalculation
 
 
 _RFC3339_UTC_PATTERN = (
@@ -226,6 +227,7 @@ class AssessmentDetailV2(ContractModelV2):
     ] = Field(alias="scoreSemantics")
     episode_id: str | None = Field(alias="episodeId")
     persistence_seconds: float = Field(alias="persistenceSeconds", ge=0)
+    score_calculation: ScoreCalculation | None = Field(default=None, alias="scoreCalculation")
 
 
 class AssessmentEvidenceV2(ContractModelV2):
@@ -237,6 +239,10 @@ class AssessmentEvidenceV2(ContractModelV2):
     deviation: float | None = None
     direction: Literal["up", "down", "stable", "unknown"] | None = None
     window_seconds: float | None = Field(default=None, alias="windowSeconds", ge=0)
+    robust_scale: float | None = Field(default=None, alias="robustScale", gt=0)
+    normalized_distance: float | None = Field(default=None, alias="normalizedDistance")
+    anomaly_score_component: float | None = Field(default=None, alias="anomalyScoreComponent", ge=0, le=100)
+    positive_score_component: float | None = Field(default=None, alias="positiveScoreComponent", ge=0, le=100)
 
 
 class ModelMetadataV2(ContractModelV2):

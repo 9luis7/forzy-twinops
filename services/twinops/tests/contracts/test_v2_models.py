@@ -187,7 +187,7 @@ def test_valid_assessment_object_round_trips_in_snapshot():
     model = DigitalTwinSnapshotV2.model_validate(body)
 
     assert isinstance(model.assessment, AssetConditionAssessmentV2)
-    assert model.model_dump(mode="json", by_alias=True) == body
+    assert model.to_public_dict() == body
 
 
 def test_public_dump_preserves_omitted_and_explicit_null_evidence_fields():

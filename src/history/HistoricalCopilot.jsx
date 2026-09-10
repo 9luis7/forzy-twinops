@@ -18,6 +18,7 @@ function HistoricalEvidence({ response }) {
         <p>Registro {sensor.sourceRow} · {date(sensor.observedAt)} · São Paulo</p>
         <p>Vínculo e posição assumidos no modelo 3D.</p>
         <p>Qualidade dos dados: {({ ok: "sem alertas", degraded: "com ressalvas", insufficient_data: "dados insuficientes", unavailable: "indisponível" })[sensor.qualityStatus] ?? "não informada"}.</p>
+        {Number.isFinite(sensor.anomalyScore) && <p>Score relativo {number(sensor.anomalyScore)}{Number.isFinite(sensor.deteriorationScore) ? ` · deterioração ${number(sensor.deteriorationScore)}` : ""}{Number.isFinite(sensor.persistenceSeconds) ? ` · persistência ${number(sensor.persistenceSeconds)} s` : ""}.</p>}
         {sensor.evidence.length ? <ul>{sensor.evidence.map((item) => <li key={item.id}>{evidenceLabel(item.feature)}: {number(item.value)} {evidenceUnit(item.unit)}{item.windowSeconds === null ? "" : ` · janela de ${number(item.windowSeconds)} s`}</li>)}</ul> : <p>Sem evidências numéricas suficientes neste instante.</p>}
         <p>Janela avaliada: {date(sensor.windowStart)} — {date(sensor.windowEnd)} · São Paulo</p>
         {sensor.trainedUntil && <p>Modelo treinado com dados até {date(sensor.trainedUntil)} · São Paulo</p>}

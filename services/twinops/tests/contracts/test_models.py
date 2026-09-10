@@ -31,7 +31,7 @@ def test_valid_fixture_round_trips_with_schema_aliases(fixture_name, model_type)
 
     model = model_type.model_validate(payload)
 
-    assert model.model_dump(mode="json", by_alias=True) == payload
+    assert model.model_dump(mode="json", by_alias=True, exclude_unset=True) == payload
 
 
 def test_numeric_string_is_rejected():
@@ -124,7 +124,7 @@ def test_assessment_evidence_is_closed_typed_and_round_trips():
 
     model = AssetConditionAssessment.model_validate(payload)
 
-    assert model.model_dump(mode="json", by_alias=True) == payload
+    assert model.model_dump(mode="json", by_alias=True, exclude_unset=True) == payload
     for mutation in (
         lambda item: item.update(extra=True),
         lambda item: item.update(feature=""),

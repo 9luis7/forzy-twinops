@@ -1,3 +1,5 @@
+import { completedAnswer } from "../components/assistant/conversationHistory.js";
+
 const SESSION_KEY = "twinops.demo.session.v1";
 const commandId = () => globalThis.crypto.randomUUID();
 const terminalEvent = (event) => ["ready", "degraded"].includes(event?.status);
@@ -174,7 +176,9 @@ export class ReplayController {
     if (!this.hidden) this.recommendNext();
   }
   async recommendNext() {
-    if (this.rag || !this.session || !this.context) return;
+    // Human input takes priority; at most one automatic and one human request
+    // may already be in flight. Neither blocks telemetry transport.
+    if (this.rag || this.manual || !this.session || !this.context) return;
     const event = this.state.events.find((e) => (e.status === "pending" || e.status === "processing" || e.retryable)
       && (this.retryAt.get(e.eventId) ?? 0) <= Date.now());
     if (!event) return;
@@ -213,9 +217,16 @@ export class ReplayController {
     const controller = new AbortController(); this.manual = controller;
     this.publish({ manualPending: true, assistantError: null });
     try {
-      const answer = await this.source.query(this.session, { question, contextRevision: revision }, { signal: controller.signal });
+      const history = this.state.answers.slice(-4).filter((turn) => turn.response?.answer)
+        .map((turn) => ({ question: turn.question, answer: completedAnswer(turn.response, `Replay histórico em ${turn.observedAt}`) }));
+      const conversationId = this.state.answers.at(-1)?.response?.conversationId;
+      const answer = await this.source.query(this.session, {
+        question, contextRevision: revision, history,
+        ...(conversationId ? { conversationId } : {}),
+      }, { signal: controller.signal });
       if (epoch !== this.epoch || generation !== this.context?.replay.generation) return;
-      if (answer.contextRevision !== revision) throw new Error("Resposta rejeitada: revisão diferente da pergunta.");
+      // The backend consolidates a fresh snapshot during preparation. Its
+      // revision can differ from the browser's while the replay keeps moving.
       this.publish({ answers: [...this.state.answers, { ...answer, question }] });
     } catch (error) {
       if (epoch === this.epoch && generation === this.context?.replay.generation && error.name !== "AbortError") {

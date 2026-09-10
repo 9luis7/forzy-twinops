@@ -1,20 +1,17 @@
-"""One manual query bound to an immutable, server-selected historical window.
+"""Generative analysis bound to a server-selected historical cutoff.
 
-The existing RAG validator sees an unavailable *live* context. Historical
-assessment evidence is attached separately, without manufacturing receipt times,
-live telemetry citations, replay sessions or current operational availability.
+Both sensors and bounded prior readings feed the shared generation service.
+Historical evidence remains distinct from live telemetry and receipt times.
 """
 
 import asyncio
 from copy import deepcopy
-import re
-from time import perf_counter
-from uuid import uuid4
+from dataclasses import replace
 
 from twinops.rag.demo_service import DEMO_TOTAL_SECONDS, DemoRagAssistantService
-from twinops.rag.operational import TrustedOperationalContext
-from twinops.rag.public_models import AssistantQueryRequest, AssistantQueryResponse
-from twinops.rag.public_service import DEFAULT_LIMITATIONS, _concise_condition, _sao_paulo_time
+from twinops.rag.operational import TrustedOperationalContext, build_analysis_context
+from twinops.rag.public_models import AssistantQueryRequest
+from twinops.rag.public_service import _concise_condition, _sao_paulo_time
 
 from .assistant_models import HistoricalQueryResponse, HistoricalSensorEvidence
 from .service import HistoryError, HistoryService, selection_time
@@ -31,39 +28,6 @@ HISTORICAL_LIMITATIONS = (
     "probabilidades de falha nem prova de antecipação fora da amostra. "
     "A data de treinamento do baseline permanece indicada nas evidências.",
 )
-_PUMP_REFERENCE = re.compile(r"\b(?:bombas?|pumps?|s\s*2|sensor\s*2)\b", re.IGNORECASE)
-_MOTOR_REFERENCE = re.compile(r"\b(?:motor(?:es|s)?|s\s*1|sensor\s*1)\b", re.IGNORECASE)
-_ASSEMBLY_REFERENCE = re.compile(
-    r"\b(?:motor\s*[-–—]\s*bomba|conjunto\s+motor\s+bomba|"
-    r"motor\s*[-–—]\s*pump|pump\s*[-–—]\s*motor)\b", re.IGNORECASE,
-)
-_PUMP_MANUAL_UNAVAILABLE = "Não há documentação da bomba para orientar procedimentos em S2."
-
-
-def _component_scope(question):
-    # Naming the assembly does not make its pump the requested component.
-    # A remaining pump/S2 reference still blocks mixed-component procedures.
-    scoped = _ASSEMBLY_REFERENCE.sub(" conjunto ", question)
-    if _PUMP_REFERENCE.search(scoped):
-        return "pump"
-    if _MOTOR_REFERENCE.search(scoped):
-        return "motor"
-    if _ASSEMBLY_REFERENCE.search(question):
-        return "pump"  # The undifferentiated assembly exceeds the motor corpus.
-    return None
-
-
-def _requires_pump_manual(request):
-    current_scope = _component_scope(request.question)
-    if current_scope is not None:
-        return current_scope == "pump"
-    if not request.history:
-        return False
-    previous = request.history[-1]
-    return (_component_scope(previous.question) == "pump"
-            or _PUMP_MANUAL_UNAVAILABLE in previous.answer)
-
-
 def _historical_evidence(context):
     if context.get("schemaVersion") != "historical-1.0" or context.get("mode") != "historical":
         raise ValueError("invalid historical context")
@@ -94,7 +58,12 @@ def _historical_evidence(context):
             windowStart=start, windowEnd=end,
             trainedUntil=assessment.get("model", {}).get("trainedUntil"),
             scoreSemantics=assessment.get("assessment", {}).get("scoreSemantics"),
-            evidence=[{key: item[key] for key in ("id", "feature", "value", "unit", "windowSeconds") if key in item}
+            anomalyScore=assessment.get("assessment", {}).get("anomalyScore"),
+            deteriorationScore=assessment.get("assessment", {}).get("deteriorationScore"),
+            persistenceSeconds=assessment.get("assessment", {}).get("persistenceSeconds"),
+            evidence=[{key: item[key] for key in ("id", "feature", "value", "unit", "windowSeconds",
+                      "baseline", "deviation", "direction", "robustScale", "normalizedDistance",
+                      "anomalyScoreComponent", "positiveScoreComponent") if key in item}
                       for item in assessment.get("evidence", [])],
         ))
     return projected
@@ -115,7 +84,6 @@ class HistoricalAssistantService:
         self.history, self.assistant = history, assistant
 
     async def query(self, dataset_id, request):
-        started = perf_counter()
         async with asyncio.timeout(DEMO_TOTAL_SECONDS):
             # Resolve and detach everything before the first provider await.
             # The browser supplies only selection coordinates, never measurements.
@@ -129,30 +97,29 @@ class HistoricalAssistantService:
                     or context["selection"]["endRow"] != selection.end_row):
                 raise HistoryError(409, "historical_context_changed")
             evidence = _historical_evidence(context)
-            if _requires_pump_manual(request):
-                # Ambiguous follow-ups inherit the immediately preceding scope;
-                # an explicit motor question starts a supported topic again.
-                response = AssistantQueryResponse(
-                    answer={"manual": "O manual disponível cobre somente o motor WEG W22. "
-                            + _PUMP_MANUAL_UNAVAILABLE,
-                            "currentState": _current_state(context, evidence, include_evidence=False)},
-                    groundingStatus="out_of_scope", citations=[], corpus=None,
-                    models={"embedding": "unavailable", "generation": self.assistant.chat.model},
-                    fallbackUsed=False, limitations=list(DEFAULT_LIMITATIONS),
-                    conversationId=request.conversation_id or uuid4(), traceId=uuid4(),
-                    latencyMs=(perf_counter() - started) * 1000,
+            # Expand only backwards within the same selected dataset/range. The
+            # immutable selected end and response revision remain unchanged.
+            if selection.limit < 300:
+                expanded = await asyncio.to_thread(
+                    self.history.context, dataset_id, from_time=selection.from_time,
+                    to_time=selection.to_time, end_row=selection.end_row, limit=300,
                 )
-            else:
-                response = await self.assistant.query(
-                    context["assetId"], AssistantQueryRequest(
-                        question=request.question, conversationId=request.conversation_id,
-                        history=request.history,
-                    ), operational=TrustedOperationalContext.unavailable(operational_state="historical"),
-                )
-            body = response.model_dump(mode="json", by_alias=True)
-            body["answer"]["currentState"] = _current_state(
-                context, evidence, include_evidence=response.grounding_status != "out_of_scope",
+                context["history"] = deepcopy(expanded["history"])
+            operational = replace(
+                TrustedOperationalContext.unavailable(operational_state="historical"),
+                analysis_context=build_analysis_context(context),
             )
+            response = await self.assistant.query(
+                context["assetId"], AssistantQueryRequest(
+                    question=request.question, conversationId=request.conversation_id,
+                    history=request.history,
+                ), operational=operational,
+            )
+            body = response.model_dump(mode="json", by_alias=True)
+            if getattr(getattr(response, "generation", None), "status", None) != "generated":
+                body["answer"]["currentState"] = _current_state(
+                    context, evidence, include_evidence=response.grounding_status != "out_of_scope",
+                )
             body["citations"] = [citation for citation in body["citations"] if citation["type"] == "manual"]
             body["limitations"] = list(dict.fromkeys(body["limitations"] + list(HISTORICAL_LIMITATIONS)))
             # Preserve grounded/degraded/refusal outcomes from the shared service.

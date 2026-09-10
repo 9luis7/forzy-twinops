@@ -169,7 +169,7 @@ describe("TechnicalAssistantPanel grounded answer", () => {
     expect(dataSource.query.mock.calls[0][1].question).toBe("Quais evidências justificam a atenção do motor S1 neste instante?");
     expect(chip).toBeDisabled();
     await act(async () => resolve(groundedResponse()));
-    expect(screen.getByText("IA + manual · fontes validadas")).toBeVisible();
+    expect(screen.getByText("Resposta anterior · geração não confirmada")).toBeVisible();
     expect(screen.getByRole("button", { name: "Verificar lubrificação" })).toBeEnabled();
     expect(dataSource.query).toHaveBeenCalledTimes(1);
   });
@@ -198,8 +198,10 @@ describe("TechnicalAssistantPanel grounded answer", () => {
     render(<TechnicalAssistantPanel assetId="forzy-motor-01" enabled dataSource={dataSource} />);
     fireEvent.click(screen.getByRole("button", { name: "Entender os dados do motor" }));
     expect(await screen.findByText(/A IA não entregou uma orientação validada/)).toBeVisible();
+    expect(screen.getByRole("textbox")).not.toHaveValue("");
+    expect(screen.getByRole("button", { name: "Consultar manual e estado" })).toBeEnabled();
     expect(screen.getByText(response.answer.manual)).not.toBeVisible();
-    expect(screen.queryByText("IA + manual · fontes validadas")).not.toBeInTheDocument();
+    expect(screen.queryByText("Resposta anterior · geração não confirmada")).not.toBeInTheDocument();
     fireEvent.click(screen.getByText("Fontes e evidências"));
     fireEvent.click(screen.getByText("Texto de contingência"));
     expect(screen.getByText(response.answer.manual)).toBeVisible();
@@ -223,7 +225,7 @@ describe("TechnicalAssistantPanel grounded answer", () => {
 
     expect(await screen.findByText(groundedResponse().answer.manual)).toBeInTheDocument();
     const answer = screen.getByTestId("assistant-answer");
-    expect(within(answer).getByRole("heading", { name: "Segundo o manual" })).toBeInTheDocument();
+    expect(within(answer).getByRole("heading", { name: "Referências documentais" })).toBeInTheDocument();
     expect(within(answer).getByRole("heading", { name: "Estado atual" })).toBeInTheDocument();
     expect(within(answer).getByText(groundedResponse().answer.currentState)).toBeInTheDocument();
     expect(answer).toHaveFocus();
@@ -499,7 +501,7 @@ describe("TechnicalAssistantPanel explicit safety states", () => {
     fireEvent.submit(form);
 
     expect(await screen.findByText(new RegExp(expected, "i"))).toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: "Segundo o manual" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Referências documentais" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Estado atual" })).toBeInTheDocument();
   });
 

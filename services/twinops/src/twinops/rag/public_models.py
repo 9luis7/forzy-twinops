@@ -108,6 +108,16 @@ class ModelAnchors(_PublicModel):
     generation: str = Field(min_length=1)
 
 
+class GenerationMetadata(_PublicModel):
+    """Server-attested invocation; a configured model is not proof of a call."""
+
+    status: Literal["generated", "fallback", "not_called"] = "not_called"
+    model: str | None = None
+    invocation_id: str | None = Field(default=None, alias="invocationId")
+    latency_ms: float | None = Field(default=None, alias="latencyMs", ge=0)
+    tool_calls: int = Field(default=0, alias="toolCalls", ge=0, le=2)
+
+
 class AssistantQueryResponse(_PublicModel):
     answer: AssistantAnswer
     grounding_status: Literal[
@@ -120,6 +130,7 @@ class AssistantQueryResponse(_PublicModel):
     citations: list[AssistantCitation]
     corpus: CorpusAnchor | None
     models: ModelAnchors
+    generation: GenerationMetadata = Field(default_factory=GenerationMetadata)
     fallback_used: bool = Field(alias="fallbackUsed")
     limitations: list[str]
     human_validation_required: Literal[True] = Field(

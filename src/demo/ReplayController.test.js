@@ -1,6 +1,6 @@
 import { afterEach, expect, it, vi } from "vitest";
 import { ReplayController } from "./ReplayController.js";
-import { context, dataset, deferred, event } from "./testFixtures.js";
+import { context, dataset, deferred, event, time } from "./testFixtures.js";
 
 const controllers = [];
 afterEach(() => { controllers.forEach((c) => c.dispose()); controllers.length = 0; vi.useRealTimers(); });
@@ -185,6 +185,38 @@ it("anchors a delayed manual response to its original revision", async () => {
   const pending = deferred(); source.query.mockReturnValue(pending.promise); const task = c.query("Por quê?");
   c.accept(context(3), c.epoch); pending.resolve({ contextRevision: 0, sourceRow: 141, response: {} }); await task;
   expect(c.state.answers[0].contextRevision).toBe(0); expect(c.context.revision).toBe(3);
+});
+it("accepts the fresh server snapshot and supplies bounded conversational memory on every question", async () => {
+  const { c, source } = setup(); await c.create(dataset.datasetId);
+  const response = { answer: { manual: "Documento consultado.", currentState: "S2: score relativo 99." }, conversationId: "00000000-0000-4000-8000-000000000001" };
+  source.query.mockResolvedValue({ contextRevision: 2, sourceRow: 142, observedAt: time, response });
+  await c.query("E o S2?");
+  expect(c.state.answers[0].contextRevision).toBe(2);
+  expect(c.state.assistantError).toBeNull();
+  for (let index = 0; index < 5; index += 1) {
+    c.accept(context(index + 3), c.epoch);
+    await c.query(index === 4 ? "E o S1?" : `Pergunta ${index}`);
+  }
+  const input = source.query.mock.calls.at(-1)[1];
+  expect(input).toMatchObject({ question: "E o S1?", contextRevision: 7, conversationId: response.conversationId });
+  expect(input.history).toHaveLength(4);
+  expect(input.history[0].question).toBe("Pergunta 0");
+  expect(input.history[0].answer).toContain("S2: score relativo 99.");
+});
+it("defers automatic analysis while a human query runs and continues replay transport", async () => {
+  const { c, source } = setup(); await c.create(dataset.datasetId);
+  const running = context(1, { events: [event()], replay: { ...context().replay, state: "running" } });
+  c.accept(running, c.epoch);
+  source.advance.mockResolvedValue({ ...running, revision: 2 });
+  const pending = deferred(); source.query.mockReturnValue(pending.promise);
+  const query = c.query("O que mudou?");
+  c.tick(); await c.inflight;
+  expect(source.advance).toHaveBeenCalledTimes(1);
+  expect(source.recommend).not.toHaveBeenCalled();
+  expect(source.query.mock.calls[0][2].signal.aborted).toBe(false);
+  pending.resolve({ contextRevision: 1, sourceRow: 141, response: {} }); await query;
+  await c.recommendNext();
+  expect(source.recommend).toHaveBeenCalledTimes(1);
 });
 it("accepts a terminal server event over an older local processing result", async () => {
   const { c, source } = setup(); await c.create(dataset.datasetId); c.accept(context(1, { events: [event()] }), c.epoch);

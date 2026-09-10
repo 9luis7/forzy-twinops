@@ -21,6 +21,7 @@ from twinops.rag.public_models import (
     AssistantQueryRequest,
     AssistantQueryResponse,
     CorpusAnchor,
+    GenerationMetadata,
     ManualCitation,
     ModelAnchors,
     TelemetryCitation,
@@ -30,7 +31,7 @@ from twinops.rag.telemetry import log_rag_stage
 
 
 DEFAULT_LIMITATIONS = (
-    "O assistente não diagnostica causa raiz nem estima probabilidade de falha ou RUL.",
+    "Hipóteses técnicas exigem verificação; não são diagnóstico confirmado, probabilidade de falha ou RUL.",
     "Procedimentos e intervenções exigem validação de uma pessoa qualificada.",
 )
 OUT_OF_SCOPE_MESSAGES = {
@@ -73,10 +74,24 @@ class RagAssistantService:
         self.query_timeout_seconds = query_timeout_seconds
 
     def is_healthy(self, asset_id: str) -> bool:
+        # Documentary coverage is independent from operational explanations.
+        return bool(self.chat.model)
+
+    async def _retrieve_optional(self, asset_id, question, trace_id):
+        """Reserve the bulk of the request for generation, even without a manual."""
+        if self.retriever is None:
+            return None
         try:
-            return bool(self.retriever.healthy(asset_id))
+            async with asyncio.timeout(min(3.0, self.query_timeout_seconds * 0.8)):
+                return await self.retriever.retrieve(
+                    asset_id, question, trace_id=str(trace_id),
+                )
+        except asyncio.CancelledError:
+            raise
         except Exception:
-            return False
+            log_rag_stage("corpus_lookup", outcome="unavailable",
+                          asset_id=asset_id, trace_id=str(trace_id))
+            return None
 
     async def query(
         self,
@@ -108,11 +123,7 @@ class RagAssistantService:
             return response
         try:
             async with asyncio.timeout(self.query_timeout_seconds):
-                retrieval = await self.retriever.retrieve(
-                    asset_id,
-                    request.question,
-                    trace_id=str(trace_id),
-                )
+                retrieval = await self._retrieve_optional(asset_id, request.question, trace_id)
                 response = await self._answer_from_retrieval(
                     request,
                     retrieval=retrieval,
@@ -161,6 +172,7 @@ class RagAssistantService:
                 conversation_id=conversation_id,
                 trace_id=trace_id,
                 started=started,
+                generation=getattr(error, "generation_metadata", None),
             )
             self._log_total(
                 asset_id,
@@ -214,19 +226,10 @@ class RagAssistantService:
                         trace_id=trace_id,
                     )
                 )
-                retrieval_task = None
+                retrieval_task = asyncio.create_task(
+                    self._retrieve_optional(asset_id, request.question, trace_id)
+                )
                 try:
-                    corpus = await self.retriever.prepare(
-                        asset_id, trace_id=str(trace_id)
-                    )
-                    retrieval_task = asyncio.create_task(
-                        self.retriever.retrieve(
-                            asset_id,
-                            request.question,
-                            corpus=corpus,
-                            trace_id=str(trace_id),
-                        )
-                    )
                     operational, retrieval = await asyncio.gather(
                         operational_task,
                         retrieval_task,
@@ -286,6 +289,7 @@ class RagAssistantService:
                 conversation_id=conversation_id,
                 trace_id=trace_id,
                 started=started_at,
+                generation=getattr(error, "generation_metadata", None),
             )
             self._log_total(
                 asset_id,
@@ -306,14 +310,11 @@ class RagAssistantService:
         trace_id,
         started,
     ):
-        if not retrieval.sufficient:
-            return self._manual_insufficient(
-                retrieval,
-                operational,
-                conversation_id=conversation_id,
-                trace_id=trace_id,
-                started=started,
-            )
+        # Absence of a relevant manual restricts procedures, not analysis of ML.
+        # Only sufficiently relevant chunks may support documentary claims.
+        if retrieval is not None and not retrieval.sufficient:
+            retrieval = None
+        corpus_id = None if retrieval is None else retrieval.corpus.corpus_id
         prompt_started = perf_counter()
         try:
             messages = build_gateway_messages(
@@ -322,13 +323,14 @@ class RagAssistantService:
                     (turn.question, turn.answer) for turn in request.history
                 ),
                 retrieval=retrieval,
+                operational=operational,
             )
         except Exception:
             log_rag_stage(
                 "prompt_assembly",
                 outcome="invalid_response",
                 duration_ms=(perf_counter() - prompt_started) * 1000,
-                corpus_id=retrieval.corpus.corpus_id,
+                corpus_id=corpus_id,
                 model=self.chat.model,
                 trace_id=str(trace_id),
             )
@@ -337,7 +339,7 @@ class RagAssistantService:
             "prompt_assembly",
             outcome="ok",
             duration_ms=(perf_counter() - prompt_started) * 1000,
-            corpus_id=retrieval.corpus.corpus_id,
+            corpus_id=corpus_id,
             model=self.chat.model,
             count=len(messages),
             trace_id=str(trace_id),
@@ -351,7 +353,7 @@ class RagAssistantService:
             outcome="ok",
             duration_ms=0.0,
             remaining_budget_ms=remaining_budget_ms,
-            corpus_id=retrieval.corpus.corpus_id,
+            corpus_id=corpus_id,
             model=self.chat.model,
             trace_id=str(trace_id),
         )
@@ -363,7 +365,7 @@ class RagAssistantService:
                 "generation",
                 outcome="cancelled",
                 duration_ms=(perf_counter() - generation_started) * 1000,
-                corpus_id=retrieval.corpus.corpus_id,
+                corpus_id=corpus_id,
                 model=self.chat.model,
                 trace_id=str(trace_id),
             )
@@ -373,7 +375,7 @@ class RagAssistantService:
                 "generation",
                 outcome=error.reason,
                 duration_ms=(perf_counter() - generation_started) * 1000,
-                corpus_id=retrieval.corpus.corpus_id,
+                corpus_id=corpus_id,
                 model=self.chat.model,
                 http_status=error.status_code,
                 trace_id=str(trace_id),
@@ -384,7 +386,7 @@ class RagAssistantService:
                 "generation",
                 outcome="invalid_response",
                 duration_ms=(perf_counter() - generation_started) * 1000,
-                corpus_id=retrieval.corpus.corpus_id,
+                corpus_id=corpus_id,
                 model=self.chat.model,
                 trace_id=str(trace_id),
             )
@@ -393,7 +395,7 @@ class RagAssistantService:
             "generation",
             outcome="ok",
             duration_ms=(perf_counter() - generation_started) * 1000,
-            corpus_id=retrieval.corpus.corpus_id,
+            corpus_id=corpus_id,
             model=self.chat.model,
             count=len(generated.manual_citations),
             trace_id=str(trace_id),
@@ -404,12 +406,13 @@ class RagAssistantService:
                 generated,
                 retrieval=retrieval,
             )
-        except GeneratedOutputError:
+        except GeneratedOutputError as error:
+            error.generation_metadata = {**getattr(generated, "generation_metadata", {}), "status": "fallback"}
             log_rag_stage(
                 "validation",
                 outcome="invalid_citation",
                 duration_ms=(perf_counter() - validation_started) * 1000,
-                corpus_id=retrieval.corpus.corpus_id,
+                corpus_id=corpus_id,
                 model=self.chat.model,
                 trace_id=str(trace_id),
             )
@@ -419,7 +422,7 @@ class RagAssistantService:
                 "validation",
                 outcome="invalid_response",
                 duration_ms=(perf_counter() - validation_started) * 1000,
-                corpus_id=retrieval.corpus.corpus_id,
+                corpus_id=corpus_id,
                 model=self.chat.model,
                 trace_id=str(trace_id),
             )
@@ -428,7 +431,7 @@ class RagAssistantService:
             "validation",
             outcome="ok",
             duration_ms=(perf_counter() - validation_started) * 1000,
-            corpus_id=retrieval.corpus.corpus_id,
+            corpus_id=corpus_id,
             model=self.chat.model,
             count=len(generated.manual_citations),
             trace_id=str(trace_id),
@@ -478,7 +481,7 @@ class RagAssistantService:
         started,
     ):
         hit_by_id = {
-            hit.candidate.chunk.chunk_id: hit for hit in retrieval.hits
+            hit.candidate.chunk.chunk_id: hit for hit in (() if retrieval is None else retrieval.hits)
         }
         citations = [
             _manual_citation(
@@ -490,17 +493,20 @@ class RagAssistantService:
             _telemetry_citation(operational, item)
             for item in operational.evidence
         )
-        current_state = _deterministic_current_state(operational)
+        current_state = generated.current_state or _deterministic_current_state(operational)
         quotes = list(
             dict.fromkeys(item.exact_quote for item in generated.manual_citations)
         )
+        sensors = (operational.analysis_context or {}).get("sensors", {})
+        has_observations = operational.available or any(
+            sensor.get("latest") or sensor.get("assessment") for sensor in sensors.values()
+        )
         return _response(
-            manual="\n".join(
-                f"- {quote}" for quote in quotes
-            ),
+            manual=(generated.manual or "\n".join(f"- {quote}" for quote in quotes))
+            if quotes else "Não há fonte documental pertinente disponível para esta análise.",
             current_state=current_state,
             grounding_status=(
-                "grounded" if operational.available else "operational_unavailable"
+                "grounded" if has_observations else "operational_unavailable"
             ),
             citations=citations,
             retrieval=retrieval,
@@ -510,6 +516,7 @@ class RagAssistantService:
             conversation_id=conversation_id,
             trace_id=trace_id,
             started=started,
+            generation=getattr(generated, "generation_metadata", None),
         )
 
     def _out_of_scope(
@@ -563,6 +570,7 @@ class RagAssistantService:
         conversation_id,
         trace_id,
         started,
+        generation=None,
     ):
         citations = []
         if retrieval is not None and retrieval.hits:
@@ -592,15 +600,16 @@ class RagAssistantService:
         return _response(
             manual=manual,
             current_state=_deterministic_current_state(operational),
-            grounding_status=grounding_status,
+            grounding_status="degraded_fallback",
             citations=citations,
             retrieval=retrieval,
             generation_model=self.chat.model,
-            fallback_used=grounding_status == "degraded_fallback",
+            fallback_used=True,
             limitations=DEFAULT_LIMITATIONS,
             conversation_id=conversation_id,
             trace_id=trace_id,
             started=started,
+            generation={**(generation or {}), "status": "fallback"},
         )
 
 
@@ -707,6 +716,7 @@ def _response(
     conversation_id,
     trace_id,
     started,
+    generation=None,
 ) -> AssistantQueryResponse:
     corpus = None if retrieval is None else retrieval.corpus
     embedding_model = "unavailable" if corpus is None else corpus.embedding_model
@@ -730,6 +740,7 @@ def _response(
             embedding=embedding_model,
             generation=generation_model,
         ),
+        generation=GenerationMetadata.model_validate(generation or {}),
         fallbackUsed=fallback_used,
         limitations=list(dict.fromkeys(limitations)),
         humanValidationRequired=True,
@@ -863,8 +874,8 @@ def _refusal_for(question: str) -> str | None:
         return "prompt_exfiltration"
     if _is_policy_limited_state_request(normalized, token_set):
         return None
-    if _is_root_cause_request(normalized, token_set):
-        return "root_cause"
+    # Technical hypotheses are answered by the model with explicit uncertainty;
+    # causal language alone is no longer a reason to suppress generation.
     if _is_probability_request(token_set):
         return "probability"
     if _is_remaining_life_request(normalized, token_set):

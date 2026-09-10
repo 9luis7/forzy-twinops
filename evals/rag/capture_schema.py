@@ -138,6 +138,9 @@ class OperationalSnapshotCapture(_CaptureModel):
 
 
 class ScoreCapture(_CaptureModel):
+    capture_protocol: Literal["legacy-extractive-v1", "generative-service-fixture-v2"] = Field(
+        default="legacy-extractive-v1", alias="captureProtocol",
+    )
     case_id: str = Field(alias="caseId", min_length=1)
     question: str = Field(min_length=1, max_length=500)
     flow_stage: Literal["retrieval", "preflight_refusal"] = Field(alias="flowStage")

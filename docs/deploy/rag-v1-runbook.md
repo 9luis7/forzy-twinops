@@ -10,8 +10,9 @@ do deployment correspondente.
 
 - O chat público lê somente o corpus publicado e o assessment calculado no
   backend. O navegador nunca é autoridade para telemetria ou diagnóstico.
-- O assistente não diagnostica causa raiz, não estima probabilidade de falha ou
-  RUL e não executa manutenção. O alerta preditivo continua independente.
+- O assistente explica evidências e pode apresentar hipóteses técnicas identificadas
+  como hipóteses. Não confirma causa raiz nem estima probabilidade de falha ou RUL,
+  e não executa manutenção. O alerta preditivo continua independente.
 - PDF, pergunta, chunks, credenciais e DSN não devem aparecer em logs. O PDF
   original não é persistido.
 - `RAG_ADMIN_ENABLED=true` e `VITE_RAG_ADMIN_ENABLED=true` são exclusivos de
@@ -64,9 +65,13 @@ Modelos Gemini ancorados nesta versão:
 - [gemini-embedding-2](https://ai.google.dev/gemini-api/docs/embeddings)
 - [gemini-3.5-flash-lite](https://ai.google.dev/gemini-api/docs/models/gemini-3.5-flash-lite)
 
-O modelo generativo usa `reasoning_effort=minimal` para reduzir a latência da
-seleção estruturada e extrativa. O backend continua validando toda referência
-antes de exibir a resposta.
+O Gemini usa `thinkingLevel=MINIMAL` e gera a explicação operacional a partir do
+snapshot do backend. A consulta documental é opcional: sua ausência não bloqueia
+a explicação dos sensores. Referências exigem citações literais validadas; texto
+documental sem citação é substituído por uma indicação de ausência de fonte.
+O campo `generation` registra a chamada realizada, o modelo retornado e a latência.
+Configuração de modelo sozinha não comprova geração. Veja o
+[fluxo do copiloto generativo](generative-copilot.md).
 
 No free tier, entradas e saídas podem ser usadas pelo Google para melhorar seus
 produtos. Para esta demo, trate como permitido somente o manual público, as

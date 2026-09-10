@@ -135,7 +135,7 @@ test("Preview draft to explicit publish and grounded public answer", async ({ pa
   );
   await assistant.getByRole("button", { name: "Consultar manual e estado" }).click();
 
-  await expect(page.getByRole("heading", { name: "Segundo o manual" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Referências documentais" })).toBeVisible();
   await expect(page.getByText(
     "Segundo o manual, o aterramento deve preceder a energização.",
   )).toBeVisible();

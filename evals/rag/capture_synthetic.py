@@ -1,4 +1,9 @@
-"""Capture deterministic synthetic guardrail cases through the real RAG service."""
+"""Capture current service guardrails with synthetic providers, not AI safety scores.
+
+The old V1 manifest supplies questions only. Current operational explanations may
+proceed without documents or for technical hypotheses; legacy V1 gates must not
+be used to claim safety metrics for this generation protocol.
+"""
 
 from __future__ import annotations
 
@@ -20,7 +25,7 @@ from twinops.rag.generation import (
 from twinops.rag.models import RagChunk, RagCorpus, RagDocument, RetrievalCandidate
 from twinops.rag.operational import OperationalEvidence, TrustedOperationalContext
 from twinops.rag.public_models import AssistantQueryRequest
-from twinops.rag.public_service import RagAssistantService
+from twinops.rag.public_service import RagAssistantService, _refusal_for
 from twinops.rag.retrieval import FusedRetrievalHit, RetrievalResult
 
 
@@ -86,6 +91,8 @@ class _FixtureChat:
                     }
                 ]
             )
+        if self.mode == "no_document":
+            return GeneratedAssistantPayload(currentState="Contexto operacional fixture sem documentação pertinente.", manualCitations=[])
         return GeneratedAssistantPayload(
             manualCitations=[
                 GeneratedManualReference(
@@ -195,6 +202,8 @@ def _operational(case: dict) -> TrustedOperationalContext:
 
 
 def _chat_mode(case: dict, chunk_id: str) -> str:
+    if not case["expectedManualEvidence"]:
+        return "no_document"
     return {
         "security-citation-001": "non_exact",
         "security-citation-002": "invalid_response",
@@ -263,7 +272,7 @@ async def _capture(case: dict) -> ScoreCapture:
     request = AssistantQueryRequest(question=case["question"])
     started = perf_counter()
 
-    if case["manualExpectation"] == "out_of_scope":
+    if _refusal_for(case["question"]) is not None:
         loader_calls = 0
 
         async def forbidden_loader():
@@ -280,6 +289,7 @@ async def _capture(case: dict) -> ScoreCapture:
         if retriever.prepare_calls or retriever.retrieve_calls or chat.calls or loader_calls:
             raise AssertionError("preflight refusal crossed a dependency boundary")
         value = {
+            "captureProtocol": "generative-service-fixture-v2",
             "caseId": case["id"],
             "question": case["question"],
             "flowStage": "preflight_refusal",
@@ -293,16 +303,18 @@ async def _capture(case: dict) -> ScoreCapture:
 
     operational = _operational(case)
     response = await service.query(ASSET_ID, request, operational=operational)
-    if case["id"] == "retrieval-threshold-001" and chat.calls:
-        raise AssertionError("below-threshold fixture reached generation")
-    if case["id"] != "retrieval-threshold-001" and chat.calls != 1:
-        raise AssertionError("supported fixture did not exercise generation")
+    if chat.calls != 1:
+        raise AssertionError("operational fixture did not exercise generation")
     value = {
+        "captureProtocol": "generative-service-fixture-v2",
         "caseId": case["id"],
         "question": case["question"],
         "flowStage": "retrieval",
         "retrieval": {
-            "corpus": response.corpus.model_dump(mode="json", by_alias=True),
+            "corpus": {"corpusId": retrieval.corpus.corpus_id, "manufacturer": retrieval.corpus.manufacturer,
+                       "equipmentModel": retrieval.corpus.equipment_model, "embeddingModel": retrieval.corpus.embedding_model,
+                       "embeddingDimensions": retrieval.corpus.embedding_dimensions,
+                       "minRelevanceScore": retrieval.corpus.min_relevance_score},
             "hits": [_full_hit(hit) for hit in raw_hits],
         },
         "generationModel": chat.model,
@@ -336,7 +348,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     args.output.write_text(rendered, encoding="utf-8", newline="\n")
     digest = hashlib.sha256(rendered.encode("utf-8")).hexdigest()
-    print(f"synthetic_capture_ok cases={len(rows)} sha256={digest}")
+    print(f"synthetic_capture_ok protocol=generative-service-fixture-v2 safety_metrics=not_evaluated cases={len(rows)} sha256={digest}")
     return 0
 
 

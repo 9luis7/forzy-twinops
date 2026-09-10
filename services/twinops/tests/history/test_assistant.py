@@ -18,7 +18,8 @@ from twinops.rag.retrieval import CorpusUnavailableError
 from services.twinops.tests.demo.test_demo_replay import normalized_pairs
 from services.twinops.tests.demo.test_runtime_isolation import runtime, DEMO_URL, LIVE_URL
 from services.twinops.tests.history.test_history import setup
-from services.twinops.tests.rag.test_public_service import _Chat, _Retriever, _retrieval
+from services.twinops.tests.rag.test_public_service import _Retriever, _retrieval, _generated
+from services.twinops.tests.rag.test_demo_service import _Chat, GENERATED_TEXT
 
 
 QUERY = '/api/history/v1/datasets/history-test/assistant/query'
@@ -87,19 +88,17 @@ def test_query_binds_actual_window_two_sensors_without_live_arrival_or_writes():
         assert item['trainedUntil'] == '2026-08-01T00:00:00Z'
         assert 'receivedAt' not in item and 'freshnessMs' not in item
     response = body['response']
-    assert response['groundingStatus'] == 'operational_unavailable'
+    assert response['groundingStatus'] == 'grounded'
     assert not response['fallbackUsed']
     assert response['citations'] and all(citation['type'] == 'manual' for citation in response['citations'])
-    assert 'Histórico de 18/05/2026 às 21:03:18 (São Paulo)' in response['answer']['currentState']
-    assert 'S1 (motor): atenção' in response['answer']['currentState']
-    assert 'S2 (bomba): sem desvio identificado' in response['answer']['currentState']
-    assert 'vibração média recente: 1,99 mm/s' in response['answer']['currentState']
+    assert response['answer']['currentState'] == GENERATED_TEXT
+    assert response['generation']['status'] == 'generated'
     assert all(term not in response['answer']['currentState'] for term in ('assessment', 'watch', 'revisão', 'freshness'))
     assert any('posições assumidas' in limitation for limitation in response['limitations'])
     assert any('recebimento original é desconhecido' in limitation for limitation in response['limitations'])
     assert any('baseline' in limitation for limitation in response['limitations'])
     assert len(retriever.calls) == len(chat.calls) == 1
-    assert '1.99' not in json.dumps(chat.calls)  # No telemetry is treated as document evidence.
+    assert '1.99' in json.dumps(chat.calls)  # Operational snapshot is now supplied to generation.
     assert repository._memory.total_changes == changes
     assert not any(any(table in statement for table in ('demo_runs', 'demo_commands', 'demo_events')) for statement in traced)
     assert not any(statement.lstrip().upper().startswith(('INSERT', 'UPDATE', 'DELETE')) for statement in traced)
@@ -151,9 +150,7 @@ async def test_context_is_detached_before_generation_await_and_never_uses_new_se
     assert len(chat.calls) == 1
 
 
-@pytest.mark.parametrize('question', ['Como lubrificar a bomba?', 'Quais procedimentos usar no sensor 2?',
-                                     'How do I replace the pump bearing?', 'Qual é a causa raiz da vibração?',
-                                     'Qual a probabilidade de falha?', 'Desligue o motor agora'])
+@pytest.mark.parametrize('question', ['Qual a probabilidade de falha?', 'Desligue o motor agora'])
 def test_pump_and_unsafe_scope_do_not_call_provider_or_promote_answer(question):
     history, _, _, _, client, _, retriever, chat = configured()
     result = client.post(QUERY, json=request_for(history.context('history-test', end_row=100), question=question))
@@ -167,13 +164,15 @@ def test_pump_and_unsafe_scope_do_not_call_provider_or_promote_answer(question):
 
 
 @pytest.mark.parametrize('question', ['Como fazer isso?', 'O manual WEG W22 ajuda nisso?'])
-def test_pump_followup_does_not_relabel_motor_manual_as_pump_procedure(question):
+def test_pump_followup_reaches_generation_with_pump_document_limitation(question):
     history, _, _, _, client, _, retriever, chat = configured()
     request = request_for(history.context('history-test', end_row=100), question=question,
                           history=[{'question': 'Como lubrificar a bomba?', 'answer': 'Sem manual da bomba.'}])
     result = client.post(QUERY, json=request)
-    assert result.json()['response']['groundingStatus'] == 'out_of_scope'
-    assert retriever.calls == chat.calls == []
+    assert result.json()['response']['generation']['status'] == 'generated'
+    assert len(retriever.calls) == len(chat.calls) == 1
+    assert 'manualCoverage' in json.dumps(chat.calls)
+    assert any('não cobre a bomba' in text for text in result.json()['response']['limitations'])
 
 
 @pytest.mark.parametrize('question,turns', [
@@ -193,7 +192,7 @@ def test_motor_topic_and_assembly_context_use_motor_manual(question, turns):
     result = client.post(QUERY, json=request)
     assert result.status_code == 200
     response = result.json()['response']
-    assert response['groundingStatus'] == 'operational_unavailable'
+    assert response['groundingStatus'] == 'grounded'
     assert response['citations'] and all(citation['type'] == 'manual' for citation in response['citations'])
     assert len(retriever.calls) == len(chat.calls) == 1
 
@@ -204,17 +203,18 @@ def test_motor_topic_and_assembly_context_use_motor_manual(question, turns):
     'Quais procedimentos são usados em S1 e S2?',
     'Como lubrificar o conjunto motor-bomba?',
 ])
-def test_explicit_pump_or_mixed_procedures_remain_out_of_scope(question):
+def test_pump_or_mixed_questions_reach_same_contextual_generation(question):
     history, _, _, _, client, _, retriever, chat = configured()
     request = request_for(history.context('history-test', end_row=100), question=question,
                           history=[{'question': 'Quais verificações há para o motor?', 'answer': 'Referência do motor.'}])
     result = client.post(QUERY, json=request)
     assert result.status_code == 200
-    assert result.json()['response']['groundingStatus'] == 'out_of_scope'
-    assert retriever.calls == chat.calls == []
+    assert result.json()['response']['generation']['status'] == 'generated'
+    assert len(retriever.calls) == len(chat.calls) == 1
+    assert any('não cobre a bomba' in text for text in result.json()['response']['limitations'])
 
 
-def test_repeated_ambiguous_followup_keeps_latest_pump_refusal_without_scanning_old_topics():
+def test_repeated_ambiguous_followup_recollects_context_and_preserves_conversation():
     history, _, _, _, client, _, retriever, chat = configured()
     request = request_for(history.context('history-test', end_row=100), question='E como faço isso?',
                           history=[{'question': 'Quais procedimentos usar em S2?', 'answer': 'Sem manual da bomba.'}])
@@ -222,34 +222,40 @@ def test_repeated_ambiguous_followup_keeps_latest_pump_refusal_without_scanning_
     request['question'] = 'Pode explicar melhor?'
     request['history'] = [{'question': 'E como faço isso?', 'answer': previous}]
     result = client.post(QUERY, json=request)
-    assert result.json()['response']['groundingStatus'] == 'out_of_scope'
-    assert retriever.calls == chat.calls == []
+    assert result.json()['response']['generation']['status'] == 'generated'
+    assert len(retriever.calls) == len(chat.calls) == 2
+    assert 'E como faço isso?' in json.dumps(chat.calls, ensure_ascii=False)
 
 
 @pytest.mark.parametrize('sufficient,failure,expected', [
-    (False, None, 'manual_insufficient'),
+    (False, None, 'grounded'),
     (True, ChatGatewayError('http_status', status_code=429), 'degraded_fallback'),
 ])
 def test_insufficient_or_fallback_status_is_preserved_without_retry(sufficient, failure, expected):
     history, _, _, _, client, _, retriever, chat = configured(
-        retriever=_Retriever(_retrieval(sufficient=sufficient)), chat=_Chat(failure=failure))
+        retriever=_Retriever(_retrieval(sufficient=sufficient)),
+        chat=_Chat(_generated(manual_citations=()) if not sufficient else None, failure=failure))
     result = client.post(QUERY, json=request_for(history.context('history-test', end_row=100), question='bearing'))
     assert result.status_code == 200
     response = result.json()['response']
     assert response['groundingStatus'] == expected
     assert response['fallbackUsed'] is (failure is not None)
     assert len(retriever.calls) == 1
-    assert len(chat.calls) == int(sufficient)
+    assert len(chat.calls) == 1
 
 
-def test_missing_corpus_is_sanitized_unavailable_no_generation_or_retry():
-    history, _, _, _, client, _, retriever, chat = configured(retriever=_Retriever(failure=CorpusUnavailableError('PRIVATE_CORPUS_DETAIL')))
+def test_missing_corpus_still_generates_operational_answer_without_document_claims():
+    history, _, _, _, client, _, retriever, chat = configured(
+        retriever=_Retriever(failure=CorpusUnavailableError('PRIVATE_CORPUS_DETAIL')),
+        chat=_Chat(_generated(manual_citations=())))
     result = client.post(QUERY, json=request_for(history.context('history-test', end_row=100)))
-    assert result.status_code == 503
-    assert result.json() == {'detail': 'historical_assistant_unavailable'}
+    assert result.status_code == 200
+    assert result.json()['response']['generation']['status'] == 'generated'
+    assert not result.json()['response']['citations']
+    assert 'PRIVATE_CORPUS_DETAIL' not in result.text
     assert result.headers['cache-control'] == 'no-store'
     assert len(retriever.calls) == 1
-    assert chat.calls == []
+    assert len(chat.calls) == 1
 
 
 @pytest.mark.parametrize('mutation', [
@@ -331,6 +337,8 @@ def test_historical_rag_uses_only_dedicated_corpus_even_with_replay_off_and_live
     with TestClient(app) as client:
         service = app.state.historical_assistant_service
         assert service is not None
+        service.history.scorer = HistoricalScorer()
+        service.assistant.chat.chat = _Chat(_generated(manual_citations=()))
         assert app.state.demo_assistant_service is app.state.demo_service is None
         assert service.assistant.retriever.repository is corpus[DEMO_URL]
         assert service.assistant.retriever.equipment_model == 'W22'
@@ -339,8 +347,9 @@ def test_historical_rag_uses_only_dedicated_corpus_even_with_replay_off_and_live
         context = client.get(CONTEXT.replace('history-test', 'dataset-test'), params={'endRow': 100, 'limit': 5}).json()
         assert context['capabilities']['copilot'] is True
         result = client.post(QUERY.replace('history-test', 'dataset-test'), json=request_for(context))
-        assert result.status_code == 503
-        assert result.json() == {'detail': 'historical_assistant_unavailable'}
+        assert result.status_code == 200
+        assert result.json()['response']['generation']['status'] == 'generated'
+        assert result.json()['response']['citations'] == []
         assert looked_up == ['forzy-motor-01']
         assert live.calls == 0
         assert urls == [DEMO_URL]

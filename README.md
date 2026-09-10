@@ -8,6 +8,11 @@ Challenge FIAP × Forzy.
 > executa ML clássico com artefato verificado e fornece o contrato canônico ao
 > copiloto. Parte dos cards legados ainda é ilustrativa.
 >
+> **Copiloto de replay e histórico:** Gemini recebe o contexto calculado no servidor
+> e gera explicações de S1/S2, com fontes documentais quando pertinentes. O replay
+> continua durante perguntas e análises de eventos. A interface distingue geração
+> confirmada de contingência. [Configuração e verificação](docs/deploy/generative-copilot.md).
+>
 > **Novidades v0.4:** **loop de cenários ao vivo** no motor-estrela — a telemetria
 > determinística (1/seg) cicla sozinha por `estável → falha → detecção → normalização`
 > e percorre vários tipos de falha (superaquecimento, sobrecarga elétrica, desbalanceamento).

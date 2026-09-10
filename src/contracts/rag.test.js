@@ -99,6 +99,22 @@ const responseFixture = () => ({
 });
 
 describe("RAG public response contract", () => {
+  it("accepts explicit invocation provenance as well as legacy answers without confirmation", () => {
+    const response = responseFixture();
+    response.generation = { status: "generated", model: "gemini-test", invocationId: "invocation-1", latencyMs: 120, toolCalls: 1 };
+    expect(assertAssistantQueryResponse(response)).toBe(response);
+    response.generation = { status: "not_called", model: null, invocationId: null, latencyMs: null, toolCalls: 0 };
+    expect(assertAssistantQueryResponse(response)).toBe(response);
+    delete response.generation;
+    expect(assertAssistantQueryResponse(response)).toBe(response);
+  });
+  it.each([
+    { status: "generated", model: "configured-only", invocationId: null, latencyMs: null, toolCalls: 0 },
+    { status: "not_called", model: null, invocationId: null, latencyMs: -1, toolCalls: 0 },
+    { status: "fallback", model: null, invocationId: null, latencyMs: null, toolCalls: -1 },
+  ])("rejects invalid or unconfirmed generation metadata", (generation) => {
+    expect(() => assertAssistantQueryResponse({ ...responseFixture(), generation })).toThrow(/generation/);
+  });
   it("accepts strict typed manual and telemetry provenance", () => {
     const response = responseFixture();
 

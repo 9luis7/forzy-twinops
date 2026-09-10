@@ -9,8 +9,7 @@ import pytest
 
 from twinops.demo.repository import DemoError, DemoRepository, encode, stamp
 import twinops.rag.demo_service as demo_module
-from services.twinops.tests.rag.test_demo_service import Repo, service
-from services.twinops.tests.rag.test_public_service import _Chat
+from services.twinops.tests.rag.test_demo_service import Repo, service, _Chat
 
 
 @pytest.fixture

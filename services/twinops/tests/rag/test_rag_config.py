@@ -136,15 +136,12 @@ def test_unknown_rag_provider_fails_closed():
         {"TWINOPS_RAG_EQUIPMENT_MODEL": "W22"},
     ],
 )
-def test_enabled_public_rag_requires_both_exact_manual_identity_anchors(identity):
-    with pytest.raises(ValueError, match="approved manufacturer"):
-        SettingsV2.from_env(
-            {
-                "TWINOPS_UPSTREAM_BASE_URL": "https://upstream.invalid",
-                "TWINOPS_RAG_ENABLED": "true",
-                **identity,
-            }
-        )
+def test_operational_generation_does_not_require_manual_identity_anchors(identity):
+    settings = SettingsV2.from_env({
+        "TWINOPS_UPSTREAM_BASE_URL": "https://upstream.invalid",
+        "TWINOPS_RAG_ENABLED": "true", **identity,
+    })
+    assert settings.rag_enabled
 
 
 @pytest.mark.parametrize(

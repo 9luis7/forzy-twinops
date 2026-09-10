@@ -80,6 +80,24 @@ def test_identical_replay_produces_identical_json(sample_factory):
     assert first == second
 
 
+def test_numeric_explanation_reconstructs_scores_without_llm_attribution(sample_factory):
+    scorer = _scorer(sample_factory)
+    samples = [sample_factory(second=index, velocity=0.1 + index * 0.001,
+                              temperature=30 + index * 0.02) for index in range(8)]
+    result = scorer.assess(samples, now=datetime(2026, 8, 12, 13, 0, 8, tzinfo=timezone.utc))
+    assert result.assessment.anomaly_score == pytest.approx(max(
+        evidence.anomaly_score_component for evidence in result.evidence))
+    calculation = result.assessment.score_calculation
+    assert calculation.positive_distance_score == pytest.approx(max(
+        evidence.positive_score_component for evidence in result.evidence))
+    assert result.assessment.deterioration_score == pytest.approx(
+        calculation.ewma_alpha * calculation.positive_distance_score
+        + (1 - calculation.ewma_alpha) * calculation.previous_deterioration_score)
+    for item in result.evidence:
+        assert item.normalized_distance == pytest.approx((item.value - item.baseline) / item.robust_scale)
+        assert item.window_seconds == (10 if item.feature in ("velocity_ewma", "velocity_slope") else 60)
+
+
 def test_stale_source_never_falls_back_to_mechanical_alert(sample_factory):
     scorer = _scorer(sample_factory)
     samples = [

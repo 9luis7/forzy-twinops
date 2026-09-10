@@ -61,7 +61,8 @@ def runtime(monkeypatch, tmp_path, *, dedicated=True, enabled=True, env_override
     monkeypatch.setattr(main_v2, '_build_embedding_clients', embedding_clients)
     monkeypatch.setattr(main_v2, '_build_chat_client', lambda *a, **k: SimpleNamespace(model='offline'))
     env = {'TWINOPS_UPSTREAM_BASE_URL': 'https://upstream.invalid', 'DATABASE_URL': LIVE_URL, 'DEMO_ENABLED': str(enabled).lower(),
-           'TWINOPS_RAG_ENABLED': 'true', 'TWINOPS_RAG_MANUFACTURER': 'WEG',
+           'TWINOPS_RAG_ENABLED': 'true', 'AI_GATEWAY_API_KEY': 'offline', 'GEMINI_API_KEY': 'offline',
+           'TWINOPS_RAG_MANUFACTURER': 'WEG',
            'TWINOPS_RAG_EQUIPMENT_MODEL': 'W22'}
     if dedicated:
         env['DEMO_DATABASE_URL'] = DEMO_URL
@@ -148,8 +149,11 @@ def test_missing_dedicated_corpus_never_falls_back_to_live(monkeypatch, tmp_path
         response = client.post(f"/api/demo/v1/runs/{run['runId']}/assistant/query",
                                headers={'Authorization': 'Bearer ' + run['token']},
                                json={'question': 'Como lubrificar o motor WEG?', 'contextRevision': 0})
-        assert response.status_code == 503
-        assert response.json() == {'detail': 'demo_assistant_unavailable'}
+        assert response.status_code == 200
+        body = response.json()['response']
+        assert body['fallbackUsed'] is True  # Offline chat stub has no provider.
+        assert body['generation']['status'] == 'fallback'
+        assert body['corpus'] is None
         assert looked_up == ['forzy-motor-01']
         assert live.calls == 0
         assert client.get('/api/demo/v1/datasets').status_code == 200

@@ -39,6 +39,13 @@ class HistoricalFeature(HistoricalModel):
     value: float
     unit: str
     window_seconds: float | None = Field(default=None, alias="windowSeconds", ge=0)
+    baseline: float | None = None
+    deviation: float | None = None
+    direction: str | None = None
+    robust_scale: float | None = Field(default=None, alias="robustScale", gt=0)
+    normalized_distance: float | None = Field(default=None, alias="normalizedDistance")
+    anomaly_score_component: float | None = Field(default=None, alias="anomalyScoreComponent", ge=0, le=100)
+    positive_score_component: float | None = Field(default=None, alias="positiveScoreComponent", ge=0, le=100)
 
 
 class HistoricalSensorEvidence(HistoricalModel):
@@ -55,6 +62,9 @@ class HistoricalSensorEvidence(HistoricalModel):
     window_end: str | None = Field(alias="windowEnd")
     trained_until: str | None = Field(alias="trainedUntil")
     score_semantics: str | None = Field(alias="scoreSemantics")
+    anomaly_score: float | None = Field(default=None, alias="anomalyScore")
+    deterioration_score: float | None = Field(default=None, alias="deteriorationScore")
+    persistence_seconds: float | None = Field(default=None, alias="persistenceSeconds")
     evidence: list[HistoricalFeature]
 
 

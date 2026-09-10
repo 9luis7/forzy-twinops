@@ -1,4 +1,4 @@
-"""Independently score strict raw RAG captures against the V1 acceptance gates."""
+"""Score legacy extractive V1 captures only; freeform generation is not evaluated."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ from capture_schema import FullRetrievalHit, ScoreCapture, read_capture_jsonl
 from validate import validate
 from twinops.rag.operational import OperationalEvidence, TrustedOperationalContext
 from twinops.rag.public_models import ManualCitation, TelemetryCitation
-from twinops.rag.public_service import (
+from legacy_v1 import (
     DEFAULT_LIMITATIONS,
     OUT_OF_SCOPE_MESSAGES,
     _deterministic_current_state,
@@ -226,6 +226,8 @@ def _validate_answer_support(case: dict, capture: ScoreCapture) -> None:
             raise ValueError("response omitted or invented operational evidence")
 
 def _validate_case(case: dict, capture: ScoreCapture) -> None:
+    if capture.capture_protocol != "legacy-extractive-v1" or capture.response.generation.status == "generated":
+        raise ValueError("legacy evaluator does not evaluate generative prose or current service captures")
     if capture.question != case["question"]:
         raise ValueError("capture question does not match manifest")
     if capture.generation_model != capture.response.models.generation:
@@ -380,7 +382,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"score_failed detail={exc}", file=sys.stderr)
         return 1
     print(
-        "score_ok "
+        "score_ok protocol=legacy-extractive-v1 generative_prose=not_evaluated "
         f"citation_validity={metrics['citation_validity']:.3f} "
         f"invented_evidence={int(metrics['invented_evidence'])} "
         f"invented_procedure={int(metrics['invented_procedure'])} "

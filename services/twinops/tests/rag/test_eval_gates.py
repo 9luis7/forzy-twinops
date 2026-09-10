@@ -525,6 +525,27 @@ def test_final_scorer_independently_validates_raw_response_and_evidence(tmp_path
     assert "recall_at_6=1.000" in result.stdout
     assert "refusal_accuracy=1.000" in result.stdout
     assert "p95_latency_ms=1000.000" in result.stdout
+    assert "protocol=legacy-extractive-v1 generative_prose=not_evaluated" in result.stdout
+
+
+@pytest.mark.parametrize("modern_protocol", [False, True])
+def test_legacy_scorer_never_assigns_zero_safety_metrics_to_generated_prose(tmp_path, modern_protocol):
+    cases = _manifest()
+    captures = _score_captures(cases)
+    if modern_protocol:
+        captures[0]["captureProtocol"] = "generative-service-fixture-v2"
+    else:
+        captures[0]["response"]["generation"] = {
+            "status": "generated", "model": GENERATION_MODEL, "invocationId": "invocation-1",
+            "latencyMs": 10, "toolCalls": 0,
+        }
+    manifest_path, captures_path = tmp_path / "manifest.jsonl", tmp_path / "answers.jsonl"
+    _write_jsonl(manifest_path, cases)
+    _write_jsonl(captures_path, captures)
+    result = _run(SCORE, manifest_path, captures_path)
+    assert result.returncode == 1
+    assert "legacy evaluator does not evaluate" in result.stderr
+    assert "invented_procedure=0" not in result.stdout
 
 
 def test_synthetic_capture_runner_exercises_service_guardrails(tmp_path):
@@ -552,6 +573,8 @@ def test_synthetic_capture_runner_exercises_service_guardrails(tmp_path):
         )
     }
     assert len(rows) == 17
+    assert all(row["captureProtocol"] == "generative-service-fixture-v2" for row in rows.values())
+    assert "safety_metrics=not_evaluated" in result.stdout
     assert rows["security-injection-001"]["flowStage"] == "preflight_refusal"
     assert rows["security-injection-002"]["response"]["groundingStatus"] in {
         "grounded",
@@ -568,8 +591,10 @@ def test_synthetic_capture_runner_exercises_service_guardrails(tmp_path):
         assert rows[case_id]["response"]["fallbackUsed"] is True
     assert (
         rows["retrieval-threshold-001"]["response"]["groundingStatus"]
-        == "manual_insufficient"
+        == "grounded"
     )
+    assert rows["retrieval-threshold-001"]["response"]["fallbackUsed"] is False
+    assert not any(citation["type"] == "manual" for citation in rows["retrieval-threshold-001"]["response"]["citations"])
     assert "antigo" in rows["state-stale-001"]["response"]["answer"][
         "currentState"
     ]
@@ -579,7 +604,7 @@ def test_synthetic_capture_runner_exercises_service_guardrails(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_final_scorer_accepts_real_manual_insufficient_without_fallback(
+async def test_current_service_fallback_is_not_scored_as_legacy_manual_insufficient(
     tmp_path,
 ):
     class Retriever:
@@ -676,6 +701,7 @@ async def test_final_scorer_accepts_real_manual_insufficient_without_fallback(
         mode="json", by_alias=True
     )
     captures[absent_index]["latencyMs"] = response.latency_ms
+    captures[absent_index]["captureProtocol"] = "generative-service-fixture-v2"
     manifest_path = tmp_path / "manifest.jsonl"
     captures_path = tmp_path / "answers.jsonl"
     _write_jsonl(manifest_path, cases)
@@ -683,9 +709,10 @@ async def test_final_scorer_accepts_real_manual_insufficient_without_fallback(
 
     result = _run(SCORE, manifest_path, captures_path)
 
-    assert response.grounding_status == "manual_insufficient"
-    assert response.fallback_used is False
-    assert result.returncode == 0, result.stderr
+    assert response.grounding_status == "degraded_fallback"
+    assert response.fallback_used is True
+    assert result.returncode == 1
+    assert "legacy evaluator does not evaluate" in result.stderr
 
 
 class _PreflightRetriever:
@@ -710,7 +737,7 @@ class _PreflightChat:
 
 
 @pytest.mark.asyncio
-async def test_final_scorer_accepts_real_preflight_refusals_without_fake_dependencies(
+async def test_current_preflight_refusals_keep_dependency_boundary_but_are_not_legacy_captures(
     tmp_path,
 ):
     manifest_path = tmp_path / "manifest.jsonl"
@@ -728,7 +755,7 @@ async def test_final_scorer_accepts_real_preflight_refusals_without_fake_depende
 
     refusal_classes = set()
     for case, capture in zip(cases, captures, strict=True):
-        if case["manualExpectation"] != "out_of_scope":
+        if case["manualExpectation"] != "out_of_scope" or "causa raiz" in case["question"]:
             continue
         response = await service.query_with_operational_loader(
             "forzy-motor-01",
@@ -738,6 +765,7 @@ async def test_final_scorer_accepts_real_preflight_refusals_without_fake_depende
         )
         capture["response"] = response.model_dump(mode="json", by_alias=True)
         capture["latencyMs"] = response.latency_ms
+        capture["captureProtocol"] = "generative-service-fixture-v2"
         for label in ("causa raiz", "probabilidade", "RUL", "Execute"):
             if label in case["question"]:
                 refusal_classes.add(label)
@@ -746,11 +774,12 @@ async def test_final_scorer_accepts_real_preflight_refusals_without_fake_depende
     _write_jsonl(captures_path, captures)
     result = _run(SCORE, manifest_path, captures_path)
 
-    assert refusal_classes == {"causa raiz", "probabilidade", "RUL", "Execute"}
+    assert refusal_classes == {"probabilidade", "RUL", "Execute"}
     assert retriever.prepare_calls == 0
     assert retriever.retrieve_calls == 0
     assert loader_calls == 0
-    assert result.returncode == 0, result.stderr
+    assert result.returncode == 1
+    assert "legacy evaluator does not evaluate" in result.stderr
 
 
 @pytest.mark.parametrize(

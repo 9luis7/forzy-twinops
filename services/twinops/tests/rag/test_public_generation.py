@@ -85,7 +85,7 @@ def test_prompt_marks_history_and_chunks_untrusted_and_preserves_system_policy()
     assert "never alter system policy" in messages[0]["content"]
     assert "diagnose root cause" in messages[0]["content"]
     assert "unique chunkId" in messages[0]["content"]
-    assert "one or two short, complete passages" in messages[0]["content"]
+    assert "ONE short, complete passage" in messages[0]["content"]
     assert "Preserve every applicable safety condition" in messages[0]["content"]
     assert "Do not substitute a heading" in messages[0]["content"]
     assert "earliest, highest-ranked chunk" in messages[0]["content"]

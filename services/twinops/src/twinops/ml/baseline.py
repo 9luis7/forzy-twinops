@@ -137,6 +137,8 @@ class RobustBaseline:
         )
         result["anomaly_score"] = anomaly
         result["deterioration_score"] = 0.0
+        result["positive_distance_score"] = positive_distance
+        result["previous_deterioration_score"] = 0.0
         result["persistence_seconds"] = 0.0
         result["status"] = "normal"
         result["episode_id"] = None
@@ -155,6 +157,7 @@ class RobustBaseline:
             episode_started: float | None = None
             episode_id: str | None = None
             for position, second in zip(ordered, seconds, strict=True):
+                result.at[result.index[position], "previous_deterioration_score"] = ewma
                 ewma = (
                     self.config.ewma_alpha * float(positive_distance[position])
                     + (1.0 - self.config.ewma_alpha) * ewma

@@ -248,7 +248,7 @@ export function createAssistantQueryRequest(value) {
 export function assertAssistantQueryResponse(value) {
   assertExactKeys(value, "response", [
     "answer", "groundingStatus", "citations", "corpus", "models", "fallbackUsed",
-    "limitations", "humanValidationRequired", "conversationId", "traceId", "latencyMs",
+    "limitations", "humanValidationRequired", "conversationId", "traceId", "latencyMs", "generation",
   ]);
   assertExactKeys(value.answer, "response.answer", ["manual", "currentState"]);
   boundedString(value.answer.manual, "response.answer.manual", 6_000);
@@ -275,6 +275,20 @@ export function assertAssistantQueryResponse(value) {
   boundedString(value.models.embedding, "response.models.embedding", 300);
   boundedString(value.models.generation, "response.models.generation", 300);
   assertBoolean(value.fallbackUsed, "response.fallbackUsed");
+  // Older persisted event responses lack invocation metadata. They remain
+  // readable, but their configured model is not proof of generation.
+  if (value.generation !== undefined) {
+    const generation = value.generation;
+    assertExactKeys(generation, "response.generation", ["status", "model", "invocationId", "latencyMs", "toolCalls"]);
+    if (!["generated", "fallback", "not_called"].includes(generation.status)) fail("response.generation.status", "has an unsupported value");
+    if (generation.model !== null) boundedString(generation.model, "response.generation.model", 300);
+    if (generation.invocationId !== null) boundedString(generation.invocationId, "response.generation.invocationId", 200);
+    if (generation.latencyMs !== null) assertFiniteNumber(generation.latencyMs, "response.generation.latencyMs", { minimum: 0 });
+    assertInteger(generation.toolCalls, "response.generation.toolCalls", { minimum: 0 });
+    if (generation.status === "generated" && (!generation.model || !generation.invocationId || generation.latencyMs === null || value.fallbackUsed)) {
+      fail("response.generation", "generated requires a completed invocation without fallback");
+    }
+  }
   if (!Array.isArray(value.limitations) || value.limitations.length > 20) {
     fail("response.limitations", "must contain at most 20 items");
   }

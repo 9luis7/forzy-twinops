@@ -28,10 +28,12 @@ def test_http_contract_no_store_and_validated_citations(client):
 
 
 @pytest.mark.parametrize("fields", [{}, {"contextRevision": 1}, {"contextRevision": 9}])
-def test_missing_and_stale_revision_returns_409(client, fields):
+def test_missing_and_stale_revision_captures_newest_server_context(client, fields):
     response = client.post(URL, headers=AUTH, json={"question": "estado", **fields})
-    assert response.status_code == 409
-    assert response.json() == {"detail": "revision_conflict"}
+    assert response.status_code == 200
+    assert response.json()["contextRevision"] == 8
+    assert response.json()["sourceRow"] == 150
+    assert response.json()["response"]["generation"]["status"] == "generated"
     assert response.headers["cache-control"] == "no-store"
 
 

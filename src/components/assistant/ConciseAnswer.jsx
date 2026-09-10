@@ -17,11 +17,12 @@ export const evidenceLabel = (feature) => featureNames[feature] ?? feature;
 export const evidenceUnit = (unit) => unit === "degC" ? "°C" : unit;
 
 export function responseOrigin(response) {
-  if (response.fallbackUsed) return "Resposta de contingência";
+  if (response.fallbackUsed || response.generation?.status === "fallback") return "Resumo automático · IA indisponível";
   if (response.groundingStatus === "out_of_scope") return "Limite de escopo · sem consulta à IA";
-  if (["grounded", "operational_unavailable"].includes(response.groundingStatus)
-      && response.citations.some((citation) => citation.type === "manual")) return "IA + manual · fontes validadas";
-  return "Manual sem evidência suficiente";
+  if (response.generation?.status === "generated") return response.citations.some((citation) => citation.type === "manual")
+    ? "Análise da IA · com fontes documentais" : "Análise da IA · contexto operacional";
+  if (response.generation?.status === "not_called") return "Resumo automático · sem consulta à IA";
+  return "Resposta anterior · geração não confirmada";
 }
 
 function AnswerText({ text, label }) {
@@ -77,8 +78,8 @@ export default function ConciseAnswer({ response, stateLabel = "Leitura operacio
       <h3>{stateLabel}</h3>
       <AnswerText key={response.answer.currentState} text={response.answer.currentState} label="leitura" />
     </section>
-    <section className="concise-answer-section" aria-label="Segundo o manual">
-      <h3>Segundo o manual</h3>
+    <section className="concise-answer-section" aria-label="Referências documentais">
+      <h3>Referências documentais</h3>
       {response.fallbackUsed
         ? <p>A IA não entregou uma orientação validada. Os trechos disponíveis do manual estão nas fontes abaixo.</p>
         : <AnswerText key={response.answer.manual} text={response.answer.manual} label="orientação" />}
@@ -103,8 +104,10 @@ export default function ConciseAnswer({ response, stateLabel = "Leitura operacio
     </details>
     <details className="assistant-technical-details">
       <summary>Detalhes técnicos da resposta</summary>
-      <p>A condição dos sensores vem da avaliação automática. A IA seleciona referências do manual; o sistema valida as citações antes de exibir.</p>
+      <p>Os scores e as estatísticas são calculados pelo sistema. Quando a geração é confirmada, a IA redige a análise a partir desses dados e das referências disponíveis; as citações documentais são validadas.</p>
       {response.fallbackUsed && <p>Contingência não confirma uma geração: a consulta pode ter falhado antes ou durante a etapa de IA.</p>}
+      {response.generation?.status === "generated" && <p>Modelo utilizado: {response.generation.model} · geração em {number(response.generation.latencyMs)} ms · consultas adicionais: {response.generation.toolCalls}</p>}
+      {!response.generation && <p>Este registro não contém confirmação de chamada à IA. O nome de um modelo configurado não comprova geração.</p>}
       <small>Corpus {response.corpus?.corpusId ?? "indisponível"} · trace {response.traceId}</small>
     </details>
   </div>;

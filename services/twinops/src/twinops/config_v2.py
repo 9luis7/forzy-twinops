@@ -234,7 +234,7 @@ class SettingsV2:
             or not 1 <= self.rag_query_timeout_seconds <= 11
         ):
             raise ValueError("RAG query timeout must be in [1, 11]")
-        if (self.rag_enabled or self.rag_admin_enabled) and (
+        if self.rag_admin_enabled and (
             self.rag_manufacturer is None
             or not self.rag_manufacturer.strip()
             or self.rag_manufacturer != self.rag_manufacturer.strip()

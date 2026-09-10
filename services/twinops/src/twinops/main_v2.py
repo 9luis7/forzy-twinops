@@ -156,6 +156,15 @@ def _build_chat_client(http, settings: SettingsV2, *, timeout_seconds=None):
     return ChatGatewayClient(http, **common)
 
 
+def _optional_retriever(repository, embedding_client, settings, *, demo=False):
+    equipment_model = settings.effective_demo_rag_equipment_model if demo else settings.rag_equipment_model
+    if repository is None or embedding_client is None or not settings.rag_manufacturer or not equipment_model:
+        return None
+    return HybridRetriever(repository, embedding_client,
+                           manufacturer=settings.rag_manufacturer,
+                           equipment_model=equipment_model)
+
+
 def create_app_v2(
     *,
     repository: TelemetryRepositoryV2,
@@ -337,51 +346,35 @@ def _runtime_lifespan(
                 )
             if (
                 settings.rag_enabled
-                and rag_repository is not None
-                and query_embedding_client is not None
+                and settings.rag_api_key is not None
             ):
-                assert settings.rag_manufacturer is not None
-                assert settings.rag_equipment_model is not None
                 app.state.rag_assistant_service = RagAssistantService(
-                    HybridRetriever(
-                        rag_repository,
-                        query_embedding_client,
-                        manufacturer=settings.rag_manufacturer,
-                        equipment_model=settings.rag_equipment_model,
-                    ),
+                    _optional_retriever(rag_repository, query_embedding_client, settings),
                     _build_chat_client(http, settings),
                     query_timeout_seconds=settings.rag_query_timeout_seconds,
                 )
             if (
                 settings.demo_enabled and settings.rag_enabled and demo_repository is not None
-                and demo_corpus_repository is not None and query_embedding_client is not None
+                and settings.rag_api_key is not None
             ):
                 app.state.demo_assistant_service = DemoAssistantService(
                     demo_repository,
                     DemoRagAssistantService(
-                        HybridRetriever(
-                            demo_corpus_repository, query_embedding_client,
-                            manufacturer=settings.rag_manufacturer,
-                            equipment_model=settings.effective_demo_rag_equipment_model,
-                        ),
+                        _optional_retriever(demo_corpus_repository, query_embedding_client, settings, demo=True),
                         _build_chat_client(http, settings, timeout_seconds=30.0),
                     ),
                 )
             if (
                 has_dedicated_history and settings.rag_enabled
                 and app.state.history_service is not None
-                and demo_rag_repository is not None and query_embedding_client is not None
+                and settings.rag_api_key is not None
             ):
                 # Explicit dedicated corpus only: never substitute Neon when
                 # the historical manual is missing, incompatible or unavailable.
                 app.state.historical_assistant_service = HistoricalAssistantService(
                     app.state.history_service,
                     DemoRagAssistantService(
-                        HybridRetriever(
-                            demo_rag_repository, query_embedding_client,
-                            manufacturer=settings.rag_manufacturer,
-                            equipment_model=settings.effective_demo_rag_equipment_model,
-                        ),
+                        _optional_retriever(demo_rag_repository, query_embedding_client, settings, demo=True),
                         _build_chat_client(http, settings, timeout_seconds=30.0),
                     ),
                 )

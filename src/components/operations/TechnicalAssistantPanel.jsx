@@ -1,39 +1,9 @@
 import React, { useEffect, useRef, useState } from "react";
-import { MAX_HISTORY_ANSWER_CHARACTERS } from "../../contracts/rag.js";
+import { completedAnswer } from "../assistant/conversationHistory.js";
+export { completedAnswer } from "../assistant/conversationHistory.js";
 import ConciseAnswer from "../assistant/ConciseAnswer.jsx";
 import { promptSuggestions } from "../assistant/promptSuggestions.js";
 import { formatTimestampText } from "../../lib/displayTime.js";
-
-const MANUAL_HISTORY_LABEL = "Segundo o manual:\n";
-
-const truncateHistorySection = (value, budget) => {
-  if (value.length <= budget) return value;
-  if (budget <= 1) return value.slice(0, budget);
-  return `${value.slice(0, budget - 1)}…`;
-};
-
-export const completedAnswer = (response, stateLabel = "Estado atual") => {
-  const currentHistoryLabel = `\n${stateLabel}:\n`;
-  const available = MAX_HISTORY_ANSWER_CHARACTERS
-    - MANUAL_HISTORY_LABEL.length
-    - currentHistoryLabel.length;
-  let manualBudget = Math.min(response.answer.manual.length, Math.floor(available / 2));
-  let currentBudget = Math.min(response.answer.currentState.length, available - manualBudget);
-  let remainder = available - manualBudget - currentBudget;
-
-  const manualRemainder = response.answer.manual.length - manualBudget;
-  const manualExtra = Math.min(manualRemainder, remainder);
-  manualBudget += manualExtra;
-  remainder -= manualExtra;
-  currentBudget += Math.min(response.answer.currentState.length - currentBudget, remainder);
-
-  return [
-    MANUAL_HISTORY_LABEL,
-    truncateHistorySection(response.answer.manual, manualBudget),
-    currentHistoryLabel,
-    truncateHistorySection(response.answer.currentState, currentBudget),
-  ].join("");
-};
 
 function AssistantAnswer({ response, answerRef, stateLabel, renderStateEvidence, statusNotices }) {
   return <article className="assistant-answer" data-testid="assistant-answer" ref={answerRef} tabIndex={-1} aria-label="Resposta validada do assistente técnico">
@@ -124,7 +94,7 @@ export default function TechnicalAssistantPanel({ assetId, enabled, dataSource, 
         question: submittedQuestion,
         answer: completedAnswer(nextResponse, stateLabel),
       }].slice(-4));
-      setQuestion("");
+      setQuestion(nextResponse.fallbackUsed || nextResponse.generation?.status === "fallback" ? submittedQuestion : "");
     } catch (requestError) {
       if (
         mountedRef.current

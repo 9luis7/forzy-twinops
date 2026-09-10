@@ -5,6 +5,8 @@ The repository is the authorization, revision and immutable event boundary.
 """
 
 import asyncio
+from copy import deepcopy
+from dataclasses import replace
 from datetime import datetime
 import re
 from uuid import uuid4
@@ -15,7 +17,7 @@ from twinops.contracts.models import AssetConditionAssessment
 from twinops.demo.repository import MAX_EVENT_ATTEMPTS
 from twinops.rag.embeddings import EmbeddingGatewayError
 from twinops.rag.generation import ChatGatewayError, GeneratedOutputError
-from twinops.rag.operational import OperationalEvidence, TrustedOperationalContext
+from twinops.rag.operational import OperationalEvidence, TrustedOperationalContext, build_analysis_context
 from twinops.rag.public_models import AssistantQueryRequest, AssistantQueryResponse
 from twinops.rag.public_service import (
     RagAssistantService,
@@ -94,6 +96,8 @@ class DemoRagAssistantService(RagAssistantService):
         Preserve quote characters and the original payload. Unknown IDs and
         ambiguous/absent quotes remain invalid; the original guard runs last.
         """
+        if retrieval is None:
+            return super()._validate_generated_payload(payload, retrieval=retrieval)
         ids = [citation.chunk_id for citation in payload.manual_citations]
         if len(set(ids)) != len(ids):
             # Original duplicates must not escape by resolving to distinct hits.
@@ -126,12 +130,13 @@ def project_demo_context(context):
     if context.get("schemaVersion") != "demo-1.0" or context.get("mode") != "replay":
         raise ValueError("invalid trusted demo context")
     source_time = context["replay"]["sourceTime"]
+    analysis_context = build_analysis_context(context)
     projected = {}
     for sensor_id in ("s1", "s2"):
         raw = context["sensors"][sensor_id]["assessment"]
         if raw is None or source_time is None:
-            projected[sensor_id] = TrustedOperationalContext.unavailable(
-                operational_state="replay")
+            projected[sensor_id] = replace(TrustedOperationalContext.unavailable(
+                operational_state="replay"), analysis_context=analysis_context)
             continue
         assessment = AssetConditionAssessment.model_validate(raw)
         if assessment.sensor_id != sensor_id:
@@ -148,11 +153,9 @@ def project_demo_context(context):
             window_end=end,
             received_at=_timestamp(assessment.window.received_at),
             freshness_ms=assessment.window.freshness_ms,
-            evidence=tuple(OperationalEvidence(
-                evidence_id=item.id, feature=item.feature, value=item.value,
-                unit=item.unit, window_seconds=item.window_seconds,
-            ) for item in assessment.evidence),
+            evidence=tuple(OperationalEvidence.from_evidence(item) for item in assessment.evidence),
             quality_flags=tuple(assessment.quality.flags),
+            analysis_context=analysis_context,
         )
     return projected
 
@@ -161,17 +164,18 @@ def _decorate_response(response, context, operational):
     """One generation, two independently attributed assessments, frozen revision."""
     body = response.model_dump(mode="json", by_alias=True)
     source_time = context["replay"]["sourceTime"]
-    body["answer"]["currentState"] = (
-        (f"Demonstração de {_sao_paulo_time(_timestamp(source_time))}. "
-         if source_time else "Demonstração aguardando dados. ")
-        + " ".join(
-            f"{sensor_id.upper()} ({'motor' if sensor_id == 's1' else 'bomba'}): "
-            + _concise_condition(item.assessment_status,
-                                 item.evidence if response.grounding_status != "out_of_scope" else (),
-                                 item.quality_status) + "."
-            for sensor_id, item in operational.items()
+    if getattr(getattr(response, "generation", None), "status", None) != "generated":
+        body["answer"]["currentState"] = (
+            (f"Demonstração de {_sao_paulo_time(_timestamp(source_time))}. "
+             if source_time else "Demonstração aguardando dados. ")
+            + " ".join(
+                f"{sensor_id.upper()} ({'motor' if sensor_id == 's1' else 'bomba'}): "
+                + _concise_condition(item.assessment_status,
+                                     item.evidence if response.grounding_status != "out_of_scope" else (),
+                                     item.quality_status) + "."
+                for sensor_id, item in operational.items()
+            )
         )
-    )
     body["citations"] = [citation for citation in body["citations"]
                          if citation["type"] != "telemetry"]
     if response.grounding_status != "out_of_scope":
@@ -191,8 +195,8 @@ class DemoAssistantService:
 
     async def _query(self, context, request, *, propagate_errors=False):
         operational = project_demo_context(context)
-        # S1 owns the documented motor corpus. S2 telemetry is separately added
-        # below, never relabelled as motor evidence or sent to the model as fact.
+        # The primary context keeps legacy citation provenance; its trusted
+        # analysis_context contains both sensors with independent identities.
         primary = operational["s1"] if operational["s1"].available else operational["s2"]
         response = await self.assistant.query(
             context["assetId"], request, operational=primary,
@@ -202,8 +206,10 @@ class DemoAssistantService:
 
     async def query(self, run_id, token, request, context_revision):
         async with asyncio.timeout(DEMO_TOTAL_SECONDS):
-            context = await asyncio.to_thread(
-                self.repository.trusted_context, run_id, token, context_revision)
+            # The browser revision is informational: telemetry keeps advancing.
+            # Repository reads authorize and atomically detach the newest state.
+            context = deepcopy(await asyncio.to_thread(
+                self.repository.get_context, run_id, token))
             response = await self._query(context, request)
         return {
             "contextRevision": context["revision"],
@@ -237,13 +243,12 @@ class DemoAssistantService:
                     context, AssistantQueryRequest(question=_event_question(event)),
                     propagate_errors=True,
                 )
-            generated = (not response.fallback_used and any(
-                citation.type == "manual" for citation in response.citations))
+            generated = getattr(getattr(response, "generation", None), "status", None) == "generated"
             return await asyncio.to_thread(
                 self.repository.finish_event, run_id, token, event_id, owner=owner,
                 status="ready" if generated else "degraded",
                 recommendation=response.model_dump(mode="json", by_alias=True),
-                error_code=None if generated else "manual_insufficient",
+                error_code=None if generated else "generation_unavailable",
             )
         except asyncio.CancelledError:
             # Durable lease recovery also handles process death. Cancellation
@@ -264,13 +269,15 @@ class DemoAssistantService:
 
 
 def _event_question(event):
-    # Retrieval asks about the covered motor only; frozen sensor state is rendered
-    # deterministically alongside the quoted manual, rather than invented by LLM.
     descriptions = {"sustained_watch": "atenção sustentada", "escalation": "alerta",
                     "recovery": "retorno ao estado normal"}
     kind = descriptions.get(event["kind"], "mudança de condição")
-    return (f"No evento de {kind}, quais verificações de vibração, temperatura e "
-            "rolamentos o manual do motor WEG W22 recomenda para avaliação humana?")
+    sensors = ", ".join(sensor.upper() for sensor in event.get("sensorIds", ()))
+    return (f"Análise automática do evento de {kind} em {sensors}. "
+            "Explique o que mudou no instante do evento com scores, baseline, evidências e persistência. "
+            "Diferencie evolução sustentada de pico ou dados insuficientes; identifique hipóteses "
+            "e verificações úteis, com fontes quando disponíveis. Não infira evolução futura. "
+            + ("Seja breve ao explicar a recuperação." if event["kind"] == "recovery" else ""))
 
 
 def _failure(error):

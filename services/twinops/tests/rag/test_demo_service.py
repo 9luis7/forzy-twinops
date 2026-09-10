@@ -17,7 +17,18 @@ from twinops.rag.public_service import RagAssistantService
 
 # Existing real-contract corpus/provider doubles exercise the same citation
 # validator and answer assembler as the live regression suite.
-from .test_public_service import _Retriever, _Chat, _generated
+from .test_public_service import _Retriever, _Chat as _LegacyChat, _generated
+
+GENERATED_TEXT = "Explicação operacional gerada para S1 (motor) e S2 (bomba)."
+
+
+class _Chat(_LegacyChat):
+    """A generated narrative double, with explicit server invocation metadata."""
+    def __init__(self, output=None, **kwargs):
+        output = (output or _generated()).model_copy(update={"current_state": GENERATED_TEXT})
+        output._generation_metadata = {"status": "generated", "model": self.model,
+                                       "invocationId": "test-invocation", "latencyMs": 1}
+        super().__init__(output, **kwargs)
 
 
 TIME = "2026-08-12T13:01:00Z"
@@ -69,6 +80,9 @@ class Repo:
         if revision != self.current["revision"]:
             raise DemoError(409, "revision_conflict")
         return deepcopy(self.current)
+
+    def get_context(self, run, token):
+        return self.trusted_context(run, token, self.current["revision"])
 
     def get_event(self, *args):
         return deepcopy(self.event)
@@ -204,13 +218,12 @@ async def test_manual_uses_frozen_both_sensor_provenance_and_coverage():
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("revision", [None, 0, 9])
-async def test_manual_rejects_missing_stale_or_future_revision_before_generation(revision):
-    from twinops.demo.repository import DemoError
+async def test_manual_captures_latest_server_context_regardless_of_browser_revision(revision):
     chat = _Chat()
-    with pytest.raises(DemoError) as error:
-        await service(chat=chat).query("run", "secret", AssistantQueryRequest(question="estado"), revision)
-    assert error.value.status_code == 409
-    assert not chat.calls
+    response = await service(chat=chat).query("run", "secret", AssistantQueryRequest(question="estado"), revision)
+    assert response["contextRevision"] == 8
+    assert response["observedAt"] == TIME
+    assert len(chat.calls) == 1
 
 
 def test_future_or_misattributed_assessment_is_rejected():
@@ -228,7 +241,7 @@ def test_future_or_misattributed_assessment_is_rejected():
 async def test_demo_refusal_preserves_guard_without_uncited_numeric_summary():
     chat = _Chat()
     result = await service(chat=chat).query(
-        "run", "secret", AssistantQueryRequest(question="Qual é a causa raiz da vibração?"), 8,
+        "run", "secret", AssistantQueryRequest(question="Desligue o motor agora"), 8,
     )
     response = result["response"]
     assert response["groundingStatus"] == "out_of_scope"
@@ -258,7 +271,8 @@ async def test_event_is_bound_to_immutable_revision_and_deduplicates():
     event = await assistant.recommendation("run", "secret", "event-1")
     assert event["status"] == "ready"
     assert event["contextRevision"] == 8
-    assert "12/08/2026 às 10:01:00 (São Paulo)" in event["recommendation"]["answer"]["currentState"]
+    assert event["recommendation"]["answer"]["currentState"] == GENERATED_TEXT
+    assert TIME in json.dumps(chat.calls)
     assert event["sourceRow"] == 150
     assert "revisão" not in event["recommendation"]["answer"]["currentState"]
     assert await assistant.recommendation("run", "secret", "event-1") == event
@@ -334,48 +348,28 @@ async def test_provider_failure_taxonomy_stays_sanitized(reason, status, retryab
 
 
 @pytest.mark.asyncio
-async def test_temporary_postgres_retrieval_failure_retries_then_ready_with_valid_citation():
-    retriever = _Retriever(failure=psycopg.OperationalError("temporary connection reset: private-marker"))
-    repo, chat = Repo(), _Chat()
-    assistant = DemoAssistantService(repo, DemoRagAssistantService(retriever, chat))
-    first = await assistant.recommendation("run", "secret", "event-1")
-    assert first["status"] == "pending"
-    assert first["retryable"] is True
-    assert first["attempts"] == 1
-    assert first["errorCode"] == "retrieval_database_unavailable"
-    assert "private-marker" not in json.dumps(first)
-    assert not chat.calls
-    retriever.failure = None
-    ready = await assistant.recommendation("run", "secret", "event-1")
-    assert ready["status"] == "ready"
-    assert ready["attempts"] == 2
-    assert ready["retryable"] is False
-    assert ready["errorCode"] is None
-    assert ready["recommendation"]["fallbackUsed"] is False
-    manual = [citation for citation in ready["recommendation"]["citations"]
-              if citation["type"] == "manual"]
-    assert manual[0]["chunkId"] == "chunk-1"
-    assert manual[0]["excerpt"] == "Inspect bearing lubrication before startup."
-    assert len(retriever.calls) == 2
-    assert len(chat.calls) == 1
-    assert await assistant.recommendation("run", "secret", "event-1") == ready
+async def test_missing_document_store_still_generates_operational_event_and_deduplicates():
+    retriever = _Retriever(failure=psycopg.OperationalError("connection reset private-marker"))
+    chat = _Chat(_generated(manual_citations=()))
+    assistant = DemoAssistantService(Repo(), DemoRagAssistantService(retriever, chat))
+    event = await assistant.recommendation("run", "secret", "event-1")
+    assert event["status"] == "ready"
+    assert event["attempts"] == 1 and not event["retryable"]
+    assert event["recommendation"]["generation"]["status"] == "generated"
+    assert not any(c["type"] == "manual" for c in event["recommendation"]["citations"])
+    assert "private-marker" not in json.dumps(event)
+    assert await assistant.recommendation("run", "secret", "event-1") == event
+    assert len(chat.calls) == len(retriever.calls) == 1
 
 
 @pytest.mark.asyncio
-async def test_persistent_postgres_retrieval_failure_becomes_terminal_on_third_attempt():
-    retriever = _Retriever(failure=psycopg.OperationalError("connection reset by peer"))
-    chat = _Chat()
-    assistant = DemoAssistantService(Repo(), DemoRagAssistantService(retriever, chat))
-    for attempt in (1, 2, 3):
-        event = await assistant.recommendation("run", "secret", "event-1")
-        assert event["attempts"] == attempt
-        assert event["retryable"] is (attempt < 3)
-        assert event["status"] == ("pending" if attempt < 3 else "degraded")
-    assert event["errorCode"] == "retrieval_database_unavailable"
-    assert event["recommendation"] is None
+async def test_citation_only_output_is_not_reported_as_generated_event():
+    assistant = DemoAssistantService(Repo(), DemoRagAssistantService(_Retriever(), _LegacyChat()))
+    event = await assistant.recommendation("run", "secret", "event-1")
+    assert event["status"] == "degraded"
+    assert event["errorCode"] == "generation_unavailable"
+    assert event["recommendation"]["generation"]["status"] == "not_called"
     assert await assistant.recommendation("run", "secret", "event-1") == event
-    assert len(retriever.calls) == 3
-    assert not chat.calls
 
 
 @pytest.mark.asyncio
@@ -387,13 +381,8 @@ async def test_persistent_postgres_retrieval_failure_becomes_terminal_on_third_a
     psycopg.errors.CannotConnectNow, psycopg.errors.TooManyConnections,
 ])
 async def test_temporary_postgres_sqlstate_is_retryable(error_type):
-    retriever = _Retriever(failure=error_type("private-marker"))
-    assistant = DemoAssistantService(Repo(), DemoRagAssistantService(retriever, _Chat()))
-    event = await assistant.recommendation("run", "secret", "event-1")
-    assert event["status"] == "pending"
-    assert event["retryable"] is True
-    assert event["errorCode"] == "retrieval_database_unavailable"
-    assert "private-marker" not in json.dumps(event)
+    from twinops.rag.demo_service import _failure
+    assert _failure(error_type("private-marker")) == (True, "retrieval_database_unavailable")
 
 
 @pytest.mark.asyncio
@@ -411,17 +400,8 @@ async def test_temporary_postgres_sqlstate_is_retryable(error_type):
     psycopg.OperationalError("private-marker unspecified operational error"),
 ])
 async def test_permanent_or_unclassified_postgres_error_is_immediately_terminal(failure):
-    retriever, chat = _Retriever(failure=failure), _Chat()
-    assistant = DemoAssistantService(Repo(), DemoRagAssistantService(retriever, chat))
-    event = await assistant.recommendation("run", "secret", "event-1")
-    assert event["status"] == "degraded"
-    assert event["retryable"] is False
-    assert event["attempts"] == 1
-    assert event["errorCode"] == "retrieval_database_unavailable"
-    assert "private-marker" not in json.dumps(event)
-    assert await assistant.recommendation("run", "secret", "event-1") == event
-    assert len(retriever.calls) == 1
-    assert not chat.calls
+    from twinops.rag.demo_service import _failure
+    assert _failure(failure) == (False, "retrieval_database_unavailable")
 
 
 @pytest.mark.asyncio

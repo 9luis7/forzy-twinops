@@ -146,6 +146,19 @@ class OperatingContext(ContractModel):
     estimated: bool
 
 
+class ScoreCalculation(ContractModel):
+    aggregation: Literal["maximum_not_sum"] = "maximum_not_sum"
+    robust_z_at_score_100: float = Field(alias="robustZAtScore100", gt=0)
+    positive_distance_score: float = Field(alias="positiveDistanceScore", ge=0, le=100)
+    previous_deterioration_score: float = Field(alias="previousDeteriorationScore", ge=0, le=100)
+    ewma_alpha: float = Field(alias="ewmaAlpha", gt=0, le=1)
+    watch_threshold: float = Field(alias="watchThreshold", ge=0, le=100)
+    alert_threshold: float = Field(alias="alertThreshold", ge=0, le=100)
+    persistence_required_seconds: float = Field(alias="persistenceRequiredSeconds", ge=0)
+    short_window_seconds: float = Field(alias="shortWindowSeconds", gt=0)
+    long_window_seconds: float = Field(alias="longWindowSeconds", gt=0)
+
+
 class AssessmentDetail(ContractModel):
     status: Literal["normal", "watch", "alert", "insufficient_data"]
     anomaly_score: float = Field(alias="anomalyScore")
@@ -155,6 +168,7 @@ class AssessmentDetail(ContractModel):
     ] = Field(alias="scoreSemantics")
     episode_id: str | None = Field(alias="episodeId")
     persistence_seconds: float = Field(alias="persistenceSeconds", ge=0)
+    score_calculation: ScoreCalculation | None = Field(default=None, alias="scoreCalculation")
 
 
 class ModelMetadata(ContractModel):
@@ -173,6 +187,10 @@ class AssessmentEvidence(ContractModel):
     deviation: float | None = None
     direction: Literal["up", "down", "stable", "unknown"] | None = None
     window_seconds: float | None = Field(default=None, alias="windowSeconds", ge=0)
+    robust_scale: float | None = Field(default=None, alias="robustScale", gt=0)
+    normalized_distance: float | None = Field(default=None, alias="normalizedDistance")
+    anomaly_score_component: float | None = Field(default=None, alias="anomalyScoreComponent", ge=0, le=100)
+    positive_score_component: float | None = Field(default=None, alias="positiveScoreComponent", ge=0, le=100)
 
 
 class AssetConditionAssessment(ContractModel):
