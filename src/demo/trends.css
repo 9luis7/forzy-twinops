@@ -1,0 +1,56 @@
+.demo-trends .demo-chart-grid.demo-chart-grid--velocity-focus {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.velocity-trend {
+  grid-column: 1 / -1;
+  min-width: 0;
+  padding-bottom: 16px;
+  border-bottom: 1px solid #26374b;
+}
+
+.velocity-channel-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 24px;
+  margin-top: 20px;
+}
+
+.velocity-channel {
+  min-width: 0;
+}
+
+.velocity-channel:only-child {
+  grid-column: 1 / -1;
+}
+
+.velocity-channel-heading {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 6px 16px;
+  margin-bottom: 8px;
+  font-variant-numeric: tabular-nums;
+}
+
+.velocity-channel-heading h4 {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.velocity-channel-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  margin-right: 8px;
+  border-radius: 50%;
+}
+
+@media (max-width: 700px) {
+  .demo-trends .demo-chart-grid.demo-chart-grid--velocity-focus,
+  .velocity-channel-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
